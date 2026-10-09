@@ -27,6 +27,10 @@ const META_KEYS = [
   'deferLoading',
   'requiresApproval',
 ]
+// AGH extension-api/src/tool.ts 的 checkToolMeta 是唯一权威门槛（八键齐全 + 取值合法）
+const REPLAY_VALUES = new Set(['safe', 'never', 'idempotent'])
+const APPROVAL_VALUES = new Set(['never', 'destructive', 'always'])
+const COST_KEYS = new Set(['credits', 'wallMs'])
 const EXPECTED_TOOLS = [
   'sciret_ping',
   'sciret_plan',
@@ -75,11 +79,49 @@ async function main() {
 
   let metaOk = true
   for (const [name, t] of tools) {
+    const m = t.meta ?? {}
     for (const k of META_KEYS) {
-      if (!(k in (t.meta ?? {}))) {
+      if (!Object.hasOwn(m, k)) {
         metaOk = false
         console.log(`   !! ${name} 缺 meta 键 ${k}`)
       }
+    }
+    for (const k of ['isReadOnly', 'isDestructive', 'isConcurrencySafe', 'isOpenWorld']) {
+      if (typeof m[k] !== 'boolean') {
+        metaOk = false
+        console.log(`   !! ${name} meta.${k} 必须是 boolean`)
+      }
+    }
+    // replay：AGH 只接受 safe | never | idempotent（曾因写 'conditional' 被拒）
+    if (!REPLAY_VALUES.has(String(m.replay))) {
+      metaOk = false
+      console.log(`   !! ${name} meta.replay 非法：${String(m.replay)}（允许 ${[...REPLAY_VALUES].join(' | ')}）`)
+    }
+    // costHint：仅允许 { credits?: number; wallMs?: number } 或 undefined
+    if (m.costHint !== undefined) {
+      const c = m.costHint
+      if (typeof c !== 'object' || c === null || Array.isArray(c)) {
+        metaOk = false
+        console.log(`   !! ${name} meta.costHint 必须是 { credits?, wallMs? } 或 undefined`)
+      } else {
+        for (const k of Object.keys(c)) {
+          if (!COST_KEYS.has(k) || typeof c[k] !== 'number' || !Number.isFinite(c[k])) {
+            metaOk = false
+            console.log(`   !! ${name} meta.costHint.${k} 非法（仅允许有限数值 credits/wallMs）`)
+          }
+        }
+      }
+    }
+    if (m.requiresApproval !== undefined && !APPROVAL_VALUES.has(String(m.requiresApproval))) {
+      metaOk = false
+      console.log(`   !! ${name} meta.requiresApproval 非法：${String(m.requiresApproval)}`)
+    }
+    // parameters：必须是纯 JSON 数据（原型为 Object.prototype/Array.prototype，且可 JSON 序列化）
+    try {
+      JSON.parse(JSON.stringify(t.parameters))
+    } catch {
+      metaOk = false
+      console.log(`   !! ${name} parameters 不可 JSON 序列化`)
     }
     const kind = t.parameters?.[Symbol.for('TypeBox.Kind')]
     if (kind !== 'Object') {
@@ -87,7 +129,7 @@ async function main() {
       console.log(`   !! ${name} parameters 未标记 TypeBox Kind=Object`)
     }
   }
-  check('静态·meta 8 键 + TypeBox schema', metaOk)
+  check('静态·meta 八键 + 取值合法（replay/costHint/approval）+ TypeBox schema', metaOk)
 
   // 3) 动态：缺环境变量时必须给出可读修复指引（不得静默退化）
   const hadKernelRoot = process.env['PAPER_AGENT_KERNEL_ROOT']

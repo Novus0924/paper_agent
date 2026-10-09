@@ -4,7 +4,16 @@
   "private": true,
   "type": "module",
   "description": "paper-agent 领域能力 AGH 插件：sciret_* 工具（薄壳，调用 Python 确定性内核）",
+  "license": "MIT",
   "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "package.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "agnes": {
     "plugins": [
       { "export": "sciret", "id": "ext:paper-agent/sciret", "inject": ["extension"] }
