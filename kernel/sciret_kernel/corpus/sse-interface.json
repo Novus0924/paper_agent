@@ -1,0 +1,265 @@
+{
+  "license_note": "仅收录各源返回的元数据（标题/作者/年份/DOI/期刊/许可），未抓取全文；使用时请遵循各源许可。",
+  "query": "solid-state electrolyte interface impedance characterization",
+  "records": [
+    {
+      "authors": [
+        "Wenjia Zhao",
+        "Yi Jin",
+        "Ping He",
+        "Haoshen S. Zhou"
+      ],
+      "doi": "10.1007/s41918-019-00048-0",
+      "license": "",
+      "source": "openalex",
+      "title": "Solid-State Electrolytes for Lithium-Ion Batteries: Fundamentals, Challenges and Perspectives",
+      "type": "article",
+      "venue": "Electrochemical Energy Reviews",
+      "year": 2019
+    },
+    {
+      "authors": [
+        "Yanli Chu",
+        "Yanbin Shen",
+        "Feng Guo",
+        "Xuan Zhao",
+        "Qingyu Dong",
+        "Qingyong Zhang",
+        "Wei Li",
+        "Hui Chen",
+        "Zhaojun Luo",
+        "Liwei Chen"
+      ],
+      "doi": "10.1007/s41918-019-00058-y",
+      "license": "",
+      "source": "openalex",
+      "title": "Advanced Characterizations of Solid Electrolyte Interphases in Lithium-Ion Batteries",
+      "type": "article",
+      "venue": "Electrochemical Energy Reviews",
+      "year": 2019
+    },
+    {
+      "authors": [
+        "S Zhang"
+      ],
+      "doi": "10.1016/0167-2738(94)00239-o",
+      "license": [
+        "https://www.elsevier.com/tdm/userlicense/1.0/"
+      ],
+      "source": "crossref",
+      "title": "Impedance study on the interface of poly electrolyte and metal sodium",
+      "type": "journal-article",
+      "venue": "Solid State Ionics",
+      "year": 1995
+    },
+    {
+      "authors": [
+        "C. Arbizzani",
+        "M. Borghini",
+        "M. Mastragostino",
+        "L. Meneghello",
+        "A. Zanelli"
+      ],
+      "doi": "10.1016/0167-2738(94)90134-1",
+      "license": [
+        "https://www.elsevier.com/tdm/userlicense/1.0/"
+      ],
+      "source": "crossref",
+      "title": "Impedance spectroscopy in electrode/electrolyte interface investigations",
+      "type": "journal-article",
+      "venue": "Solid State Ionics",
+      "year": 1994
+    },
+    {
+      "authors": [
+        "I Olsen"
+      ],
+      "doi": "10.1016/0167-2738(95)00241-3",
+      "license": [
+        "https://www.elsevier.com/tdm/userlicense/1.0/"
+      ],
+      "source": "crossref",
+      "title": "Impedance measurements on the lithium-polymer electrolyte interface",
+      "type": "journal-article",
+      "venue": "Solid State Ionics",
+      "year": 1996
+    },
+    {
+      "authors": [
+        "Wenru Hou",
+        "Xianwei Guo",
+        "Xuyang Shen",
+        "Khalil Amine",
+        "Haijun Yu",
+        "Jun Biao Lu"
+      ],
+      "doi": "10.1016/j.nanoen.2018.07.036",
+      "license": "",
+      "source": "openalex",
+      "title": "Solid electrolytes and interfaces in all-solid-state sodium batteries: Progress and perspective",
+      "type": "article",
+      "venue": "Nano Energy",
+      "year": 2018
+    },
+    {
+      "authors": [
+        "F Orsini"
+      ],
+      "doi": "10.1016/s0167-2738(00)00366-0",
+      "license": [
+        "https://www.elsevier.com/tdm/userlicense/1.0/"
+      ],
+      "source": "crossref",
+      "title": "Impedance study of the Li°/electrolyte interface upon cycling",
+      "type": "journal-article",
+      "venue": "Solid State Ionics",
+      "year": 2000
+    },
+    {
+      "authors": [
+        "N.G Bukun",
+        "N.S Tkacheva",
+        "L.S Leonova"
+      ],
+      "doi": "10.1016/s0167-2738(98)00503-7",
+      "license": [
+        "https://www.elsevier.com/tdm/userlicense/1.0/"
+      ],
+      "source": "crossref",
+      "title": "Impedance of the Na+ solid electrolyte/perovskite electrode interface in an O2-containing atmosphere",
+      "type": "journal-article",
+      "venue": "Solid State Ionics",
+      "year": 1999
+    },
+    {
+      "authors": [],
+      "doi": "10.1021/acs.jpcc.5c08415.s001",
+      "license": [],
+      "source": "crossref",
+      "title": "Impedance Spectroscopy Analysis of Sulfide Solid Electrolyte Composites for All-Solid-State Batteries",
+      "type": "component",
+      "venue": "",
+      "year": null
+    },
+    {
+      "authors": [
+        "Janis Kevin Eckhardt",
+        "Sascha Kremer",
+        "Leonardo Merola",
+        "Jürgen Janek"
+      ],
+      "doi": "10.1021/acsami.4c01808",
+      "license": "",
+      "source": "openalex",
+      "title": "Heteroionic Interfaces in Hybrid Solid-State Batteries─Current Constriction at the Interface between Different Solid Electrolytes",
+      "type": "article",
+      "venue": "ACS Applied Materials & Interfaces",
+      "year": 2024
+    },
+    {
+      "authors": [
+        "Anand Parejiya",
+        "Ruhul Amin",
+        "Marm B. Dixit",
+        "Rachid Essehli",
+        "Charl Jeremy Jafta",
+        "David L. Wood",
+        "Ilias Belharouak"
+      ],
+      "doi": "10.1021/acsenergylett.1c01573",
+      "license": "",
+      "source": "openalex",
+      "title": "Improving Contact Impedance via Electrochemical Pulses Applied to Lithium–Solid Electrolyte Interface in Solid-State Batteries",
+      "type": "article",
+      "venue": "ACS Energy Letters",
+      "year": 2021
+    },
+    {
+      "authors": [],
+      "doi": "10.1021/acsenergylett.1c01573.s001",
+      "license": [],
+      "source": "crossref",
+      "title": "Improving Contact Impedance via Electrochemical Pulses Applied to LithiumSolid Electrolyte Interface in Solid-State Batteries",
+      "type": "component",
+      "venue": "",
+      "year": null
+    },
+    {
+      "authors": [
+        "Mingming Ma",
+        "Menghui H. Zhang",
+        "Bitao Jiang",
+        "Yang Du",
+        "Bingcheng Hu",
+        "Chengguo Sun"
+      ],
+      "doi": "10.1039/d2qm01071b",
+      "license": "",
+      "source": "openalex",
+      "title": "A review of all-solid-state electrolytes for lithium batteries: high-voltage cathode materials, solid-state electrolytes and electrode–electrolyte interfaces",
+      "type": "article",
+      "venue": "Materials Chemistry Frontiers",
+      "year": 2023
+    },
+    {
+      "authors": [
+        "Minjie Hou",
+        "Feng Liang",
+        "Kunfeng Chen",
+        "Yongnian Dai",
+        "Dongfeng Xue"
+      ],
+      "doi": "10.1088/1361-6528/ab5be7",
+      "license": "",
+      "source": "openalex",
+      "title": "Challenges and perspectives of NASICON-type solid electrolytes for all-solid-state lithium batteries",
+      "type": "article",
+      "venue": "Nanotechnology",
+      "year": 2019
+    },
+    {
+      "authors": [
+        "Fukang Wang",
+        "Xiangyun Qiu",
+        "Huazheng Li",
+        "Huilong Gong"
+      ],
+      "doi": "10.2139/ssrn.7167133",
+      "license": [],
+      "source": "crossref",
+      "title": "Study on Interface Dynamics of Composite Electrolyte-Based Solid-State Lithium-Ion Batteries by Electrochemical Impedance Spectroscopy",
+      "type": "posted-content",
+      "venue": "",
+      "year": 2026
+    },
+    {
+      "authors": [
+        "Dominic Spencer-Jolly",
+        "Dominic L. R. Melvin",
+        "Isabella D. R. Stephens",
+        "Rowena Helen Brugge",
+        "Shengda D. Pu",
+        "Junfu Bu",
+        "Ziyang Ning",
+        "Gareth O. Hartley",
+        "Paul Adamson",
+        "Patrick S. Grant",
+        "Ainara Aguadero",
+        "Peter George Bruce"
+      ],
+      "doi": "10.3390/inorganics10050060",
+      "license": "",
+      "source": "openalex",
+      "title": "Interfaces between Ceramic and Polymer Electrolytes: A Comparison of Oxide and Sulfide Solid Electrolytes for Hybrid Solid-State Batteries",
+      "type": "article",
+      "venue": "Inorganics",
+      "year": 2022
+    }
+  ],
+  "retrieved_at": "2026-10-09T13:28:37Z",
+  "snapshot_version": 1,
+  "source_status": {
+    "crossref": "ok:8",
+    "openalex": "ok:8"
+  }
+}

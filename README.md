@@ -183,7 +183,7 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 |---|---|---|
 | M0 | BFF 骨架（配置/日志/错误模型/校验/CORS/版本前缀）+ health + doctor | ✅ |
 | M1 | AGH 会话网关（连接/发现/管道身份/工作区注册）+ 任务服务 + Task↔Session 1:1 映射 + preflight | ✅ |
-| M2 | sciret 插件工具集 + Python 内核（状态机/证据账本/流水线/报告装配） | ⏳ 进行中（`sciret_ping` 已通） |
+| M2 | sciret 插件工具集 + Python 内核（状态机/证据账本/流水线/报告装配） | 🟡 主体完成（内核 + 9 个工具 + 真实语料 + 报告门禁已实测；AGH 内真实调用待 S4 专项） |
 | M3–M4 | 执行编排（run-all/step/resume/stop、互斥、终态收敛）+ Event Relay（SSE、快照、Last-Event-ID） | ⏳ |
 | M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ⏳ |
 | M6–M7 | 报告聚合 + 证据只读/cite + 导出三件套 | ⏳ |
