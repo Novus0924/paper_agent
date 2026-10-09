@@ -1,0 +1,32 @@
+# ===== 密钥与敏感信息（绝不入库）=====
+agnes-api-key.txt
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+
+# ===== 运行时产物 =====
+runs/
+data/
+*.log
+logs/
+node_modules/
+dist/
+build/
+.venv/
+__pycache__/
+*.pyc
+.coverage
+coverage/
+
+# ===== 工具与缓存 =====
+.workbuddy/
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+
+# AGH 实例目录（本地实验/专用 home）
+.agh/
+.agh-probe/

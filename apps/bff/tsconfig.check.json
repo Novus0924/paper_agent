@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@agnes/sdk": ["./types/agnes-sdk.d.ts"],
+      "@agnes/daemon": ["./types/agnes-daemon.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}
