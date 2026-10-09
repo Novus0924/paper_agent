@@ -113,12 +113,23 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 2 | GET | `/api/v1/tasks` | ✅ 支持 `?status=` |
 | 3 | POST | `/api/v1/tasks` | ✅ goal/workflow/lit_source/sources + preflight + 建立 AGH 会话（1:1） |
 | 4 | GET | `/api/v1/tasks/{id}` | ✅ 面向视图 DTO |
-| 5–8 | POST | `run-all` / `step` / `resume` / `stop` | ⏳ M3 |
+| 5–8 | POST | `run-all` / `step` / `resume` / `stop` | ✅ 经会话下发 + per-Task 互斥 + 终态收敛（202/200；BUSY 409） |
 | 9 | GET | `/events`（SSE） | ⏳ M4 |
-| 10–11 | GET | `/report` / `/report.md` | ⏳ M6 |
+| 10–11 | GET | `/report` / `/report.md` | ⏳ M6（内核 report 工具已就绪） |
 | 12–13 | GET | `/evidence` / `/cite` | ⏳ M6 |
 | 14 | POST | `/messages` | ⏳ M8 |
 | 15 | GET | `/export` | ⏳ M7 |
+
+> 另有辅助接口 `GET /api/v1/tasks/{id}/execution`（busy/步骤快照，供轮询与调试；SSE 到位后前端以 SSE 为主）。
+
+### 5.1 执行编排与 AGH 授权层（实测要点）
+
+- **执行必经 AGH**：run-all/step/resume 只组装指令 → `session.prompt()` 下发**既有会话**（§4.4 同生命周期）；
+  BFF **不 spawn 内核**，状态同步只**只读** `runs/<task_id>/state.json`。
+- **写文件类工具需审批应答**：AGH 对文件作用域工具发 `session/request_permission`；
+  **客户端未注册处理器时默认拒绝**（实测 `sciret_run_all` → `APPROVAL_REJECTED`）。
+  本项目在网关注册**受控审批策略**：仅放行「`sciret_*` 工具 + 路径全部落在本项目 `runs/` 内」，逐次放行，其余拒绝。
+  ⚠️ 载荷是 ACP `ToolCallUpdate`：**没有 `name` 字段**——工具名在 `title`、参数在 `rawInput`、路径在 `locations[].path`。
 
 错误码全集已实现（`{error, code}` 统一体、状态码映射、人类可读修复指引并入 `error` 文本）：
 `BAD_GOAL / BAD_BODY / BAD_PARAM / BAD_ID / NOT_FOUND / NO_REPORT / BUSY / BAD_STATE / NOT_READY / SESSION_ERROR / CLI_ERROR / EXPORT_ERROR`。
@@ -218,7 +229,7 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 | M0 | BFF 骨架（配置/日志/错误模型/校验/CORS/版本前缀）+ health + doctor | ✅ |
 | M1 | AGH 会话网关（连接/发现/管道身份/工作区注册）+ 任务服务 + Task↔Session 1:1 映射 + preflight | ✅ |
 | M2 | sciret 插件工具集 + Python 内核（状态机/证据账本/流水线/报告装配） | 🟡 主体完成（内核 + 9 个工具 + 真实语料 + 报告门禁已实测；AGH 内真实调用待 S4 专项） |
-| M3–M4 | 执行编排（run-all/step/resume/stop、互斥、终态收敛）+ Event Relay（SSE、快照、Last-Event-ID） | ⏳ |
+| M3–M4 | 执行编排（run-all/step/resume/stop、互斥、终态收敛）+ Event Relay（SSE、快照、Last-Event-ID） | 🟡 M3 已完成并通过 §9.2 前两条验收；M4 SSE 待做 |
 | M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ⏳ |
 | M6–M7 | 报告聚合 + 证据只读/cite + 导出三件套 | ⏳ |
 | M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | ⏳ |

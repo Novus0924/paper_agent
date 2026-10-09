@@ -4,6 +4,7 @@ import type { Logger } from './infra/logger.js'
 import { ApiError, errorBody } from './infra/errors.js'
 import type { AgnesGateway } from './agh/gateway.js'
 import type { TaskIndex } from './store/task-index.js'
+import { ExecutionService } from './services/execution.js'
 import { registerHealthRoute } from './routes/health.js'
 import { registerV1Routes } from './routes/v1/index.js'
 
@@ -20,6 +21,8 @@ export interface AppContext {
   log: Logger
   gateway: AgnesGateway
   index: TaskIndex
+  /** 执行编排器（BE-05：run-all/step/resume/stop 经会话下发 + per-Task 互斥） */
+  exec: ExecutionService
 }
 
 export function buildApp(ctx: AppContext): FastifyInstance {
@@ -82,7 +85,7 @@ export function buildApp(ctx: AppContext): FastifyInstance {
   }))
 
   registerHealthRoute(app, ctx.cfg, ctx.gateway, ctx.index)
-  registerV1Routes(app, ctx)
+  registerV1Routes(app, ctx, ctx.exec)
 
   return app
 }

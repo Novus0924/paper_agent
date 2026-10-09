@@ -11,6 +11,17 @@ import type { Logger } from '../infra/logger.js'
 export type RunStatus = 'PLANNED' | 'RUNNING' | 'DONE' | 'FAILED'
 export type StepStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'SKIPPED'
 
+/** 降级记录（需求文档 §2.2：level=info 为 L1 不置位；level=degraded 为 L2 置 degraded） */
+export type DegradationRecord = {
+  level: 'info' | 'degraded'
+  source: string
+  reason: string
+  impact: string
+  resumable: boolean
+  step: string
+  at?: string
+}
+
 export type TaskStepRecord = {
   id: string
   label: string
@@ -26,6 +37,8 @@ export type TaskRecord = {
   sources: string[]
   run_status: RunStatus
   degraded: boolean
+  /** 降级明细（前端"降级说明"折叠区展示；level=degraded 即 L2） */
+  degraded_reasons: DegradationRecord[]
   session_id: string
   created_at: string
   updated_at: string

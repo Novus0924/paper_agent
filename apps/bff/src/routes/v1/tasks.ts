@@ -110,6 +110,7 @@ export function registerTasksRoutes(app: import('fastify').FastifyInstance, ctx:
       sources: effectiveSources,
       run_status: 'PLANNED',
       degraded: false,
+      degraded_reasons: [],
       session_id: sessionId,
       created_at: now,
       updated_at: now,

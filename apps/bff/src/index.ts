@@ -2,6 +2,7 @@ import { loadConfig } from './config.js'
 import { createLogger } from './infra/logger.js'
 import { AgnesGateway } from './agh/gateway.js'
 import { TaskIndex } from './store/task-index.js'
+import { ExecutionService } from './services/execution.js'
 import { buildApp } from './app.js'
 import { mkdirSync } from 'node:fs'
 
@@ -23,7 +24,7 @@ async function main(): Promise<void> {
   const index = new TaskIndex(cfg.dataDir, log)
 
   // AGH 会话网关（唯一执行出口）
-  const gateway = new AgnesGateway(log)
+  const gateway = new AgnesGateway(log, { runsDir: cfg.runsDir })
   // 启动时尽力连接一次（daemon 未起不视为致命：doctor/health 会给指引）
   await gateway.connect().catch((e: unknown) => {
     log.warn('启动时未能连接 AGH daemon（将在首个任务创建时重试）', {
@@ -31,7 +32,15 @@ async function main(): Promise<void> {
     })
   })
 
-  const app = buildApp({ cfg, log, gateway, index })
+  // 执行编排器（run-all/step/resume/stop 经会话下发；per-Task 互斥）
+  const exec = new ExecutionService(gateway, index, cfg.runsDir, log)
+
+  // 启动即恢复：凭映射同步各任务的内核状态（BFF 重启后可恢复，§9.2）
+  for (const task of index.allWithSessions()) {
+    exec.syncFromKernel(task)
+  }
+
+  const app = buildApp({ cfg, log, gateway, index, exec })
 
   // 仅回环监听
   await app.listen({ host: cfg.host, port: cfg.port })

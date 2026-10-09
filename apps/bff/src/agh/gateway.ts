@@ -35,11 +35,62 @@ export class AgnesGateway {
   private scope: DaemonScope | null = null
   private socketPath: string | null = null
   private readonly log: Logger
+  /** 运行产物根（审批策略边界：只批准该目录内的 sciret_* 工具调用） */
+  private readonly runsDir: string | undefined
+  /** 已注册审批策略的会话（避免重复注册） */
+  private readonly approvalRegistered = new Set<string>()
   /** task_id → AGH Session 句柄（进程内缓存；磁盘映射在任务索引，重启后 load 重建） */
   private readonly sessions = new Map<string, Session>()
 
-  constructor(log: Logger) {
+  constructor(log: Logger, opts: { runsDir?: string } = {}) {
     this.log = log.child({ component: 'agnes-gateway' })
+    this.runsDir = opts.runsDir
+  }
+
+  /**
+   * 受控审批策略（AGH 授权层）：
+   * AGH 对**写文件作用域**的工具调用会发起 `session/request_permission`（ACP `RequestPermissionRequest`，
+   * 其 `toolCall` 是 **ToolCallUpdate**：没有 name 字段，工具名在 `title`，参数在 `rawInput`，
+   * 涉及路径在 `locations[].path`）；客户端未注册处理器时**默认拒绝**
+   * （实测：sciret_run_all → APPROVAL_REJECTED，enforcement.scope=["file"]）。
+   *
+   * 本策略：放行「工具名以 sciret_ 开头 且 所有涉及路径都落在本项目 runs 目录内」，
+   * 且**逐次放行**（allowed-once，不做会话级永久授权）；其余一律拒绝。
+   */
+  private ensureApprovalPolicy(session: Session): void {
+    if (this.approvalRegistered.has(session.id)) return
+    this.approvalRegistered.add(session.id)
+    const runsRoot = this.runsDir ? this.runsDir.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '') : null
+    let logged = false
+
+    session.onPermissionRequest(async (request: unknown) => {
+      const req = (request ?? {}) as { toolCall?: Record<string, unknown>; options?: unknown }
+      const call = req.toolCall ?? {}
+      if (!logged) {
+        logged = true
+        this.log.info('审批请求样例（仅首个）', { toolCall: JSON.stringify(call).slice(0, 400) })
+      }
+      const raw = (call['rawInput'] ?? {}) as Record<string, unknown>
+      const title = String(call['title'] ?? '')
+      const name = String(raw['name'] ?? call['name'] ?? title)
+      const args = (raw['arguments'] && typeof raw['arguments'] === 'object' ? (raw['arguments'] as Record<string, unknown>) : raw) as Record<string, unknown>
+      const runDir = String(args['run_dir'] ?? '').replace(/\\/g, '/').toLowerCase()
+      const locations = Array.isArray(call['locations'])
+        ? (call['locations'] as Array<{ path?: string }>).map((l) => String(l?.path ?? '').replace(/\\/g, '/').toLowerCase())
+        : []
+
+      const inRuns = (p: string): boolean => {
+        if (!runsRoot || !p) return false
+        const norm = p.replace(/\/$/, '')
+        return norm === runsRoot || norm.startsWith(`${runsRoot}/`)
+      }
+      const allPathsInside = (runDir ? [runDir, ...locations] : locations).every(inRuns)
+      const isSciret = name.startsWith('sciret_') || title.startsWith('sciret_')
+      const allow = isSciret && allPathsInside
+
+      this.log.info('工具审批', { tool: name || title, run_dir: runDir, locations, decision: allow ? 'allowed-once' : 'rejected' })
+      return allow ? { verdict: 'allowed-once' } : { verdict: 'rejected' }
+    })
   }
 
   /** 解析 daemon 发现信息（每次连接时刷新，trusted identity 不缓存过期值） */
@@ -125,6 +176,7 @@ export class AgnesGateway {
     const client = this.client!
     await this.ensureWorkspace(cwd)
     const session = await client.session.new({ cwd })
+    this.ensureApprovalPolicy(session)
     this.sessions.set(taskId, session)
     this.log.info('已创建 AGH 会话', { taskId, sessionId: session.id })
     return session.id
@@ -138,6 +190,7 @@ export class AgnesGateway {
     if (cached && cached.id === sessionId) return cached
     await this.ensureWorkspace(cwd)
     const session = await client.session.load(sessionId, { cwd })
+    this.ensureApprovalPolicy(session)
     this.sessions.set(taskId, session)
     this.log.info('已附加 AGH 会话', { taskId, sessionId })
     return session
@@ -152,6 +205,13 @@ export class AgnesGateway {
     const session = await this.attachSession(taskId, sessionId, cwd)
     const turn = await session.prompt(text)
     return { reason: turn.reason, lastSeq: turn.lastSeq }
+  }
+
+  /** 中止当前回合（stop 接口用；已完成的步骤产物不受影响） */
+  async cancelTurn(taskId: string, sessionId: string, cwd: string): Promise<void> {
+    const session = await this.attachSession(taskId, sessionId, cwd)
+    await session.cancel()
+    this.log.info('已请求中止会话回合', { taskId, sessionId })
   }
 
   /** 会话列表（核对 Task↔Session 映射可查证；P-04 验收：sessions 可查到记录） */

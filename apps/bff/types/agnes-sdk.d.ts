@@ -35,7 +35,7 @@ export interface Session {
   followUp(input: string | unknown[], opts?: { commandId?: string }): Promise<number>
   cancel(): Promise<void>
   events(opts?: { types?: string[]; lanes?: string[]; preview?: boolean }): AsyncIterable<SessionEventRecord>
-  onPermissionRequest(handler: (req: unknown) => unknown): () => void
+  onPermissionRequest(handler: (req: unknown) => Promise<{ optionId?: string; verdict?: 'allowed-once' | 'allowed-session' | 'allowed-permanent' | 'rejected' }> | { optionId?: string; verdict?: string }): () => void
   flushCursor(): Promise<void>
 }
 
