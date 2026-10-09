@@ -58,24 +58,33 @@ paper-agent-2/
 # 0) 依赖（Node ≥ 24.10）
 corepack pnpm install
 
-# 1) 环境自检（诊断 + 人类可读修复指引）
+# 1) 环境自检（诊断 + 人类可读修复指引；零副作用，不启动 daemon）
 node scripts/doctor.mjs
 node scripts/doctor.mjs --json     # 供启动器消费
 
-# 2) 启动 AGH daemon（AGH 是执行底座）
-node "D:/agnes-harness-main/packages/cli/dist/local/agnes.mjs" daemon start
+# 2) 启动 AGH daemon（AGH 是执行底座）——统一走包装脚本（自动注入插件环境变量）
+bash agh.sh daemon start
+bash agh.sh daemon status
 
-# 3) 启动 BFF
+# 3) 安装 sciret 插件（唯一人工步骤：AGH 强制真实终端确认）
+bash scripts/install-plugin.sh check            # 只读预检（含插件离线自检）
+bash scripts/install-plugin.sh disable-old      # 停用 v1.0 遗留包（可逆，避免工具重名）
+bash agh.sh install file:./plugin/sciret        # 在真实终端执行，提示 [y/N] 时输入 y
+bash scripts/install-plugin.sh finish           # 自动 trust + enable + 终验 + 自检
+
+# 4) 启动 BFF
 pnpm dev:bff                        # http://127.0.0.1:8787
 
-# 4) 冒烟
-curl -s http://127.0.0.1:8787/api/health
-curl -s -X POST http://127.0.0.1:8787/api/v1/tasks \
+# 5) 冒烟
+curl -s --noproxy '*' http://127.0.0.1:8787/api/health
+curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{"goal":"检索并综述固态电解质界面阻抗的表征方法","workflow":"research","lit_source":"local"}'
 ```
 
 > Windows 下 curl 若被系统代理劫持，加 `--noproxy '*'`。
+> **插件安装为何必须人工一次**：AGH 的 `confirmPackageInstall` 在非 TTY 环境直接判为取消
+> （无 `--yes` 后门）——这是刻意的安全边界（安装=本机执行 JS）。助手不会绕过它。
 
 ---
 
@@ -127,7 +136,20 @@ curl -s -X POST http://127.0.0.1:8787/api/v1/tasks \
 | **事件词汇** | AGH 账本事件类型为 `session/start`、`turn/start`、`step/start`、`assistant/message`、`step/end`、`turn/end` 等；M4 的 Event Relay 负责映射到本项目 9 类事件。 |
 | **导出复用 AGH 原生** | `agnes export <session_id> --format agnes -o x.jsonl` 实测可用（已产出事件 JSONL）。 |
 | **⚠️ 已知问题** | `agnes sessions`（列表/`--json`）在当前 home 上返回 `INTERNAL_ERROR RESULT_INVALID`——**AGH 侧投影问题，非本项目缺陷**（会话本身已正常写入 `sessions.db`，且 `export`/`load` 均可用）。红线要求不得改 AGH 源码，故记录在案并通过 `session.load` + 本任务索引 + `export` 作为"可核对/可导出"证据路径。 |
-| **遗留包** | 用户 AGH home 中存在 v1.0 遗留包 `paper-agent-tools`（`ext:paper-agent/tools`，7 个 hot-tools）。本项目新插件 id 为 `ext:paper-agent/sciret`，**不冲突**；启用前请确认未与旧包工具重名。 |
+| **遗留包** | 用户 AGH home 中存在 v1.0 遗留包 `paper-agent-tools`（`ext:paper-agent/tools`，`enabled=true`，7 个 hot-tools）。其工具名与本项目 `sciret_*` **重名 7 个** → 启用本插件前**必须先停用旧包**：`bash scripts/install-plugin.sh disable-old`（可逆：`bash agh.sh package enable ext:paper-agent/tools`）。本项目插件 id 为 `ext:paper-agent/sciret`。 |
+
+### 6.1 插件安装与运行期环境变量（本机三大陷阱）
+
+1. **`file:./` 包源按 daemon 启动目录解析**：daemon 必须**从项目根**启动，否则 `package inspect/add` 报
+   `The package source could not be accepted.`。→ 统一用 `bash agh.sh <子命令>`（脚本内部 `cd` 项目根）。
+2. **AGH 会“拷贝”插件到自己的 home 运行**（`~/.agh/data/profiles/<profile>/packages/<pkg>`）：
+   插件因此**不能靠相对路径/`__dirname` 找 Python 内核**，必须在 **daemon 启动时注入环境变量**：
+   `PAPER_AGENT_PYTHON`、`PAPER_AGENT_KERNEL_ROOT`、`PAPER_AGENT_RUNS_DIR`（`agh.sh` 已自动注入）。
+   **已在运行的 daemon 无法注入**，必须 `daemon stop` 后重启；新能力只在**新会话**生效。
+   → 插件对缺失变量**不静默退化**，而是返回可执行的修复步骤（避免"ModuleNotFoundError"式误诊）。
+3. **`package status` 会自动拉起 daemon**（且不带这些环境变量）→ 诊断不要用它；本项目 `doctor.mjs`
+   改为**直接读 AGH 锁文件**（零副作用）判断插件状态与旧包冲突。安装后的"终验三字段"（`desired=enabled`
+   且 `actual=running` 且 `trusted=true`）由 `scripts/install-plugin.sh finish` 负责。
 
 ---
 
@@ -195,9 +217,17 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 ## 10. 诊断脚本
 
 ```bash
+# BFF / 会话网关
 cd apps/bff
 npx tsx scripts/spike-gateway.ts                       # 全链路：发现→握手→建会话→订阅→prompt
 npx tsx scripts/spike-load.ts "<session_id>" "<cwd>"   # reattach：load + 历史事件读取
+
+# AGH 包装与插件（项目根）
+bash agh.sh daemon status                              # 调 AGH（自动 cd 项目根 + 注入插件环境变量 + 起飞自检）
+bash scripts/install-plugin.sh check                   # 安装前只读预检（含插件离线自检）
+node plugin/sciret/verify-offline.mjs                  # 插件本体离线自检（11 项：形态/meta/真实调用/越权拦截）
+node scripts/doctor.mjs [--json|--quiet]               # 环境自检（退出码 0/2/1）
 ```
 
-> 注意：本项目沙箱每次调用为独立进程组，**后台进程不跨调用存活**。集成验证需在**同一次调用内**完成 `daemon start` → BFF → 断言。
+> 注意：本项目沙箱/受限环境下每次调用为独立进程组，**后台进程不跨调用存活**。
+> 集成验证需在**同一次调用内**完成 `daemon start` → BFF → 断言。

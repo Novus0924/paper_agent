@@ -7,8 +7,9 @@
  * 退出码：0 全绿 / 2 有可继续告警 / 1 有阻断。
  */
 
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve, join } from 'node:path'
+import { homedir } from 'node:os'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 
@@ -149,17 +150,56 @@ async function main() {
   const portFree = await checkPortFree(BFF_PORT)
   add('port', `BFF 端口 ${BFF_PORT}`, portFree ? 'ok' : 'warn', portFree ? '可用' : '被占用', portFree ? undefined : '端口被占用：设置 PAPER_AGENT_PORT 换端口，或释放该端口。', false)
 
-  // 8. sciret 插件是否已加载（AGH 扩展注册表）
-  if (cliExists) {
-    const ext = await run(process.execPath, [AGH_CLI, 'doctor', 'extensions'], { timeoutMs: 30000 })
-    const out = `${ext.out}${ext.err}`
-    const loaded = /paper-agent\/sciret|sciret/.test(out)
+  // 8. sciret 插件安装状态（零副作用：直接读 AGH 锁文件，不启动 daemon）
+  //    注意：不要用 `package status` 检查——它会自动拉起一个**不带环境变量**的 daemon，
+  //    之后用户启动的 serve 会复用该 daemon，导致插件子进程找不到 Python 内核（经典误诊）。
+  const aghHome = process.env['AGH_HOME'] ?? join(homedir(), '.agh')
+  const profile = process.env['AGNES_PROFILE'] ?? 'local-dev'
+  const lockPath = join(aghHome, 'profiles', profile, 'agnes-lock.json')
+  try {
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
+    const packages = lock.packages ?? {}
+    const mine = Object.entries(packages).filter(([name]) => /plugin-sciret/.test(name))
+    const old = Object.entries(packages).filter(([name]) => name === 'paper-agent-tools')
+    if (mine.length === 0) {
+      add(
+        'plugin',
+        'sciret 插件安装状态',
+        'warn',
+        '未安装',
+        '安装（唯一人工步骤：AGH 强制真实终端确认）：bash agh.sh install file:./plugin/sciret → 敲 y；随后 bash scripts/install-plugin.sh finish。预检：bash scripts/install-plugin.sh check',
+        false,
+      )
+    } else {
+      const [name, info] = mine[0]
+      const enabled = Boolean(info?.state?.enabled)
+      const trusted = info?.trust === 'trusted'
+      add(
+        'plugin',
+        'sciret 插件安装状态',
+        enabled && trusted ? 'ok' : 'warn',
+        `${name} v${info?.version ?? '?'} enabled=${enabled} trusted=${trusted}`,
+        enabled && trusted ? undefined : '已安装但未启用/未信任：bash scripts/install-plugin.sh finish',
+        false,
+      )
+    }
+    if (old.length > 0 && old[0][1]?.state?.enabled) {
+      add(
+        'plugin-conflict',
+        '遗留包冲突（paper-agent-tools）',
+        'warn',
+        '仍启用 → 与 sciret_* 工具重名',
+        '先停用旧包（可逆）：bash scripts/install-plugin.sh disable-old（恢复：bash agh.sh package enable ext:paper-agent/tools）',
+        false,
+      )
+    }
+  } catch (e) {
     add(
       'plugin',
-      'sciret 插件（AGH 扩展）',
-      loaded ? 'ok' : 'warn',
-      loaded ? '已加载' : '未加载',
-      loaded ? undefined : '安装指引：AGH 插件管理中对 plugin/sciret 执行 install → trust → enable（见 README「插件安装」章节）。未安装时 sciret_* 工具在会话中不可用。',
+      'sciret 插件安装状态',
+      'warn',
+      `无法读取 AGH 锁文件：${lockPath}`,
+      `若 AGH 尚未初始化，请先启动一次 AGH：bash agh.sh daemon start。原始错误：${e instanceof Error ? e.message : String(e)}`,
       false,
     )
   }

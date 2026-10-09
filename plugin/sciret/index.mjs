@@ -42,33 +42,62 @@ const readOnlyMeta = { ...baseMeta, isReadOnly: true, isConcurrencySafe: true, r
 
 const RUN_DIR_PROP = str(1024)
 
-function kernelRoot() {
-  return process.env['PAPER_AGENT_KERNEL_ROOT'] || 'D:/workBubbyStore/paper-agent-2/kernel'
+const ENV_HINT = [
+  '需在【启动 AGH daemon 的那个终端】先设好环境变量再启动 daemon：',
+  '  1) daemon stop',
+  '  2) export PAPER_AGENT_PYTHON="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"',
+  '  3) export PAPER_AGENT_KERNEL_ROOT="D:/workBubbyStore/paper-agent-2/kernel"',
+  '  4) export PAPER_AGENT_RUNS_DIR="D:/workBubbyStore/paper-agent-2/runs"',
+  '  5) 在【项目根】执行 daemon start（AGH 会把插件拷贝到自己的 home，插件无法靠相对路径找内核）',
+  '注意：已在运行的 daemon 无法注入环境变量，必须 stop 后重启；新能力需开新会话才生效。',
+].join('\n')
+
+/**
+ * 运行期配置自检（关键：AGH 会把插件**拷贝**到自己的 home 运行，
+ * 因此绝不能靠 __dirname 推断项目路径；缺失时给出可执行的修复指引，而非静默退化）。
+ */
+function resolveRuntime() {
+  const python = process.env['PAPER_AGENT_PYTHON'] || ''
+  const root = process.env['PAPER_AGENT_KERNEL_ROOT'] || ''
+  const runsDir = process.env['PAPER_AGENT_RUNS_DIR'] || ''
+  if (!python) return { ok: false, error: `PAPER_AGENT_PYTHON 未设置。\n${ENV_HINT}` }
+  if (!root) return { ok: false, error: `PAPER_AGENT_KERNEL_ROOT 未设置（插件运行于 ${import.meta.dirname ?? '?'}）。\n${ENV_HINT}` }
+  if (!runsDir) return { ok: false, error: `PAPER_AGENT_RUNS_DIR 未设置。\n${ENV_HINT}` }
+  return { ok: true, python, root, runsDir }
 }
 
 async function runKernel(tool, runDir, args) {
-  const { spawn } = await import('node:child_process')
-  const python = process.env['PAPER_AGENT_PYTHON'] || 'python'
-  const cwd = kernelRoot()
+  const cfg = resolveRuntime()
+  if (!cfg.ok) {
+    const error = new Error(`[sciret_${tool}] 运行期配置缺失：${cfg.error}`)
+    error.structured = { ok: false, error: cfg.error, code: 'PLUGIN_ENV_MISSING' }
+    throw error
+  }
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(python, ['-m', 'sciret_kernel', tool, '--run-dir', runDir, '--args-json', JSON.stringify(args)], {
-      cwd,
+  const { spawn } = await import('node:child_process')
+  const child = spawn(
+    cfg.python,
+    ['-m', 'sciret_kernel', tool, '--run-dir', runDir, '--args-json', JSON.stringify(args)],
+    {
+      cwd: cfg.root,
       env: {
         // 环境白名单：只透传内核运行必需项（§11 子进程环境裁剪）
         PATH: process.env['PATH'] ?? '',
         PYTHONIOENCODING: 'utf-8',
-        ...(process.env['PAPER_AGENT_RUNS_DIR'] ? { PAPER_AGENT_RUNS_DIR: process.env['PAPER_AGENT_RUNS_DIR'] } : {}),
+        PAPER_AGENT_RUNS_DIR: cfg.runsDir,
         ...(process.env['HTTP_PROXY'] ? { HTTP_PROXY: process.env['HTTP_PROXY'] } : {}),
         ...(process.env['HTTPS_PROXY'] ? { HTTPS_PROXY: process.env['HTTPS_PROXY'] } : {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    },
+  )
+
+  return new Promise((resolve, reject) => {
     let out = ''
     let err = ''
     child.stdout.on('data', (d) => (out += d))
     child.stderr.on('data', (d) => (err += d))
-    child.on('error', (e) => reject(new Error(`内核启动失败（PAPER_AGENT_PYTHON=${python}）：${e.message}`)))
+    child.on('error', (e) => reject(new Error(`内核启动失败（PAPER_AGENT_PYTHON=${cfg.python}）：${e.message}`)))
     child.on('close', (code) => {
       let structured
       try {
