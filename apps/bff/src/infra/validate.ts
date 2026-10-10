@@ -29,6 +29,20 @@ export function validateTaskId(raw: unknown): string {
   return raw
 }
 
+/**
+ * turn_id 白名单：M8 多轮消息的回合标识，格式 `turn-<n>`。
+ * 刻意**不复用** validateTaskId —— turn_id 不是 task_id，用任务白名单校验属于
+ * 「恰好通过」而非「正确校验」：一旦 turn 格式变化或与 task_id 混淆，白名单就形同虚设。
+ */
+const TURN_ID_RE = /^turn-[0-9]{1,9}$/
+
+export function validateTurnId(raw: unknown): string {
+  if (typeof raw !== 'string' || !TURN_ID_RE.test(raw)) {
+    throw new ApiError('BAD_PARAM', `非法回合标识：${String(raw)}`, 'turn_id 形如 turn-1（turn- + 数字）。')
+  }
+  return raw
+}
+
 /** 校验结果：值 + 是否回退（非法回退默认并显式告知） */
 export type ValidatedEnum<T extends string> = { value: T; fellBack: boolean; reason?: string }
 

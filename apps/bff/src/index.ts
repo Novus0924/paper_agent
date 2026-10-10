@@ -4,6 +4,7 @@ import { AgnesGateway } from './agh/gateway.js'
 import { TaskIndex } from './store/task-index.js'
 import { ExecutionService } from './services/execution.js'
 import { ReportService } from './services/report.js'
+import { MessageService } from './services/message.js'
 import { ExportService } from './export/service.js'
 import { EventRelay } from './events/relay.js'
 import { buildApp } from './app.js'
@@ -48,6 +49,15 @@ async function main(): Promise<void> {
   // 执行前确保事件泵在跑（否则 SSE 建连前的工具事件会漏）
   exec.onBeforeExecute = (taskId: string) => relay.ensure(taskId)
 
+  // 多轮消息服务（BE-11：同会话追问/修订，运行中排队按序执行）
+  const messages = new MessageService(gateway, index, cfg.runsDir, log, (taskId) => exec.isExecuting(taskId))
+  // 回合结束 → 放行排队中的消息（§9.7「结束后按序执行」）
+  exec.onTurnSettled = (taskId: string) => messages.onTaskIdle(taskId)
+  // 双向互斥：消息投递中触发执行也必须 409（同一 AGH 会话不能并发两个 turn）
+  exec.externalBusy = (taskId: string) => messages.isActive(taskId)
+  // 用户消息经SSE 推送（§5.3 事件表 message 类型）
+  messages.onMessageEvent = (taskId, ev) => relay.publishMessage(taskId, ev)
+
   // 启动即恢复：凭映射同步各任务的内核状态（BFF 重启后可恢复，§9.2）
   for (const task of index.allWithSessions()) {
     exec.syncFromKernel(task)
@@ -63,7 +73,7 @@ async function main(): Promise<void> {
   // 导出服务（BE-10：report/audit/session；session 经 AGH 原生 CLI 导出）
   const exports = new ExportService(cfg.runsDir, reports, log, cfg.aghCli, cfg.aghHome, cfg.agnesProfile)
 
-  const app = buildApp({ cfg, log, gateway, index, exec, relay, reports, exports })
+  const app = buildApp({ cfg, log, gateway, index, exec, relay, reports, exports, messages })
 
   // 仅回环监听
   await app.listen({ host: cfg.host, port: cfg.port })

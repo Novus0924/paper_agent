@@ -35,6 +35,19 @@ export class ExecutionService {
   private onSettled: ((taskId: string, runStatus: RunStatus) => void) | undefined
   /** 执行前钩子（用于确保事件泵已启动） */
   onBeforeExecute: ((taskId: string) => void) | undefined
+  /**
+   * 回合结束钩子（M8 消息服务：运行中排队的消息在此按序放行）。
+   * 刻意用「回合结束」而非「任务终态」——任务跑完仍可追问（§9.7），队列必须在每个回合边界放行。
+   */
+  onTurnSettled: ((taskId: string) => void) | undefined
+  /**
+   * 外部忙碌判定（M8 消息服务：正在投递追问消息时也视作忙碌）。
+   *
+   * 为什么必须双向互斥：AGH 的 session 同时只允许一个活跃 turn。若只在执行侧加锁，
+   * 「消息投递中→ 用户点运行」会让两个 session.prompt 并发打同一会话，行为未定义；
+   * 反向「执行中→ 发消息」则由消息队列（入队）处理。故两侧都要看对方。
+   */
+  externalBusy: ((taskId: string) => boolean) | undefined
 
   constructor(
     private readonly gateway: AgnesGateway,
@@ -166,12 +179,13 @@ export class ExecutionService {
 
   private assertNotBusy(taskId: string): void {
     const lock = this.locks.get(taskId)
-    if (lock) {
-      throw new ApiError(
-        'BUSY',
-        `该任务已有步骤在执行（${lock.action}，自 ${lock.startedAt}）`,
-        '请等待当前执行完成（订阅 /events 获取 done 事件）后再触发。',
-      )
+    // 消息投递中同样算忙碌：同一 AGH 会话不能并发两个 turn（见externalBusy 注释）
+    const external = this.externalBusy?.(taskId) === true
+    if (lock || external) {
+      const what = lock
+        ? `已有步骤在执行（${lock.action}，自 ${lock.startedAt}）`
+        : '已有追问消息在同一会话中投递'
+      throw new ApiError('BUSY', `该任务${what}`, '请等待当前回合完成（订阅 /events 获取 done 事件）后再触发。')
     }
   }
 
@@ -247,6 +261,8 @@ export class ExecutionService {
         this.syncFromKernel(this.index.get(taskId))
         const settled = this.index.get(taskId)
         if (settled) this.onSettled?.(taskId, settled.run_status)
+        // 回合结束（不等于任务终态）：放行排队中的追问消息（§9.7「结束后按序执行」）
+        this.onTurnSettled?.(taskId)
       }
     })()
   }
@@ -282,7 +298,7 @@ export class ExecutionService {
     return task.run_status
   }
 
-  /** 测试与诊断用：等待某任务当前执行结束 */
+  /** 测试与诊断用：等待某任务当前执行结束（不含消息投递，仅等执行回合） */
   async whenIdle(taskId: string, timeoutMs = 180_000): Promise<void> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
@@ -293,6 +309,11 @@ export class ExecutionService {
   }
 
   isBusy(taskId: string): boolean {
+    return this.locks.has(taskId) || this.externalBusy?.(taskId) === true
+  }
+
+  /** 仅指「执行回合」是否在跑（不含消息投递；消息服务用它判断能否立即投递） */
+  isExecuting(taskId: string): boolean {
     return this.locks.has(taskId)
   }
 }

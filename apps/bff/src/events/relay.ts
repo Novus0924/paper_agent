@@ -234,6 +234,33 @@ export class EventRelay {
     })
   }
 
+  /**
+   * 发布多轮消息事件（M8 / §5.3 事件表 message 类型）。
+   * 与 assistant 消息走同一个事件类型，保证前端只有一条渲染路径。
+   */
+  publishMessage(
+    taskId: string,
+    ev: { turn_id: string; role: 'user' | 'assistant'; status: 'running' | 'done'; text?: string; queued_order?: number },
+  ): void {
+    this.bus.publish(taskId, {
+      type: 'message',
+      id: ev.turn_id,
+      turn_id: ev.turn_id,
+      role: ev.role,
+      status: ev.status,
+      ...(ev.text ? { text: ev.text } : {}),
+    })
+    // 队列顺序也要让前端可见（"待发第 N 条"），挂在 detail 供调试与 UI 定位
+    if (ev.queued_order !== undefined) {
+      this.bus.publish(taskId, {
+        type: 'activity',
+        step: '-',
+        human_message: `追问已发送（第 ${ev.queued_order} 条）：${ev.text?.slice(0, 40) ?? ''}`,
+        detail: { turn_id: ev.turn_id, queued_order: ev.queued_order, role: ev.role },
+      })
+    }
+  }
+
   private readConclusions(taskId: string): Array<{ cid: string; text: string; evidence_ids: string[] }> {
     const file = resolve(this.runsDir, taskId, 'ledger.jsonl')
     if (!existsSync(file)) return []
