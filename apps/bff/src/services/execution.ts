@@ -33,6 +33,8 @@ export class ExecutionService {
   private readonly locks = new Map<string, Lock>()
   /** 完成回调（M4 Event Relay 用：终态必须发 done 事件） */
   private onSettled: ((taskId: string, runStatus: RunStatus) => void) | undefined
+  /** 执行前钩子（用于确保事件泵已启动） */
+  onBeforeExecute: ((taskId: string) => void) | undefined
 
   constructor(
     private readonly gateway: AgnesGateway,
@@ -215,6 +217,8 @@ export class ExecutionService {
       fresh.run_status = 'RUNNING'
       this.index.put(fresh)
     }
+    // 保证事件泵在跑（否则前端 SSE 建连前的事件会漏）
+    this.onBeforeExecute?.(taskId)
     this.log.info('已下发执行指令', { taskId, action })
 
     void (async () => {

@@ -114,7 +114,7 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 3 | POST | `/api/v1/tasks` | ✅ goal/workflow/lit_source/sources + preflight + 建立 AGH 会话（1:1） |
 | 4 | GET | `/api/v1/tasks/{id}` | ✅ 面向视图 DTO |
 | 5–8 | POST | `run-all` / `step` / `resume` / `stop` | ✅ 经会话下发 + per-Task 互斥 + 终态收敛（202/200；BUSY 409） |
-| 9 | GET | `/events`（SSE） | ⏳ M4 |
+| 9 | GET | `/events`（SSE） | ✅ 快照先发 + 实时续接 + 幂等去重 + Last-Event-ID 续传 + 终态必达 |
 | 10–11 | GET | `/report` / `/report.md` | ⏳ M6（内核 report 工具已就绪） |
 | 12–13 | GET | `/evidence` / `/cite` | ⏳ M6 |
 | 14 | POST | `/messages` | ⏳ M8 |
@@ -229,7 +229,7 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 | M0 | BFF 骨架（配置/日志/错误模型/校验/CORS/版本前缀）+ health + doctor | ✅ |
 | M1 | AGH 会话网关（连接/发现/管道身份/工作区注册）+ 任务服务 + Task↔Session 1:1 映射 + preflight | ✅ |
 | M2 | sciret 插件工具集 + Python 内核（状态机/证据账本/流水线/报告装配） | 🟡 主体完成（内核 + 9 个工具 + 真实语料 + 报告门禁已实测；AGH 内真实调用待 S4 专项） |
-| M3–M4 | 执行编排（run-all/step/resume/stop、互斥、终态收敛）+ Event Relay（SSE、快照、Last-Event-ID） | 🟡 M3 已完成并通过 §9.2 前两条验收；M4 SSE 待做 |
+| M3–M4 | 执行编排（run-all/step/resume/stop、互斥、终态收敛）+ Event Relay（SSE、快照、Last-Event-ID） | ✅ M3/M4 均完成并通过 §9.2 / §9.3 验收 |
 | M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ⏳ |
 | M6–M7 | 报告聚合 + 证据只读/cite + 导出三件套 | ⏳ |
 | M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | ⏳ |

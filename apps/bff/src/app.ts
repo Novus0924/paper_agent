@@ -5,6 +5,7 @@ import { ApiError, errorBody } from './infra/errors.js'
 import type { AgnesGateway } from './agh/gateway.js'
 import type { TaskIndex } from './store/task-index.js'
 import { ExecutionService } from './services/execution.js'
+import type { EventRelay } from './events/relay.js'
 import { registerHealthRoute } from './routes/health.js'
 import { registerV1Routes } from './routes/v1/index.js'
 
@@ -23,6 +24,8 @@ export interface AppContext {
   index: TaskIndex
   /** 执行编排器（BE-05：run-all/step/resume/stop 经会话下发 + per-Task 互斥） */
   exec: ExecutionService
+  /** 事件中继（BE-06：AGH 事件 → 归一事件 → SSE） */
+  relay: EventRelay
 }
 
 export function buildApp(ctx: AppContext): FastifyInstance {

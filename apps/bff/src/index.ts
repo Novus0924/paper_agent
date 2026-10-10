@@ -3,8 +3,10 @@ import { createLogger } from './infra/logger.js'
 import { AgnesGateway } from './agh/gateway.js'
 import { TaskIndex } from './store/task-index.js'
 import { ExecutionService } from './services/execution.js'
+import { EventRelay } from './events/relay.js'
 import { buildApp } from './app.js'
 import { mkdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 /**
  * BFF 入口（BE-01）：
@@ -35,12 +37,25 @@ async function main(): Promise<void> {
   // 执行编排器（run-all/step/resume/stop 经会话下发；per-Task 互斥）
   const exec = new ExecutionService(gateway, index, cfg.runsDir, log)
 
+  // 事件中继（AGH 会话事件 → 归一事件 → SSE，§5）
+  const relay = new EventRelay(gateway, index, cfg.runsDir, log)
+  // 终态保证（§5.2）：执行 settle 时必发 done（仅终态发；非终态不误发）
+  exec.setSettledListener((taskId, runStatus) => {
+    if (runStatus === 'DONE' || runStatus === 'FAILED') relay.emitDone(taskId, runStatus)
+  })
+  // 执行前确保事件泵在跑（否则 SSE 建连前的工具事件会漏）
+  exec.onBeforeExecute = (taskId: string) => relay.ensure(taskId)
+
   // 启动即恢复：凭映射同步各任务的内核状态（BFF 重启后可恢复，§9.2）
   for (const task of index.allWithSessions()) {
     exec.syncFromKernel(task)
+    // 仅对"运行中"的任务续接事件流（历史任务在 SSE 建连时惰性附加，避免启动风暴）
+    if (task.run_status === 'RUNNING') {
+      relay.start(task.task_id, task.session_id, resolve(cfg.runsDir, task.task_id))
+    }
   }
 
-  const app = buildApp({ cfg, log, gateway, index, exec })
+  const app = buildApp({ cfg, log, gateway, index, exec, relay })
 
   // 仅回环监听
   await app.listen({ host: cfg.host, port: cfg.port })
