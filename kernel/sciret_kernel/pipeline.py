@@ -20,16 +20,61 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from . import corpus
+from . import chaos, corpus
 from .jsonio import atomic_write_json, atomic_write_text, canonical_json, sha256_text
 from .ledger import Ledger
 from .state import RunState
 from .workflow import steps_for
 
-# 覆盖策略（§2.2 可配置）：达标源数 ≥ MIN_OK_SOURCES 且命中数 ≥ MIN_HITS 视为覆盖充足
-MIN_OK_SOURCES = 2
-MIN_HITS = 4
-RETRIEVAL_LIMIT = 6
+# ---------------------------------------------------------------- 覆盖策略（§2.2 配套策略 1）
+
+class CoveragePolicy:
+    """覆盖策略（Coverage Policy）：判定"结果覆盖是否充足"的**可配置**阈值。
+
+    §2.2①原文："例如'≥2 个源成功且命中数 ≥ N'即判成功；单源状态仅记录、不逐级上报为降级"。
+    这里把阈值从模块常量提升为可注入对象，默认值与历史行为一致（2 源 / 4 命中），
+    以便①按场景配置阈值②在测试中用极端阈值驱动L1/L2 两条分支（真实语料恒为 ok，
+    否则两条分支永远不可测）。
+
+    注意：策略对象**不参与账本哈希**（它决定降级判定，而降级理由会进账本）；
+    阈值变化会改变 `reason` 文本 → 改变账本摘要，这是预期的（执行路径确实变了）。
+    """
+
+    __slots__ = ("min_ok_sources", "min_hits", "retrieval_limit")
+
+    def __init__(self, min_ok_sources: int = 2, min_hits: int = 4, retrieval_limit: int = 6) -> None:
+        if min_ok_sources < 0:
+            raise ValueError(f"min_ok_sources 必须 ≥0，收到 {min_ok_sources}")
+        if min_hits < 0:
+            raise ValueError(f"min_hits 必须 ≥0，收到 {min_hits}")
+        if retrieval_limit < 1:
+            raise ValueError(f"retrieval_limit 必须 ≥1，收到 {retrieval_limit}")
+        self.min_ok_sources = min_ok_sources
+        self.min_hits = min_hits
+        self.retrieval_limit = retrieval_limit
+
+    def satisfied_by(self, ok_sources: int, hits: int) -> bool:
+        """覆盖是否充足：达标源数与命中数**同时**满足才算充足。"""
+        return ok_sources >= self.min_ok_sources and hits >= self.min_hits
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "min_ok_sources": self.min_ok_sources,
+            "min_hits": self.min_hits,
+            "retrieval_limit": self.retrieval_limit,
+        }
+
+
+DEFAULT_COVERAGE = CoveragePolicy()
+"""默认覆盖策略：达标源数 ≥ 2 且命中数 ≥ 4（§2.2① 示例值）。"""
+
+MIN_CORROBORATING_SOURCES = 2
+"""交叉印证所需独立来源数（R4 专用）。
+
+刻意与 ``CoveragePolicy.min_ok_sources`` 分开：前者是"一个主题词要被几个**独立来源**支撑"
+（证据层判据），后者是"检索阶段几个**源成功**才算覆盖充足"（覆盖层判据）。
+两者恰好都是 2 属于巧合——共用一个常量会让"调低覆盖阈值"意外改变交叉印证强度。
+"""
 
 
 class PipelineError(RuntimeError):
@@ -58,35 +103,66 @@ def _to_plain(rec: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------- R1 多源检索
 
 
-def step_R1(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
+def step_R1(
+    state: RunState,
+    run_dir: Path,
+    ledger: Ledger,
+    policy: CoveragePolicy | None = None,
+) -> dict[str, Any]:
+    cov = policy or DEFAULT_COVERAGE
     snap_name, snapshot = corpus.select_snapshot(state.goal, state.lit_source)
-    records = corpus.rank_records(snapshot, state.goal, RETRIEVAL_LIMIT)
+    records = corpus.rank_records(snapshot, state.goal, cov.retrieval_limit)
 
     source_status_raw: dict[str, str] = dict(snapshot.get("source_status", {}))
+
+    # 故障注入（§2.2⑤）：默认关闭；开启时仅改写「源可达性」，**不伪造任何文献记录**，
+    # 故覆盖不足是真覆盖不足，产物里也能看出这次失败是人为注入的。
+    source_status_raw, injections = chaos.apply(source_status_raw, task_id=state.task_id)
+    source_status_raw = chaos.record_injections(source_status_raw, injections)
+
     ok_sources = [s for s, v in source_status_raw.items() if str(v).startswith("ok")]
+    unavailable = [s for s, v in source_status_raw.items() if str(v).startswith("unavailable")]
     hits = len(records)
+    covered = cov.satisfied_by(len(ok_sources), hits)
 
     state.source_status = {**state.source_status, **source_status_raw}
     state.source_status["corpus_snapshot"] = f"{snap_name}@{snapshot.get('retrieved_at', '')}"
 
-    # §2.2 降级语义：覆盖充足 → 仅 L1 信息；覆盖不足 → L2 真降级（路径实质改变：本地兜底）
-    if state.lit_source != "local" and (len(ok_sources) < MIN_OK_SOURCES or hits < MIN_HITS):
+    # ---- §2.2 三级语义判定 ------------------------------------------------
+    # L0 覆盖充足且全源可用；L1 个别源不可用但覆盖充足；L2 路径实质改变。
+    # §2.2④：用户显式选local 是**预期路径**，不判降级（否则"主动离线"被误标为降级，
+    # 这正是 P-01 原文点名的病灶④）。
+    if state.lit_source == "local":
+        # 主动离线：显式预期路径。即使快照里某源标记 unavailable 也不置 degraded，
+        # 但仍记录 source_status 供审计查看。
+        level = None
+    elif not covered:
+        level = "degraded"
+    elif unavailable:
+        level = "info"
+    else:
+        level = None
+
+    if level == "degraded":
+        injected = "（本次源不可用由演练注入，非真实网络故障）" if injections else ""
         state.add_degradation(
             run_dir,
             level="degraded",
-            source=",".join(source_status_raw.keys()) or "corpus",
-            reason=f"远程源覆盖不足（成功源 {len(ok_sources)}，命中 {hits}），已回落本地冻结语料",
+            source=",".join(unavailable) or ",".join(source_status_raw.keys()) or "corpus",
+            reason=(
+                f"覆盖不足触发路径实质改变：成功源 {len(ok_sources)}（阈值 {cov.min_ok_sources}）、"
+                f"命中 {hits}（阈值 {cov.min_hits}），已回落本地冻结语料" + injected
+            ),
             impact="检索覆盖范围收窄，结论基于有限语料，需人工复核覆盖面",
             resumable=True,
             step="R1",
         )
-    elif any(v.startswith("unavailable") for v in source_status_raw.values()):
-        # 覆盖充足：仅记录 L1（不置 degraded）
+    elif level == "info":
         state.add_degradation(
             run_dir,
             level="info",
-            source=",".join(s for s, v in source_status_raw.items() if v.startswith("unavailable")),
-            reason="部分数据源不可达，但覆盖充足",
+            source=",".join(unavailable),
+            reason=f"部分数据源不可达，但覆盖充足（成功源 {len(ok_sources)}、命中 {hits}），结果路径未改变",
             impact="结果未受影响",
             resumable=True,
             step="R1",
@@ -210,8 +286,8 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
         for tok in sorted(corpus._tokens(str(ref.get("title", "")))):  # noqa: SLF001
             topic_sources.setdefault(tok, set()).add(src)
 
-    corroborated = sorted(t for t, srcs in topic_sources.items() if len(srcs) >= MIN_OK_SOURCES)
-    single = sorted(t for t, srcs in topic_sources.items() if len(srcs) < MIN_OK_SOURCES)
+    corroborated = sorted(t for t, srcs in topic_sources.items() if len(srcs) >= MIN_CORROBORATING_SOURCES)
+    single = sorted(t for t, srcs in topic_sources.items() if len(srcs) < MIN_CORROBORATING_SOURCES)
 
     idx = _next_evidence_index(ledger)
     fact_ev = _ev_id(idx)
@@ -233,7 +309,7 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
         {
             "judge": "rule:cross-source-corroboration@v1",
             "verdict": bool(corroborated),
-            "rationale": f"{len(corroborated)} 个主题词获 ≥{MIN_OK_SOURCES} 个独立来源支撑；{len(single)} 个仅单源（标记为待核）",
+            "rationale": f"{len(corroborated)} 个主题词获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑；{len(single)} 个仅单源（标记为待核）",
             "evidence_ids": [fact_ev],
             "producer_step": "R4",
         },
@@ -243,7 +319,7 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
     top = corroborated[:3]
     for i, term in enumerate(top, start=1):
         cid = f"C-{i:03d}"
-        text = f"多源文献一致指向“{term}”是本主题的关键要素（获 ≥{MIN_OK_SOURCES} 个独立来源支撑）"
+        text = f"多源文献一致指向“{term}”是本主题的关键要素（获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑）"
         ledger.append(
             "conclusion",
             {"cid": cid, "text": text, "evidence_ids": [fact_ev], "producer_step": "R4", "confidence": "medium"},
@@ -373,7 +449,7 @@ def step_R6(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
 # ---------------------------------------------------------------- 调度
 
 
-STEP_FUNCS: dict[str, Callable[[RunState, Path, Ledger], dict[str, Any]]] = {
+STEP_FUNCS: dict[str, Callable[..., dict[str, Any]]] = {
     "R1": step_R1,
     "R2": step_R2,
     "R3": step_R3,
@@ -383,7 +459,13 @@ STEP_FUNCS: dict[str, Callable[[RunState, Path, Ledger], dict[str, Any]]] = {
 }
 
 
-def execute_step(state: RunState, run_dir: Path, ledger: Ledger, step_id: str) -> dict[str, Any]:
+def execute_step(
+    state: RunState,
+    run_dir: Path,
+    ledger: Ledger,
+    step_id: str,
+    policy: CoveragePolicy | None = None,
+) -> dict[str, Any]:
     """执行单步（状态机 + 账本双写；终态幂等）。"""
     record = state.step(step_id)
     if record.status.value in ("DONE", "SKIPPED"):
@@ -399,7 +481,8 @@ def execute_step(state: RunState, run_dir: Path, ledger: Ledger, step_id: str) -
 
     state.start_step(run_dir, step_id)
     try:
-        result = func(state, run_dir, ledger)
+        # 只 R1 用覆盖策略；其余步骤签名不含 policy，故按步号分派（显式优于 **kwargs 猜测）
+        result = func(state, run_dir, ledger, policy) if step_id == "R1" else func(state, run_dir, ledger)
     except Exception as e:  # noqa: BLE001 - 失败必须落状态机，供 resume 续跑
         state.finish_step(run_dir, step_id, error=f"{type(e).__name__}: {e}")
         raise
@@ -409,7 +492,12 @@ def execute_step(state: RunState, run_dir: Path, ledger: Ledger, step_id: str) -
     return result
 
 
-def run_all(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
+def run_all(
+    state: RunState,
+    run_dir: Path,
+    ledger: Ledger,
+    policy: CoveragePolicy | None = None,
+) -> dict[str, Any]:
     """顺序跑完剩余步骤（断点续跑：DONE/SKIPPED 复用，仅跑 PENDING/FAILED）。
 
     到达终态 DONE 后**自动装配报告**（需求 §9.5/P-03：终态 DONE 且报告就绪）：
@@ -422,7 +510,7 @@ def run_all(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
         record = state.step(step_id)
         if record.status.value in ("DONE", "SKIPPED"):
             continue
-        executed.append(execute_step(state, run_dir, ledger, step_id))
+        executed.append(execute_step(state, run_dir, ledger, step_id, policy))
 
     out: dict[str, Any] = {
         "executed": executed,

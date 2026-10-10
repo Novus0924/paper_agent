@@ -48,10 +48,14 @@ paper-agent-2/
 │   └── scripts/                 # 诊断脚本（spike-* / zip-probe / scope-probe）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
+│   ├── resilience.py            # ★ 容错原语（重试分类/指数退避+抖动/受控并发保序）
+│   └── chaos.py                 # ★ 故障注入开关（默认关闭、Fail-closed、作用域隔离）
+├── kernel/tools/fetch_corpus.py # 真实元数据抓取（重试/独立超时/受控并发）
 ├── scripts/doctor.mjs           # 环境自检（--json / --quiet，退出码 0/2/1）
 ├── scripts/quality-gate.sh      # ★ 全量质量门（自动挑选 Node ≥24.10 + vitest + 内核 + tsc）
 ├── scripts/verify-report.sh     # M6 端到端验收（28 项）
 ├── scripts/verify-export.sh     # M7 端到端验收（50 项）
+├── scripts/verify-degrade.sh    # M5 端到端验收（17 项）
 ├── runs/                        # 运行产物（git 忽略）
 ├── data/task-index.json         # 任务索引（git 忽略）
 └── agnes-api-key.txt            # 密钥（git 忽略，绝不入库）
@@ -175,6 +179,34 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 - **未就绪语义**：409 `NOT_READY` 并列出当前实际可导出的格式；全不可用时明说「当前无可导出格式」。
 - **不静默回退**：缺 `kind` → 400；非法 `kind` / `format` → 400 且列出全部允许值（§6枚举回退须显式告知）。
 
+### 5.4 降级治理与容错策略（实测要点）
+
+**三级语义（§2.2）**：L0 覆盖充足 → 无降级；L1 个别源不可用但覆盖充足 → 只记 `info`、**不置位**；
+L2 路径实质改变 → `degraded=true` + 五要素（来源/原因/影响/可重试/步骤）。L0/L2 在报告中可区分
+（「未发生实质降级」vs 具体降级声明）。
+
+- **关键事实：冻结语料的 `source_status` 恒为 ok**，故 L1/L2 在正常跑批中**不可达**——
+  要验证它们只能靠①可配置覆盖策略②chaos 注入开关，这正是 §2.2①⑤ 要求这两者存在的原因。
+- **覆盖策略可配置**：`CoveragePolicy(min_ok_sources, min_hits, retrieval_limit)` 经 `args-json` 传入，
+  默认 2 源 / 4 命中；**非法输入报错而非取默认**（否则"我配了 5 却按 2 跑"无法察觉），结果**回显生效策略**。
+- **`MIN_CORROBORATING_SOURCES` 与 `min_ok_sources` 是两回事**：前者是 R4「一个主题词要被几个独立来源支撑」
+  （证据层），后者是检索阶段「几个源成功才算覆盖充足」（覆盖层）。恰好都是 2 属巧合，共用常量会让
+  调低覆盖阈值意外改变交叉印证强度。
+- **chaos 开关 Fail-closed**：`PAPER_AGENT_CHAOS=1` + `PAPER_AGENT_CHAOS_SCOPE=<前缀>` + `PAPER_AGENT_CHAOS_SOURCES=<源名>`，
+  三者缺一即**报错退出**。作用域前缀防跨任务泄漏；必须显式指定目标源是因为
+  「单源不可用（L1）」与「全源不可用（L2）」是两种不同演练，默认"全挂"会把 L1 演练悄悄变成 L2 并得出错误结论。
+  开关值只接受 `'1'`——写 `'true'` 直接报错，因为"以为开了实际没开"会得出"故障注入无效"的假阴性。
+- **注入只改写「源可达性」，绝不伪造文献记录**：语料条数仍来自真实冻结快照，覆盖不足是真覆盖不足。
+  注入事实写进 `source_status.chaos`，L2 的 `reason` 带「演练注入，非真实网络故障」，评审可一眼看出。
+- **§6 容错三策略**（`kernel/sciret_kernel/resilience.py`，纯标准库）：
+  - **重试**：429/5xx/连接/超时 → 瞬时（指数退避 1s/2s/4s + 25% 抖动，上限 3 次）；其余 4xx → **永久不重试**
+    （单测断言只尝试 1 次，防止后有人给 `PermanentError` 也加重试）；
+  - **超时**：每源独立（默认 20s），互不阻塞；
+  - **并发**：`map_ordered` 基于 `ThreadPoolExecutor.map`，**按输入顺序产出** → 并发只压缩耗时，
+    不影响输出顺序。这是 §6「结果按固定顺序归并（保确定性）」的实现，**不是性能优化**。
+- ⚠️ **重抓语料必须保持 `--sources` 顺序一致**：并发归并按声明顺序，`source_status` 键序会变，
+  而该字段参与 L1/L2 判定与产物哈希。
+
 ---
 
 ## 6. AGH 集成要点（实测结论，避免重踩）
@@ -249,8 +281,8 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 > 本机裸 `node` 可能解析到 WorkBuddy 托管的 22.x，故统一走 `bash scripts/quality-gate.sh`（自动挑选合规 Node，
 > 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
 
-- `bash scripts/quality-gate.sh` → BFF **71/71 通过** + 内核 **18/18 通过**（连跑两次查抖动）+ `tsc` **零错误**
-  （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/AGH 接口契约）；
+- `bash scripts/quality-gate.sh` → BFF **71/71 通过** + 内核 **37/37 通过**（连跑两次查抖动）+ `tsc` **零错误**
+  （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/AGH 接口契约）；
 - `node scripts/doctor.mjs` → 逐项状态 + 修复指引（`--json` / `--quiet`，退出码 0/2/1）。
 
 **M6 报告聚合端到端**（`bash scripts/verify-report.sh` → PASS=28 FAIL=0）
@@ -299,6 +331,27 @@ manifest.json → {"task_id":…,"gate":{"passed":true,…},"counts":{…},
                  "how_to_verify":"python verify.py --run-dir run"}
 ```
 
+**M5 降级治理端到端**（`bash scripts/verify-degrade.sh` → PASS=17 FAIL=0）
+
+```jsonc
+// L1：单源不可用但覆盖充足 → 只记 info，degraded 必须为 false（§2.2 验收①）
+state.json → {"degraded": false,
+  "degraded_reasons": [{"level":"info","source":"crossref",
+    "reason":"部分数据源不可达，但覆盖充足（成功源 1、命中 6），结果路径未改变",
+    "impact":"结果未受影响","resumable":true,"step":"R1"}],
+  "source_status": {"crossref":"unavailable:chaos:…","openalex":"ok:8","chaos":"enabled:1"}}
+
+// L2：覆盖不足 → degraded=true，五要素齐全（§2.2 验收②）
+state.json → {"degraded": true,
+  "degraded_reasons": [{"level":"degraded","source":"crossref,openalex",
+    "reason":"覆盖不足触发路径实质改变：成功源 0（阈值 2）、命中 16（阈值 4），已回落本地冻结语料（本次源不可用由演练注入，非真实网络故障）",
+    "impact":"检索覆盖范围收窄，结论基于有限语料，需人工复核覆盖面","resumable":true,"step":"R1"}]}
+
+// 覆盖策略可配置（§2.2①）：同样只挂 crossref，阈值不同 → 判定不同
+//   min_ok_sources=1,min_hits=1 → degraded=false；min_ok_sources=2,min_hits=4 → degraded=true
+// 非法字段（min_ok_sorce 拼错）→ 直接报错，不静默取默认
+```
+
 ---
 
 ## 8. 关键工程约定（易踩坑，务必遵守）
@@ -334,8 +387,17 @@ manifest.json → {"task_id":…,"gate":{"passed":true,…},"counts":{…},
    本机裸 `node` 会解析到 WorkBuddy 托管的 22.x → 一律用 `bash scripts/quality-gate.sh`（自动挑选合规 Node）。
    **遇到 AGH 侧看不懂的报错，先用不同 Node 版本各跑一次再下结论。**
 10. **子进程"成功后再清理"顺序不能反**：把 `rmSync(tmp)` 放在 `finally` 里而**在 `finally` 之后**才读产物，
-   会让所有导出 100% 报"未产出文件"（语法与类型检查都合法，只有真跑才暴露）。
-   故导出类实现必须在 `try` 内就地读回内容，`finally` 只做清理。
+    会让所有导出 100% 报"未产出文件"（语法与类型检查都合法，只有真跑才暴露）。
+    故导出类实现必须在 `try` 内就地读回内容，`finally` 只做清理。
+11. **E2E 断言"某校验会拒绝执行"时，必须确认被验证的代码路径真的被走到**：
+    `execute_step` 对**终态步骤直接复用返回**，会早于任何前置校验 → 测出"没报错"其实是"根本没跑"。
+    我在 M5 chaos fail-closed 用例上连踩两次（setup 自身带chaos 把 R1 跑成 DONE）。
+    修法：① setup 只 `plan` 不执行，保持 PENDING；② 加**负向对照**（断言 `"ok": true` 不出现），
+    否则"没报错"和"没执行"在输出上无法区分。
+12. **验证阈值可配置性，要先确认不同阈值落在判定边界两侧**：若把两档阈值都设在边界同侧
+    （如两源全挂时任何正阈值都判降级），测出来的是"两个都不满足"，不是"策略可配置"。
+13. **新写 Python 模块后立刻跑一次导入**：本项目内核"零第三方依赖 + 单测驱动"，
+    任何语法错误（如 `from __future__ import annotations` 拼错）都会在质量门立刻暴露，成本极低。
 
 ---
 
@@ -347,7 +409,7 @@ manifest.json → {"task_id":…,"gate":{"passed":true,…},"counts":{…},
 | M1 | AGH 会话网关（连接/发现/管道身份/工作区注册）+ 任务服务 + Task↔Session 1:1 映射 + preflight | ✅ |
 | M2 | sciret 插件工具集 + Python 内核（状态机/证据账本/流水线/报告装配） | ✅ 内核 + 9 个工具 + 真实语料 + 报告门禁（含篡改作废）均实测 |
 | M3–M4 | 执行编排（run-all/step/resume/stop、互斥、终态收敛）+ Event Relay（SSE、快照、Last-Event-ID） | ✅ M3/M4 均完成并通过 §9.2 / §9.3 验收 |
-| M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ⏳ |
+| M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ✅ 通过 §9.4 验收（E2E 17/17，内核新增 19 项单测；三级语义从"不可达分支"变为可复测行为） |
 | M6 | 报告聚合（终态自动出报告 + 门禁 + 幂等 + 原子写）+ 证据只读 + cite | ✅ 通过 §9.5 / §9.6 验收（E2E 28/28） |
 | M7 | 导出三件套（报告 MD / 审计包 ZIP / AGH 会话轨迹）+ Exporter SPI | ✅ 通过 §9.6 验收（E2E 50/50，单测 16 项；含 verify.py 反向篡改用例） |
 | M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | ⏳ |

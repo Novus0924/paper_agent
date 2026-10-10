@@ -22,11 +22,25 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sciret_kernel import report as report_mod  # noqa: E402
+from sciret_kernel import chaos, report as report_mod  # noqa: E402
 from sciret_kernel.__main__ import PathGuardError, guard_run_dir, main  # noqa: E402
 from sciret_kernel.jsonio import canonical_json, sha256_text  # noqa: E402
 from sciret_kernel.ledger import Ledger, LedgerError  # noqa: E402
-from sciret_kernel.pipeline import ledger_digest, run_all  # noqa: E402
+from sciret_kernel.pipeline import (  # noqa: E402
+    CoveragePolicy,
+    DEFAULT_COVERAGE,
+    execute_step,
+    ledger_digest,
+    run_all,
+)
+from sciret_kernel.resilience import (  # noqa: E402
+    PermanentError,
+    RetryPolicy,
+    TransientError,
+    classify_http_error,
+    map_ordered,
+    run_with_retry,
+)
 from sciret_kernel.state import RunState, StateError, StepStatus  # noqa: E402
 from sciret_kernel.workflow import steps_for  # noqa: E402
 
@@ -331,6 +345,276 @@ class TestPathGuard(unittest.TestCase):
                     os.environ["PAPER_AGENT_RUNS_DIR"] = old
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestDegradationSemantics(unittest.TestCase):
+    """§2.2 三级语义 + 四条可复测验收（§9.4 验收第1–4 条）。
+
+    真实语料快照的 source_status 恒为 ok，故 L1/L2 分支在正常跑批中**不可达**；
+    要验证它们只能靠①可配置覆盖策略②chaos 注入开关——这正是 §2.2①⑤ 要求存在的原因。
+    """
+
+    def _run_r1(self, tmp: Path, *, lit_source: str = "auto", task_id: str = "run-degrade",
+                policy=None, chaos_scope: str | None = None,
+                chaos_sources: str | None = None) -> RunState:
+        run_dir = make_run(tmp, task_id)
+        state = plan(run_dir, lit_source=lit_source, task_id=task_id)
+        keys = (chaos.ENV_FLAG, chaos.ENV_SCOPE, chaos.ENV_SOURCES)
+        saved = {k: os.environ.get(k) for k in keys}
+        if chaos_scope:
+            os.environ[chaos.ENV_FLAG] = "1"
+            os.environ[chaos.ENV_SCOPE] = chaos_scope
+            os.environ[chaos.ENV_SOURCES] = chaos_sources or ""
+        try:
+            execute_step(state, run_dir, Ledger(run_dir), "R1", policy)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        return RunState.load(run_dir)
+
+    def test_L0_all_sources_ok_no_degradation(self) -> None:
+        """L0：全源可用 → 无降级记录，degraded=false。"""
+        with tempfile.TemporaryDirectory() as t:
+            state = self._run_r1(Path(t), lit_source="auto")
+            self.assertFalse(state.degraded)
+            self.assertEqual(state.degraded_reasons, [])
+            self.assertEqual(state.source_status.get("crossref"), "ok:8")
+
+    def test_L1_partial_source_down_but_coverage_sufficient_not_degraded(self) -> None:
+        """L1：个别源不可用但覆盖充足 → 只记 info，**degraded 必须为 false**（P-01 病灶①③）。
+
+        构造：阈值压到1 源 1 命中（覆盖充足），chaos 打掉 crossref（剩 openalex 1 源可用）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            state = self._run_r1(
+                Path(t),
+                lit_source="auto",
+                task_id="run-l1",
+                policy=CoveragePolicy(min_ok_sources=1, min_hits=1),
+                chaos_scope="run-l1",
+                chaos_sources="crossref",
+            )
+            self.assertFalse(state.degraded, "覆盖充足时不得置 degraded（P-01 病灶①）")
+            levels = [d["level"] for d in state.degraded_reasons]
+            self.assertEqual(levels, ["info"], "应恰好记录一条 L1 info")
+            self.assertIn("crossref", state.degraded_reasons[0]["source"])
+            self.assertEqual(state.degraded_reasons[0]["impact"], "结果未受影响")
+
+    def test_L2_all_sources_down_sets_degraded_with_reason(self) -> None:
+        """L2：关键源缺失导致覆盖不足 → degraded=true 且原因可查（§2.2 L2 行）。"""
+        with tempfile.TemporaryDirectory() as t:
+            state = self._run_r1(
+                Path(t),
+                lit_source="auto",
+                task_id="run-l2",
+                policy=DEFAULT_COVERAGE,
+                chaos_scope="run-l2",
+                chaos_sources="crossref,openalex",
+            )
+            self.assertTrue(state.degraded, "覆盖不足必须置 degraded")
+            l2 = [d for d in state.degraded_reasons if d["level"] == "degraded"]
+            self.assertEqual(len(l2), 1)
+            self.assertIn("覆盖不足", l2[0]["reason"])
+            self.assertTrue(l2[0]["resumable"])
+            self.assertTrue(l2[0]["impact"], "必须说明影响")
+            # 注入事实必须可审计（能区分"演练注入"与"真实故障"）
+            self.assertEqual(state.source_status.get("chaos"), "enabled:1")
+            self.assertIn("演练注入", l2[0]["reason"])
+
+    def test_explicit_local_never_degrades(self) -> None:
+        """§2.2④ + 验收第 3 条：主动选 local 是预期路径 → 即使全源不可用也不判降级。"""
+        with tempfile.TemporaryDirectory() as t:
+            state = self._run_r1(
+                Path(t),
+                lit_source="local",
+                task_id="run-local",
+                policy=CoveragePolicy(min_ok_sources=99, min_hits=999),
+                chaos_scope="run-local",
+                chaos_sources="crossref,openalex",
+            )
+            self.assertFalse(state.degraded, "主动离线不得判降级（P-01 病灶④）")
+            self.assertEqual([d for d in state.degraded_reasons if d["level"] == "degraded"], [])
+
+    def test_no_chaos_env_means_no_injection(self) -> None:
+        """验收第 4 条：正常启动（不带 chaos）→ 不出现任何由故障注入导致的降级。"""
+        with tempfile.TemporaryDirectory() as t:
+            for k in (chaos.ENV_FLAG, chaos.ENV_SCOPE, chaos.ENV_SOURCES):
+                os.environ.pop(k, None)
+            state = self._run_r1(Path(t), lit_source="auto", task_id="run-noc", policy=DEFAULT_COVERAGE)
+            self.assertFalse(state.degraded)
+            self.assertNotIn("chaos", state.source_status)
+            for d in state.degraded_reasons:
+                self.assertNotIn("演练注入", d["reason"])
+
+    def test_chaos_scope_does_not_leak_to_other_tasks(self) -> None:
+        """作用域前缀不匹配 → 不注入（防止给 A 任务演练时污染 B 任务）。"""
+        with tempfile.TemporaryDirectory() as t:
+            os.environ[chaos.ENV_FLAG] = "1"
+            os.environ[chaos.ENV_SCOPE] = "run-other"
+            os.environ[chaos.ENV_SOURCES] = "crossref,openalex"
+            try:
+                state = self._run_r1(Path(t), lit_source="auto", task_id="run-mine", policy=DEFAULT_COVERAGE)
+                self.assertFalse(state.degraded, "作用域不匹配时不得注入")
+                self.assertNotIn("chaos", state.source_status)
+            finally:
+                for k in (chaos.ENV_FLAG, chaos.ENV_SCOPE, chaos.ENV_SOURCES):
+                    os.environ.pop(k, None)
+
+    def test_chaos_flag_illegal_value_fails_closed(self) -> None:
+        """开关值不可识别 → **报错**而非静默当作关闭（避免演练者得到假阴性结论）。"""
+        with tempfile.TemporaryDirectory() as t:
+            os.environ[chaos.ENV_FLAG] = "true"  # 只接受 '1'
+            os.environ[chaos.ENV_SCOPE] = "run-bad"
+            os.environ[chaos.ENV_SOURCES] = "crossref"
+            try:
+                with self.assertRaises(chaos.ChaosConfigError):
+                    self._run_r1(Path(t), lit_source="auto", task_id="run-bad", policy=DEFAULT_COVERAGE)
+            finally:
+                for k in (chaos.ENV_FLAG, chaos.ENV_SCOPE, chaos.ENV_SOURCES):
+                    os.environ.pop(k, None)
+
+    def test_chaos_enabled_without_scope_fails_closed(self) -> None:
+        """开了 flag 但没给作用域 → 报错，防注入泄漏到全机所有任务。"""
+        with tempfile.TemporaryDirectory() as t:
+            os.environ[chaos.ENV_FLAG] = "1"
+            os.environ.pop(chaos.ENV_SCOPE, None)
+            try:
+                with self.assertRaises(chaos.ChaosConfigError):
+                    self._run_r1(Path(t), lit_source="auto", task_id="run-noscope", policy=DEFAULT_COVERAGE)
+            finally:
+                os.environ.pop(chaos.ENV_FLAG, None)
+
+    def test_chaos_enabled_without_sources_fails_closed(self) -> None:
+        """开了 flag 但没指定目标源 → 报错。
+
+        不设默认源是刻意的：'单源不可用'（L1）与'全部源不可用'（L2）是两种不同演练，
+        默认值会把演练悄悄变成另一种故障，得出错误结论。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            os.environ[chaos.ENV_FLAG] = "1"
+            os.environ[chaos.ENV_SCOPE] = "run-nosrc"
+            os.environ.pop(chaos.ENV_SOURCES, None)
+            try:
+                with self.assertRaises(chaos.ChaosConfigError):
+                    self._run_r1(Path(t), lit_source="auto", task_id="run-nosrc", policy=DEFAULT_COVERAGE)
+            finally:
+                os.environ.pop(chaos.ENV_FLAG, None)
+                os.environ.pop(chaos.ENV_SCOPE, None)
+
+    def test_chaos_single_source_down_keeps_coverage(self) -> None:
+        """单源注入 + 默认阈值(2 源) → 覆盖不足 → L2（证明阈值判定真实生效）。"""
+        with tempfile.TemporaryDirectory() as t:
+            state = self._run_r1(
+                Path(t),
+                lit_source="auto",
+                task_id="run-single",
+                policy=DEFAULT_COVERAGE,
+                chaos_scope="run-single",
+                chaos_sources="crossref",
+            )
+            self.assertTrue(state.degraded, "只剩 1 个成功源（阈值 2）→ 应判L2")
+
+    def test_coverage_policy_is_configurable(self) -> None:
+        """§2.2① 覆盖策略可配置：同一份语料，阈值不同 → 判定不同。"""
+        loose = CoveragePolicy(min_ok_sources=1, min_hits=1)
+        self.assertTrue(loose.satisfied_by(ok_sources=1, hits=1))
+        self.assertFalse(DEFAULT_COVERAGE.satisfied_by(ok_sources=1, hits=1))
+        self.assertTrue(DEFAULT_COVERAGE.satisfied_by(ok_sources=2, hits=4))
+        #阈值非法必须报错（不静默取默认）
+        with self.assertRaises(ValueError):
+            CoveragePolicy(min_ok_sources=-1)
+        with self.assertRaises(ValueError):
+            CoveragePolicy(retrieval_limit=0)
+
+
+class TestResiliencePolicy(unittest.TestCase):
+    """§6 容错与降级策略表：重试分类 / 指数退避+抖动 / 受控并发保序。"""
+
+    def test_http_error_classification(self) -> None:
+        for status in (429, 500, 502, 503, 504):
+            self.assertIs(classify_http_error(status), TransientError, f"HTTP {status} 应为瞬时")
+        for status in (400, 401, 403, 404, 422):
+            self.assertIs(classify_http_error(status), PermanentError, f"HTTP {status} 应为永久")
+
+    def test_retry_backoff_is_exponential_with_cap_and_jitter(self) -> None:
+        p = RetryPolicy(max_attempts=5, base_delay_s=1.0, cap_delay_s=4.0, factor=2.0, jitter_ratio=0.0)
+        class ZeroRng:
+            def random(self) -> float:
+                return 0.0
+
+        self.assertEqual(p.delay_for(1, ZeroRng()), 1.0)
+        self.assertEqual(p.delay_for(2, ZeroRng()), 2.0)
+        self.assertEqual(p.delay_for(3, ZeroRng()), 4.0)
+        self.assertEqual(p.delay_for(4, ZeroRng()), 4.0, "必须被cap 截断")
+        # 抖动上界：u→1 时不超过 base*(1+jitter)
+        class OneRng:
+            def random(self) -> float:
+                return 1.0
+
+        self.assertAlmostEqual(RetryPolicy(base_delay_s=1.0, jitter_ratio=0.25).delay_for(1, OneRng()), 1.25)
+
+    def test_retry_policy_validates_bounds(self) -> None:
+        for kwargs in (
+            {"max_attempts": 0},
+            {"base_delay_s": 0},
+            {"cap_delay_s": 0.5, "base_delay_s": 1.0},
+            {"factor": 0.5},
+            {"jitter_ratio": 1.0},
+        ):
+            with self.assertRaises(ValueError, msg=str(kwargs)):
+                RetryPolicy(**kwargs)
+
+    def test_transient_error_is_retried_up_to_limit(self) -> None:
+        calls = {"n": 0}
+        slept: list[float] = []
+
+        def flaky() -> str:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise TransientError("boom")
+            return "ok"
+
+        out = run_with_retry(flaky, policy=RetryPolicy(max_attempts=3), sleep=slept.append)
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(len(slept), 2, "第3 次成功前应sleep 两次")
+
+    def test_transient_error_exhausted_reraises_last(self) -> None:
+        def always() -> None:
+            raise TransientError("still down")
+
+        with self.assertRaises(TransientError):
+            run_with_retry(always, policy=RetryPolicy(max_attempts=2), sleep=lambda _s: None)
+
+    def test_permanent_error_not_retried(self) -> None:
+        """4xx 不重试：重试只浪费配额并可能招致更严限流（§6「永久错误不重试」）。"""
+        calls = {"n": 0}
+
+        def denied() -> None:
+            calls["n"] += 1
+            raise PermanentError("403")
+
+        with self.assertRaises(PermanentError):
+            run_with_retry(denied, policy=RetryPolicy(max_attempts=5), sleep=lambda _s: None)
+        self.assertEqual(calls["n"], 1, "永久错误必须只尝试一次")
+
+    def test_map_ordered_preserves_input_order(self) -> None:
+        """受控并发但**结果按输入顺序返回**——这是保确定性的关键（§6并发行）。"""
+        import time as _t
+
+        def slow_first(x: int) -> int:
+            _t.sleep(0.03 if x == 0 else 0.0)
+            return x * 10
+
+        self.assertEqual(map_ordered(slow_first, [0, 1, 2, 3], workers=4), [0, 10, 20, 30])
+        self.assertEqual(map_ordered(slow_first, [], workers=4), [])
+
+    def test_map_ordered_single_worker_is_sequential(self) -> None:
+        out = map_ordered(lambda x: x + 1, [1, 2, 3], workers=1)
+        self.assertEqual(out, [2, 3, 4])
 
 
 class TestCliEndToEnd(unittest.TestCase):

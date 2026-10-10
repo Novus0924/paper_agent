@@ -5,6 +5,12 @@
 - 结果冻结为 JSON 快照（含来源、抓取时间、许可），随仓库入库，保证离线可复现；
 - 网络不可达时脚本明确失败，不生成伪造数据。
 
+容错（需求文档 §6 容错与降级策略表）：
+- **统一重试**：瞬时错误（5xx/429/连接/超时）指数退避 + 抖动重试；4xx 永久错误不重试；
+- **独立超时**：各源各自超时，互不阻塞；
+- **受控并发**：多源并发取数，但**结果按 --sources 声明顺序归并**（保确定性）——
+  并发只压缩耗时，不影响快照内容与顺序。
+
 用法（标准库，无第三方依赖）：
     python -m tools.fetch_corpus --query "solid-state electrolyte interface impedance" \
         --out sciret_kernel/corpus/sse-interface.json --per-source 8
@@ -17,8 +23,18 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+
+from sciret_kernel.resilience import (
+    PermanentError,
+    TransientError,
+    classify_http_error,
+    default_retry_policy,
+    map_ordered,
+    run_with_retry,
+)
 
 UA = "paper-agent/2.0 (hackathon research assistant; contact: team-u046)"
 
@@ -27,16 +43,33 @@ SOURCE_ENDPOINTS = {
     "openalex": "https://api.openalex.org/works",
 }
 
+#: 各源独立超时（秒）。§6「单源/单步独立超时；多源受控并发，整体耗时≈最慢源而非各源之和」
+SOURCE_TIMEOUT_S = {"crossref": 20.0, "openalex": 20.0}
+#: 受控并发度：够用又不至于把公共 API 打爆
+MAX_WORKERS = 4
 
-def _get_json(url: str, timeout: int = 20) -> dict:
+
+def _get_json(url: str, timeout: float = 20.0) -> dict:
+    """单次 GET；HTTP 状态码按§6 分类为瞬时/永久错误。"""
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - 固定官方元数据 API
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - 固定官方元数据 API
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise classify_http_error(e.code)(f"HTTP {e.code} {url}") from e
+    except urllib.error.URLError as e:
+        # 连接被拒/超时/DNS 等网络层问题 → 瞬时，值得退避后重试
+        raise TransientError(f"{type(e.reason).__name__}: {e.reason}") from e
+    except TimeoutError as e:
+        raise TransientError(f"TimeoutError: {e}") from e
+    except json.JSONDecodeError as e:
+        # 响应不是合法 JSON：通常是网关返回的 HTML 错误页，重试有意义
+        raise TransientError(f"JSONDecodeError: {e}") from e
 
 
-def fetch_crossref(query: str, rows: int) -> list[dict]:
+def fetch_crossref(query: str, rows: int, *, timeout: float = 20.0) -> list[dict]:
     params = urllib.parse.urlencode({"query.bibliographic": query, "rows": rows, "select": "DOI,title,author,issued,container-title,license,type"})
-    data = _get_json(f"{SOURCE_ENDPOINTS['crossref']}?{params}")
+    data = _get_json(f"{SOURCE_ENDPOINTS['crossref']}?{params}", timeout=timeout)
     out = []
     for item in data.get("message", {}).get("items", []):
         title = (item.get("title") or [""])[0]
@@ -63,12 +96,12 @@ def fetch_crossref(query: str, rows: int) -> list[dict]:
     return out
 
 
-def fetch_openalex(query: str, rows: int) -> list[dict]:
+def fetch_openalex(query: str, rows: int, *, timeout: float = 20.0) -> list[dict]:
     # 注意：OpenAlex 的 select 只接受合法字段名，含未知字段会返回 400
     params = urllib.parse.urlencode(
         {"search": query, "per-page": rows, "select": "doi,title,publication_year,authorships,primary_location,type"}
     )
-    data = _get_json(f"{SOURCE_ENDPOINTS['openalex']}?{params}")
+    data = _get_json(f"{SOURCE_ENDPOINTS['openalex']}?{params}", timeout=timeout)
     out = []
     for item in data.get("results", []):
         title = item.get("title") or ""
@@ -100,22 +133,43 @@ def main(argv: list[str] | None = None) -> int:
     ns = ap.parse_args(argv)
 
     wanted = [s.strip() for s in ns.sources.split(",") if s.strip()]
-    items: list[dict] = []
+    policy = default_retry_policy()
+    fetched: dict[str, list[dict]] = {}
     source_status: dict[str, str] = {}
-    for src in wanted:
+
+    def fetch_one(src: str) -> list[dict]:
+        """单源抓取：带独立超时 + 统一重试策略。
+
+        4xx（永久错误）**不重试** —— 重试只会浪费配额并可能招致更严限流。
+        """
+        timeout = SOURCE_TIMEOUT_S.get(src, 20.0)
+        if src == "crossref":
+            fn = lambda: fetch_crossref(ns.query, ns.per_source, timeout=timeout)  # noqa: E731
+        elif src == "openalex":
+            fn = lambda: fetch_openalex(ns.query, ns.per_source, timeout=timeout)  # noqa: E731
+        else:
+            raise PermanentError(f"unsupported source: {src}")
+        return run_with_retry(fn, policy=policy)
+
+    def safe_fetch(src: str) -> tuple[str, list[dict] | None, str]:
         try:
-            if src == "crossref":
-                got = fetch_crossref(ns.query, ns.per_source)
-            elif src == "openalex":
-                got = fetch_openalex(ns.query, ns.per_source)
-            else:
-                source_status[src] = "unsupported"
-                continue
-            items.extend(got)
-            source_status[src] = f"ok:{len(got)}"
+            got = fetch_one(src)
+            return src, got, f"ok:{len(got)}"
+        except PermanentError as e:
+            # 永久错误：立即放弃（已按策略不重试），但**如实记录**——绝不伪造成功
+            print(f"[warn] {src} 永久失败（不重试）：{e}", file=sys.stderr)
+            return src, None, f"unavailable:PermanentError:{e}"
         except Exception as e:  # noqa: BLE001 - 抓取失败必须显式记录，绝不伪造
-            source_status[src] = f"unavailable:{type(e).__name__}:{e}"
-            print(f"[warn] {src} 抓取失败：{e}", file=sys.stderr)
+            print(f"[warn] {src} 重试 {policy.max_attempts} 次后仍失败：{e}", file=sys.stderr)
+            return src, None, f"unavailable:{type(e).__name__}:{e}"
+
+    # 受控并发 + 按声明顺序归并（map_ordered 保证顺序；并发只压缩耗时）
+    results = map_ordered(safe_fetch, wanted, workers=MAX_WORKERS)
+    items: list[dict] = []
+    for src, got, status in results:
+        source_status[src] = status
+        if got:
+            items.extend(got)
 
     # 去重（按 DOI，保序）+ 稳定排序（保确定性）
     seen: set[str] = set()

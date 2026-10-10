@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from . import __version__, corpus, report as report_mod, workflow
 from .ledger import Ledger, LedgerError
-from .pipeline import PipelineError, execute_step, run_all
+from .pipeline import CoveragePolicy, DEFAULT_COVERAGE, PipelineError, execute_step, run_all
 from .state import RunState, StateError
 from .verify_cli import cite_lookup, verify_run
 
@@ -113,13 +113,38 @@ def tool_run_step(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
         step_id = state.next_pending() or ""
         if not step_id:
             return {"ok": True, "reused": True, "run_status": state.run_status.value, "human_summary": "没有待执行步骤"}
-    result = execute_step(state, run_dir, ledger, step_id)
+    result = execute_step(state, run_dir, ledger, step_id, _coverage_from_args(args))
     return {**result, "ok": True, "run_status": state.run_status.value, "degraded": state.degraded}
+
+
+def _coverage_from_args(args: dict[str, Any]):
+    """从 args-json 解析覆盖策略（§2.2①"可配置"）。
+
+    未提供任何阈值时返回 None →流水线用DEFAULT_COVERAGE。
+    非法值直接报错（不静默取默认）——静默取默认会让"我配了 5却按 2 跑"这类错误无法察觉。
+    """
+    raw = args.get("coverage_policy")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"coverage_policy 必须是对象，收到 {type(raw).__name__}")
+    d = DEFAULT_COVERAGE.to_dict()
+    unknown = set(raw) - set(d)
+    if unknown:
+        raise ValueError(f"coverage_policy 含未知字段：{sorted(unknown)}（允许：{sorted(d)}）")
+    d.update({k: int(v) for k, v in raw.items()})
+    return CoveragePolicy(**d)
 
 
 def tool_run_all(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     state, ledger = _load(run_dir)
-    return {"ok": True, **run_all(state, run_dir, ledger)}
+    policy = _coverage_from_args(args)
+    result = run_all(state, run_dir, ledger, policy)
+    out = {"ok": True, **result}
+    if policy is not None:
+        # 回显生效的策略，否则调用方无法确认"我配的阈值真的生效了"
+        out["coverage_policy"] = policy.to_dict()
+    return out
 
 
 def tool_status(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
