@@ -36,3 +36,7 @@ Thumbs.db
 # 带 retrieved_at 时间戳 → 每次抓取都不同 → 入库必然变脏。
 # 离线冻结的语料（sse-interface.json）是仓库资产，要入库。
 kernel/sciret_kernel/corpus/live-*.json
+
+# ===== 契约探测的临时产物 =====
+# workflow-contract.test.ts /其它探针会在 kernel/ 下建目录，属测试残留不入库。
+kernel/.contract-probe*/
