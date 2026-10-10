@@ -4,6 +4,7 @@ import { AgnesGateway } from './agh/gateway.js'
 import { TaskIndex } from './store/task-index.js'
 import { ExecutionService } from './services/execution.js'
 import { ReportService } from './services/report.js'
+import { ExportService } from './export/service.js'
 import { EventRelay } from './events/relay.js'
 import { buildApp } from './app.js'
 import { mkdirSync } from 'node:fs'
@@ -56,10 +57,13 @@ async function main(): Promise<void> {
     }
   }
 
-  // 报告与证据只读服务（BE-08/09：只读内核产物，不 spawn 内核）
+  // 报告与证据只读服务（BE-08/09：只读内核产物，不spawn 内核）
   const reports = new ReportService(cfg.runsDir, index, log)
 
-  const app = buildApp({ cfg, log, gateway, index, exec, relay, reports })
+  // 导出服务（BE-10：report/audit/session；session 经 AGH 原生 CLI 导出）
+  const exports = new ExportService(cfg.runsDir, reports, log, cfg.aghCli, cfg.aghHome, cfg.agnesProfile)
+
+  const app = buildApp({ cfg, log, gateway, index, exec, relay, reports, exports })
 
   // 仅回环监听
   await app.listen({ host: cfg.host, port: cfg.port })

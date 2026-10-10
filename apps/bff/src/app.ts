@@ -7,6 +7,7 @@ import type { TaskIndex } from './store/task-index.js'
 import { ExecutionService } from './services/execution.js'
 import type { EventRelay } from './events/relay.js'
 import type { ReportService } from './services/report.js'
+import type { ExportService } from './export/service.js'
 import { registerHealthRoute } from './routes/health.js'
 import { registerV1Routes } from './routes/v1/index.js'
 
@@ -29,6 +30,8 @@ export interface AppContext {
   relay: EventRelay
   /** 报告与证据只读服务（BE-08 报告聚合 / BE-09 证据只读；只读内核产物） */
   reports: ReportService
+  /** 导出服务（BE-10：报告 MD / 审计包 ZIP / AGH 会话轨迹，Exporter SPI） */
+  exports: ExportService
 }
 
 export function buildApp(ctx: AppContext): FastifyInstance {
@@ -91,7 +94,7 @@ export function buildApp(ctx: AppContext): FastifyInstance {
   }))
 
   registerHealthRoute(app, ctx.cfg, ctx.gateway, ctx.index)
-  registerV1Routes(app, ctx, ctx.exec, ctx.reports)
+  registerV1Routes(app, ctx, ctx.exec, ctx.reports, ctx.exports)
 
   return app
 }

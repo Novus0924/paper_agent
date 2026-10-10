@@ -41,13 +41,17 @@ paper-agent-2/
 │   │   ├── services/execution.ts# 执行编排（经会话下发 + per-Task 互斥）
 │   │   ├── services/report.ts    # ★ 报告与证据只读装配（不 spawn 内核）
 │   │   ├── events/               # 事件模型 / 总线 / AGH 事件中继（§5）
-│   │   └── routes/               # health + /api/v1/{tasks,events,report}
+│   │   ├── export/               # ★ zip.ts（零依赖 ZIP 写入器）+ service.ts（Exporter SPI）
+│   │   └── routes/               # health + /api/v1/{tasks,events,report,export}
 │   ├── types/                   # AGH 最小类型声明（见 §6 说明）
-│   ├── test/                    # 单测 + 契约测试（55 个）
-│   └── scripts/                 # 集成诊断脚本（spike-*）
+│   ├── test/                    # 单测 + 契约测试（71 个）
+│   └── scripts/                 # 诊断脚本（spike-* / zip-probe / scope-probe）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
 ├── scripts/doctor.mjs           # 环境自检（--json / --quiet，退出码 0/2/1）
+├── scripts/quality-gate.sh      # ★ 全量质量门（自动挑选 Node ≥24.10 + vitest + 内核 + tsc）
+├── scripts/verify-report.sh     # M6 端到端验收（28 项）
+├── scripts/verify-export.sh     # M7 端到端验收（50 项）
 ├── runs/                        # 运行产物（git 忽略）
 ├── data/task-index.json         # 任务索引（git 忽略）
 └── agnes-api-key.txt            # 密钥（git 忽略，绝不入库）
@@ -121,7 +125,7 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 10–11 | GET | `/report` / `/report.md` | ✅ 就绪 `200 {status:"ready",report:{…}}` / 未就绪 `200 {status:"generating"}`；MD 带 nosniff + inline |
 | 12–13 | GET | `/evidence` / `/cite` | ✅ 证据/结论/轨迹只读装配；cite 支持 EV 编号与 ≥6 位哈希前缀 |
 | 14 | POST | `/messages` | ⏳ M8 |
-| 15 | GET | `/export` | ⏳ M7 |
+| 15 | GET | `/export?kind=report｜audit｜session` | ✅ 报告 MD 文件流 / 审计包 ZIP（含校验脚本）/ AGH 原生会话轨迹；未就绪 409 NOT_READY |
 
 > 另有辅助接口 `GET /api/v1/tasks/{id}/execution`（busy/步骤快照，供轮询与调试；SSE 到位后前端以 SSE 为主）。
 
@@ -149,6 +153,28 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 错误码全集已实现（`{error, code}` 统一体、状态码映射、人类可读修复指引并入 `error` 文本）：
 `BAD_GOAL / BAD_BODY / BAD_PARAM / BAD_ID / NOT_FOUND / NO_REPORT / BUSY / BAD_STATE / NOT_READY / SESSION_ERROR / CLI_ERROR / EXPORT_ERROR`。
 
+### 5.3 导出三件套与 Exporter SPI（实测要点）
+
+- **session 导出必须走 AGH 原生**：daemon 注册的 RPC 只有
+  `authenticate / initialize / session/cancel / session/load / session/new / session/prompt`——**没有导出 RPC**。
+  故 `kind=session` 调 AGH CLI（`--format agnes|sharegpt|claude-code`），子进程 env 按白名单裁剪
+  （仅 `PATH` / `SystemRoot` / `TEMP` / `AGH_HOME` / `AGNES_PROFILE`）。
+  实测：不存在的 session → 退出码 1 + `CAPABILITY_DENIED (-32006)` 且**不产文件** →失败路径天然可辨，不会伪装成功。
+- **审计包内容**：`run/report.md`、`run/ledger.jsonl`、`run/state.json`、`run/report_gate.json`、
+  `run/review.json`、`run/events.json`、`run/conclusions.json`、**`verify.py`**、`manifest.json`。
+  未产出的文件**不进包**（不塞空文件充数），`X-Export-Contents` 头如实反映实际内容。
+- **`verify.py` 必须能独立复核且 fail-closed**：只用 `hashlib/json/sys/pathlib`，**不 import 本项目任何模块**
+  （改代码不能改结论）；独立重算哈希链 + 校验结论 fact 绑定 + 比对 `report.json.ledger_digest`。
+  E2E 含**反向用例**：篡改包内账本后必须退出码 1——恒返回「通过」的校验脚本比没有校验脚本更危险。
+- **ZIP 为零依赖自实现**（项目依赖里没有任何 ZIP 库）：local header `0x04034b50` + data +
+  central directory `0x02014b50` + EOCD `0x06054b50`，CRC-32 多项式 `0xedb88320`，deflate(8)/store(0)，
+  UTF-8 flag `0x0800`。**自写解析器自己校验自己不算数**，故：单测对 4 个 CRC-32 标准向量逐值比对，
+  E2E 用系统 `unzip -t` 交叉验证 + 解压后用 Node 逐文件重算 sha256。固定 mod time/date ⇒ 同输入逐字节可复现。
+- **Exporter SPI（§560）**：`Exporter` 接口（`available()` + `export()`）+ `EXPORTERS` 注册表，
+  新增导出格式 = 实现一个导出器，**路由与参数解析零改动**。
+- **未就绪语义**：409 `NOT_READY` 并列出当前实际可导出的格式；全不可用时明说「当前无可导出格式」。
+- **不静默回退**：缺 `kind` → 400；非法 `kind` / `format` → 400 且列出全部允许值（§6枚举回退须显式告知）。
+
 ---
 
 ## 6. AGH 集成要点（实测结论，避免重踩）
@@ -160,7 +186,7 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | **工作区必须先注册** | `session.new` / `session.load` 传入的 `cwd` **必须先 `workspace.add(cwd)`**，否则返回 `SEMANTIC_REJECTED (-32011)`。 |
 | **会话 cwd 决定会话键** | 会话 id 形如 `agnes:local:<profile>:cli:workspace:<hash>`，hash 由 cwd 派生。**reattach 必须传同一个 cwd**（本项目为 `runs/<task_id>`），否则同样 `SEMANTIC_REJECTED`。 |
 | **事件词汇** | AGH 账本事件类型为 `session/start`、`turn/start`、`step/start`、`assistant/message`、`step/end`、`turn/end` 等；M4 的 Event Relay 负责映射到本项目 9 类事件。 |
-| **导出复用 AGH 原生** | `agnes export <session_id> --format agnes -o x.jsonl` 实测可用（已产出事件 JSONL）。 |
+| **导出复用 AGH 原生** | daemon **无导出 RPC**，故经 CLI：`agnes export <session_id> --format agnes -o x.jsonl` 实测可用（产出事件 JSONL）。M7 已把该路径封装为 `kind=session`，且与 CLI 直出**逐字节一致**。 |
 | **⚠️ 已知问题** | `agnes sessions`（列表/`--json`）在当前 home 上返回 `INTERNAL_ERROR RESULT_INVALID`——**AGH 侧投影问题，非本项目缺陷**（会话本身已正常写入 `sessions.db`，且 `export`/`load` 均可用）。红线要求不得改 AGH 源码，故记录在案并通过 `session.load` + 本任务索引 + `export` 作为"可核对/可导出"证据路径。 |
 | **遗留包** | 用户 AGH home 中存在 v1.0 遗留包 `paper-agent-tools`（`ext:paper-agent/tools`，`enabled=true`，7 个 hot-tools）。其工具名与本项目 `sciret_*` **重名 7 个** → 启用本插件前**必须先停用旧包**：`bash scripts/install-plugin.sh disable-old`（可逆：`bash agh.sh package enable ext:paper-agent/tools`）。本项目插件 id 为 `ext:paper-agent/sciret`。 |
 
@@ -217,9 +243,14 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 - `agnes export <session_id> --format agnes` 产出 JSONL（含 `session/start` 事件、可信 actor）。
 
 **质量门**
-- `npx vitest run` → **55/55 通过**（校验/错误模型/执行编排/事件总线/报告聚合 + AGH 接口契约）；
-- `python -m unittest discover -s kernel/tests` → **18/18 通过**（状态机/账本/门禁/确定性/路径白名单/CLI E2E）；
-- `npx tsc -p apps/bff/tsconfig.check.json` → **零错误**；
+
+> ⚠️ **必须用 Node ≥ 24.10 跑 BFF 测试**（`engines` 要求）。AGH 的 Windows 原生模块只按 Node 24 的 libuv ABI 构建，
+> 用 Node 22 跑会报 `CONFIG_CREDENTIAL_STORE`，**看起来像「AGH 集成坏了」，实际只是运行时 ABI 不匹配**。
+> 本机裸 `node` 可能解析到 WorkBuddy 托管的 22.x，故统一走 `bash scripts/quality-gate.sh`（自动挑选合规 Node，
+> 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
+
+- `bash scripts/quality-gate.sh` → BFF **71/71 通过** + 内核 **18/18 通过**（连跑两次查抖动）+ `tsc` **零错误**
+  （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/AGH 接口契约）；
 - `node scripts/doctor.mjs` → 逐项状态 + 修复指引（`--json` / `--quiet`，退出码 0/2/1）。
 
 **M6 报告聚合端到端**（`bash scripts/verify-report.sh` → PASS=28 FAIL=0）
@@ -245,6 +276,29 @@ Content-Disposition: inline
 report.json → report.json.invalid（可逆作废）；report_gate.json → {"passed":false,"reasons":["…CHAIN_MISMATCH…"]}
 ```
 
+**M7 导出三件套端到端**（`bash scripts/verify-export.sh` → PASS=50 FAIL=0）
+
+```jsonc
+// GET /export?kind=report响应头
+Content-Type: text/markdown; charset=utf-8
+Content-Disposition: inline; filename="run-xxx-report.md"
+X-Content-Type-Options: nosniff
+
+// GET /export?kind=audit（响应头列出实际内容，便于评审核对）
+Content-Type: application/zip
+Content-Disposition: attachment; filename="run-xxx-audit.zip"
+X-Export-Contents: run/report.md,run/ledger.jsonl,run/state.json,run/report_gate.json,\
+run/review.json,run/events.json,run/conclusions.json,verify.py,manifest.json
+
+// 未就绪（§386：说明可导出范围）
+409 {"code":"NOT_READY","error":"任务 run-xxx 尚不可导出：报告尚未就绪…。当前可导出：session"}
+
+// 审计包内清单（逐文件 bytes + sha256 + 门禁状态 + 校验方法）
+manifest.json → {"task_id":…,"gate":{"passed":true,…},"counts":{…},
+                 "files":[{"path":"run/ledger.jsonl","bytes":19812,"sha256":"…"}],
+                 "how_to_verify":"python verify.py --run-dir run"}
+```
+
 ---
 
 ## 8. 关键工程约定（易踩坑，务必遵守）
@@ -266,6 +320,22 @@ report.json → report.json.invalid（可逆作废）；report_gate.json → {"p
    > 正确做法是引入显式的 `SOURCE_DATE_EPOCH` 式冻结参数，而非把时间戳悄悄从链里剔除。
 8. **测试目录名不可从时间戳切片推导**：`stamp[-9:-7]` 这类写法对同一秒内的两个值会切出**相同**目录名，
    第二次运行会复用已有账本文件，导致"摘要相同"的假象（我踩过，见 `test_digest_differs_when_wall_clock_crosses_second`）。
+9. **BFF 测试必须用 Node ≥ 24.10，且不要信裸 `node`**：AGH 的 Windows 原生模块
+   （`packages/system-node/dist/native/agnes-system.node`）只按 Node 24 的 libuv ABI 构建。
+   用 Node 22 跑时的报错链是：
+   ```
+   require('agnes-system.node') → "Rebuild Windows native artifact for the current Node.js/libuv runtime"
+     → windowsPrivateFilesAvailable() === false
+     → credentialFileEnforcement() = {level:'unavailable'}
+     → credentialStore.read() 抛 CONFIG_CREDENTIAL_STORE
+     → contract.test.ts 的 resolveDaemonScope 用例失败
+   ```
+   报错指向「AGH 配置与凭据」，极易误判为集成坏了，**实际只是运行时 ABI 不匹配**。
+   本机裸 `node` 会解析到 WorkBuddy 托管的 22.x → 一律用 `bash scripts/quality-gate.sh`（自动挑选合规 Node）。
+   **遇到 AGH 侧看不懂的报错，先用不同 Node 版本各跑一次再下结论。**
+10. **子进程"成功后再清理"顺序不能反**：把 `rmSync(tmp)` 放在 `finally` 里而**在 `finally` 之后**才读产物，
+   会让所有导出 100% 报"未产出文件"（语法与类型检查都合法，只有真跑才暴露）。
+   故导出类实现必须在 `try` 内就地读回内容，`finally` 只做清理。
 
 ---
 
@@ -279,7 +349,7 @@ report.json → report.json.invalid（可逆作废）；report_gate.json → {"p
 | M3–M4 | 执行编排（run-all/step/resume/stop、互斥、终态收敛）+ Event Relay（SSE、快照、Last-Event-ID） | ✅ M3/M4 均完成并通过 §9.2 / §9.3 验收 |
 | M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ⏳ |
 | M6 | 报告聚合（终态自动出报告 + 门禁 + 幂等 + 原子写）+ 证据只读 + cite | ✅ 通过 §9.5 / §9.6 验收（E2E 28/28） |
-| M7 | 导出三件套（报告 MD / 审计包 ZIP / AGH 会话轨迹） | ⏳ |
+| M7 | 导出三件套（报告 MD / 审计包 ZIP / AGH 会话轨迹）+ Exporter SPI | ✅ 通过 §9.6 验收（E2E 50/50，单测 16 项；含 verify.py 反向篡改用例） |
 | M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | ⏳ |
 | M10 | 单测/集成/契约/E2E + DoD 验收 | ⏳ |
 
