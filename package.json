@@ -19,7 +19,10 @@
     "doctor": "node scripts/doctor.mjs",
     "start": "node scripts/start.mjs",
     "typecheck": "tsc -p apps/bff/tsconfig.check.json",
-    "test": "vitest run --project fast"
+    "test": "vitest run --project fast",
+    "quality-gate": "bash scripts/quality-gate.sh",
+    "dod": "bash scripts/verify-dod.sh",
+    "dod:quick": "bash scripts/verify-dod.sh --quick"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

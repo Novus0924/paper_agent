@@ -13,7 +13,7 @@ done
 hash -r 2>/dev/null || true
 command -v curl >/dev/null || { echo "[FATAL] 未找到 curl，请确认 PATH 中含 /c/Windows/System32"; exit 1; }
 command -v node >/dev/null || { echo "[FATAL] 未找到 node，请确认 PATH 中含 /c/Program Files/nodejs"; exit 1; }
-ROOT="$(pwd)"
+ROOT=$(pwd -W 2>/dev/null || pwd)
 PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 PORT="${PAPER_AGENT_PORT:-8799}"
 TID="run-m6e2e-$(date +%H%M%S)"

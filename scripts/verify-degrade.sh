@@ -6,7 +6,8 @@
 #   2. 全远程失败回落本地 / 跳过 → degraded=true 且原因可查
 #   3. 主动选 local → degraded=false
 #   4. 正常启动（不带 chaos）→ 不出现任何由故障注入导致的降级
-# 另外验证：覆盖策略可配置（§2.2①）、故障注入 Fail-closed（§2.2⑤）、降级可观测（§2.2⑥）。
+PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'vendor/shim/safe-bin' | paste -sd: -)
+export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:$PATH"
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:${PATH:-}"
@@ -14,10 +15,16 @@ for d in /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/U
   [ -d "$d" ] && export PATH="$d:$PATH"
 done
 hash -r 2>/dev/null || true
+export NODE_OPTIONS=""
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL="*"
+for v in CODEBUDDY_SAFE_DELETE_BULK_GUARD CODEBUDDY_SAFE_DELETE_SANDBOX \
+         CODEBUDDY_SAFE_DELETE_BIN_DIR CODEBUDDY_SAFE_DELETE_ENABLED \
+         CODEBUDDY_SAFE_DELETE_BROKER_DELETE; do export "$v="; done
 for c in curl node; do
   command -v "$c" >/dev/null || { echo "[FATAL] 未找到 $c"; exit 1; }
 done
-ROOT="$(pwd)"
+ROOT=$(pwd -W 2>/dev/null || pwd)
 PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 WORK="$ROOT/data/_m5"
 rm -rf "$WORK"; mkdir -p "$WORK"

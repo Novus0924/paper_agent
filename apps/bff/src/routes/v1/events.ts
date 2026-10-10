@@ -31,6 +31,18 @@ export function registerEventsRoute(app: FastifyInstance, ctx: AppContext): void
 
     const lastEventId = Number(req.headers['last-event-id'] ?? '0') || 0
 
+    //⚠️ 必须 hijack：声明"这个响应由我完全接管"。
+    //
+    //   不 hijack 时，Fastify 不知道我们已用 raw.writeHead 发过头，
+    //   于是路由后续任何抛错（最常见：客户端断连 → await 期间 AbortError）
+    //   都会走它的错误处理器**再发一次响应** → `ERR_HTTP_HEADERS_SENT`，
+    //   表现为一条 Unhandled Rejection + 难懂的 "Cannot write headers"。
+    //   客户端断连对 SSE 是**常态**（切页面/ 关标签 / 网络抖动），
+    //   所以这不是边缘情况，而是必须处理的主路径。
+    //
+    //   hijack 之后由我们自己负责结束连接（cleanup() 里reply.raw.end()）。
+    reply.hijack()
+
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -73,17 +85,30 @@ export function registerEventsRoute(app: FastifyInstance, ctx: AppContext): void
     sub.drain(backlog.at(-1)?.seq)
 
     // 事件循环：实时推送（每轮带超时，便于定期写心跳）
-    const deadline = Date.now() + POLL_GRACE_MS
-    for (;;) {
-      if (closed) break
-      const e = await sub.next(HEARTBEAT_MS)
-      if (e) {
-        reply.raw.write(frame(e))
-        if (e.type === 'done') break // 终态帧已写入，随后清理
-      } else if (Date.now() > deadline) {
-        // 长时间无事件（异常兜底）：发送当前状态心跳后继续，避免连接僵死
-        reply.raw.write(': ping\n\n')
+    //
+    // ⚠️ 必须自己兜住异常：**响应头已经用 writeHead 直写出去了**，
+    //    若此处抛出（如客户端在 await 期间断连 → AbortError），
+    //    Fastify 的错误处理器会再发一次响应 → `ERR_HTTP_HEADERS_SENT`，
+    //    表现为一条 Unhandled Rejection/未捕获错误，而不是干净的连接关闭。
+    //    客户端断连对 SSE 是**常态**（切页面、关标签、网络抖动），
+    //    所以这不是边缘情况，必须按"正常关闭"处理。
+    try {
+      const deadline = Date.now() + POLL_GRACE_MS
+      for (;;) {
+        if (closed || reply.raw.writableEnded) break
+        const e = await sub.next(HEARTBEAT_MS)
+        if (e) {
+          reply.raw.write(frame(e))
+          if (e.type === 'done') break // 终态帧已写入，随后清理
+        } else if (Date.now() > deadline) {
+          // 长时间无事件（异常兜底）：发送当前状态心跳后继续，避免连接僵死
+          if (!reply.raw.writableEnded) reply.raw.write(': ping\n\n')
+        }
       }
+    } catch (e) {
+      // 头已发出，不能再走 Fastify 的错误响应；按正常关闭收尾即可。
+      // 记日志是为了让"连接异常终止"可观测，而不是静默吞掉。
+      ctx.log.warn('SSE 连接异常终止', { taskId, reason: e instanceof Error ? e.message : String(e) })
     }
 
     cleanup()

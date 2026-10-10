@@ -122,6 +122,50 @@ class TestStateMachine(unittest.TestCase):
             state.start_step(run_dir, "R1")  # FAILED → RUNNING（重试）
             self.assertEqual(state.step("R1").attempts, 2)
 
+    def test_crash_leftover_running_step_can_be_taken_over(self) -> None:
+        """崩溃遗留的僵死 RUNNING 必须可被接管（否则崩溃后续跑永久卡死）。"""
+        with tempfile.TemporaryDirectory() as t:
+            run_dir = make_run(Path(t))
+            state = plan(run_dir)
+            # 模拟：R1 开工后进程被强杀 → 状态停在 RUNNING，结果永远写不出来
+            state.start_step(run_dir, "R1")
+            self.assertEqual(state.step("R1").status, StepStatus.RUNNING)
+            first_attempts = state.step("R1").attempts
+
+            # 重新加载（等价于新进程读盘）与 start_step 均**不应**抛错
+            reloaded = RunState.load(run_dir)
+            reloaded.start_step(run_dir, "R1")
+            self.assertEqual(reloaded.step("R1").status, StepStatus.RUNNING)
+            self.assertEqual(reloaded.step("R1").attempts, first_attempts + 1)
+            # 接管后可正常收尾
+            reloaded.finish_step(run_dir, "R1")
+            self.assertEqual(reloaded.step("R1").status, StepStatus.DONE)
+
+    def test_takeover_is_still_blocked_for_truly_running_task(self) -> None:
+        """终态不可逆：即使步骤是僵死 RUNNING，终态任务也不允许再开工。"""
+        with tempfile.TemporaryDirectory() as t:
+            run_dir = make_run(Path(t))
+            state = plan(run_dir)
+            # 必须让**所有**步骤都进入终态步骤，任务才收敛为终态
+            # （research 工作流有 6 步，只做 R1/R2 仍是 RUNNING）
+            for sid in [s.id for s in state.steps]:
+                state.start_step(run_dir, sid)
+                state.finish_step(run_dir, sid)
+            self.assertEqual(state.run_status.value, "DONE")
+
+            # 把最后一个步骤伪造成 RUNNING（模拟崩溃遗留态），但**任务本身仍是终态**
+            last = state.steps[-1].id
+            raw = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+            for st in raw["steps"]:
+                if st["id"] == last:
+                    st["status"] = "RUNNING"
+            (run_dir / "state.json").write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+            reloaded = RunState.load(run_dir)
+            # 终态优先于"僵死RUNNING"判定 —— 接管只服务于崩溃续跑，不破坏终态不可逆
+            with self.assertRaises(StateError):
+                reloaded.start_step(run_dir, last)
+
     def test_degradation_levels(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             run_dir = make_run(Path(t))

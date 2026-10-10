@@ -1,0 +1,108 @@
+# paper-agent 2.0 CI —— 需求 §16「关键路径自动化测试在 CI 通过」
+#
+# 两层保障：
+#   job `quality`  = 代码级门禁（类型 + 单测 + 内核单测），每次 push/PR 都跑，必须全绿
+#   job `e2e`      = 需要 AGH daemon 的端到端验收（手动触发 / 定时触发）
+#
+# 为什么 E2E 不放进默认流水线：AGH daemon 需要 Windows 命名管道 + 已构建的 AGH 产物
+# + 有效凭据，是**环境相关**的；在无AGH 的 Linux runner 上必然失败。
+# 但它**必须存在**——否则「关键路径自动化测试」只是单测，E2E 回归无人守。
+# 故：workflow_dispatch 手动触发 + main 分支定时（每天）。
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # 每天 03:17 UTC（避开整点，减少与其他任务撞车）
+    - cron: '17 3 * * *'
+
+jobs:
+  quality:
+    name: 代码级门禁（vitest + 内核 + tsc）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: 启用 Corepack（锁定 pnpm 版本）
+        run: corepack enable
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 类型检查（tsc）
+        run: pnpm typecheck
+
+      - name: BFF 单测 + 契约测试
+        run: pnpm test
+
+      - name: 内核单测（连跑两次查抖动）
+        run: |
+          cd kernel
+          python -m unittest tests.test_kernel -v
+          python -m unittest tests.test_kernel
+
+      - name: DoD 快速门禁（不含需 daemon 的 E2E）
+        run: bash scripts/verify-dod.sh --quick
+
+  e2e:
+    name: 端到端验收（需 AGH daemon）
+    # 手动触发或定时触发；不随 PR 跑（需本地 AGH 产物与凭据）
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - run: corepack enable
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 检查 AGH 产物是否可用
+        shell: pwsh
+        run: |
+          $agh = if ($env:AGH_ROOT) { $env:AGH_ROOT } else { 'D:/agnes-harness-main' }
+          $cli = Join-Path $agh 'packages/cli/dist/local/agnes.mjs'
+          if (-not (Test-Path $cli)) {
+            Write-Error "未找到 AGH 产物：$cli"
+            Write-Host "E2E 需要已构建的 AGH。请设置 secrets.AGH_ROOT 指向AGH 仓库，或先构建。"
+            exit 1
+          }
+          Write-Host "AGH 产物就绪：$cli"
+
+      - name: AGH home ACL 自检（凭据读取的前置条件）
+        shell: pwsh
+        run: |
+          node apps/bff/scripts/acl-audit.mts
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ACL 不合规 → AGH 会拒绝读取凭据（表现为 CONFIG_CREDENTIAL_STORE）"
+            exit 1
+          }
+
+      - name: 崩溃续跑（不需要 daemon）
+        run: bash scripts/verify-resume.sh
+
+      - name: 端到端验收（M5–M9）
+        run: bash scripts/verify-dod.sh

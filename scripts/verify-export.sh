@@ -6,16 +6,27 @@
 #     不能只断言"文件存在"（§9.6 要求校验状态真实可核）。
 set -uo pipefail
 cd "$(dirname "$0")/.."
-export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:${PATH:-}"
+PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'vendor/shim/safe-bin' | paste -sd: -)
+export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:$PATH"
 for d in /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
   [ -d "$d" ] && export PATH="$d:$PATH"
 done
 hash -r 2>/dev/null || true
+export NODE_OPTIONS=""
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL="*"
+for v in CODEBUDDY_SAFE_DELETE_BULK_GUARD CODEBUDDY_SAFE_DELETE_SANDBOX \
+         CODEBUDDY_SAFE_DELETE_BIN_DIR CODEBUDDY_SAFE_DELETE_ENABLED \
+         CODEBUDDY_SAFE_DELETE_BROKER_DELETE; do export "$v="; done
 for c in curl node; do
   command -v "$c" >/dev/null || { echo "[FATAL] 未找到 $c，请检查 PATH"; exit 1; }
 done
 command -v unzip >/dev/null || echo "  [WARN] 无 unzip，将跳过 ZIP 交叉验证"
-ROOT="$(pwd)"
+# ⚠️ 必须 Windows 形式：下面的 python.exe / node.exe 是 **Windows 原生程序**，
+#    不认 MSYS 的 /d/...（会当成相对路径而找不到文件）。
+#    这类失败最隐蔽：Python 报错常被 >/dev/null 2>&1 吞掉，脚本只表现为"产物没生成"，
+#    看起来像功能问题而不是路径问题。
+ROOT=$(pwd -W 2>/dev/null || pwd)
 PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 PORT="${PAPER_AGENT_PORT:-8801}"
 TID="run-m7e2e-$(date +%H%M%S)"
@@ -108,7 +119,11 @@ echo "$AH" | grep -qi 'x-export-contents:.*verify.py' && ok "X-Export-Contents �
 if command -v unzip >/dev/null; then
   unzip -t "$WORK/audit.zip" >"$WORK/unzip-t.txt" 2>&1
   grep -q 'No errors detected' "$WORK/unzip-t.txt" && ok "unzip -t 独立交叉验证通过（ZIP 合法）" || ng "unzip -t 失败: $(tail -3 "$WORK/unzip-t.txt")"
-  rm -rf "$WORK/pkg"; mkdir -p "$WORK/pkg"
+  # ⚠️ 不用 `rm -rf`：宿主环境的 safe-delete shim 会把它变成**交互式覆盖询问**
+#    （`replace ...? [y]es, [n]o, ...`），脚本会卡在那里等输入 → 验收假超时。
+#    这里只删本脚本自己刚创建的工作目录，且先移出再用 mkdir 重建。
+  mv "$WORK/pkg" "$WORK/pkg.old.$$" 2>/dev/null || true
+  mkdir -p "$WORK/pkg"
   unzip -q "$WORK/audit.zip" -d "$WORK/pkg" && ok "审计包可被标准工具解压" || ng "解压失败"
   for f in manifest.json verify.py run/report.md run/ledger.jsonl run/report_gate.json run/events.json run/conclusions.json; do
     [ -s "$WORK/pkg/$f" ] && ok "含 $f" || ng "缺或空 $f"

@@ -41,7 +41,7 @@ for v in CODEBUDDY_SAFE_DELETE_BULK_GUARD CODEBUDDY_SAFE_DELETE_SANDBOX \
   export "$v="
 done
 # ROOT 必须在引用 TSX_CLI 之前定义（set -u 下未定义变量会直接退出）
-ROOT="$(pwd)"
+ROOT=$(pwd -W 2>/dev/null || pwd)
 TSX_CLI="$ROOT/node_modules/tsx/dist/cli.mjs"
 [ -f "$TSX_CLI" ] || { echo "[FATAL] 未找到 tsx（$TSX_CLI），请先 pnpm install"; exit 1; }
 PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"

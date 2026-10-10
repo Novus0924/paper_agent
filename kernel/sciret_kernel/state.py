@@ -202,9 +202,25 @@ class RunState:
         if s.status in TERMINAL_STEP:
             # 终态幂等：重复执行不重复登记
             return s
-        if s.status == StepStatus.RUNNING:
-            raise StateError(f"步骤 {step_id} 正在执行（per-Task 互斥应由上层保证）")
         prev = s.status
+        if prev == StepStatus.RUNNING:
+            #僵死 RUNNING（僵尸执行态）→ 允许接管。
+            #
+            # 为什么必须允许：进程被强杀时，状态停在 RUNNING 而结果**永远写不出来**，
+            # 于是这个步骤既不是 DONE（不能复用）也不是 PENDING（等待中），
+            # 若此处继续报错，**崩溃后续跑就完全不可用**——每崩一次任务就永久卡死。
+            #
+            # 安全性如何保证：per-Task 互斥由**上层**保证（BFF ExecutionService 的
+            # per-Task 锁，见§11），内核是单进程单次调用，不会有真的并发执行。
+            # 换句话说：能走到这里说明没有另一个执行者，这个 RUNNING 一定是遗留的。
+            # 留痕：attempts 照常递增（能看到"这次是第几次尝试"），
+            # 并把 started_at 刷新为接管时刻，便于事后判断停在哪。
+            s.status = StepStatus.RUNNING
+            s.attempts += 1
+            s.started_at = _now()
+            self.run_status = RunStatus.RUNNING
+            self.save(run_dir)
+            return s
         s.status = StepStatus.RUNNING
         s.attempts += 1
         s.started_at = _now()
