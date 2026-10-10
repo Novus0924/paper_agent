@@ -72,12 +72,31 @@ def rank_records(snapshot: dict[str, Any], goal: str, limit: int = 6) -> list[di
 
 
 def select_snapshot(goal: str, lit_source: str) -> tuple[str, dict[str, Any]]:
-    """选择语料快照：本地/离线模式按可用快照取第一个；auto 模式优先匹配关键词。"""
+    """选择语料快照：本地/离线模式按可用快照取第一个；auto 模式优先匹配关键词。
+
+    ⚠️ **在线快照（`live-*`）必须被排除在 local 的候选之外**。
+    原因：`local` 的语义是"用**已冻结**的语料跑，结果可复现"。
+    而 `live-*` 是运行时按目标联网抓的，同一目标在不同时刻抓到的文献**不同**——
+    若 local 选中它，`local` 就不再可复现了（而且用户明明选了离线，却吃到了联网结果）。
+    目录列举是按文件名排序的，新增 live-* 后字典序会排在 `sse-interface` 之前，
+    `names[0]` 于是变成在线快照—— 我第一版没处理这个，实测才发现 L0 用例挂了。
+    """
     names = available_snapshots()
     if not names:
         raise FileNotFoundError("未找到任何语料快照，请先运行 kernel/tools/fetch_corpus.py 冻结真实元数据")
+    # local只用「离线冻结」的快照：排除 live-*（在线运行时产物）
+    frozen = [n for n in names if not n.startswith("live-")]
     if lit_source == "local":
-        return names[0], load_snapshot(names[0])
+        pool = frozen or names
+        if not pool:
+            raise FileNotFoundError(
+                "未找到离线冻结的语料快照（仅有在线运行时产物 live-*）。"
+                "请先运行 kernel/tools/fetch_corpus.py 冻结一份语料，或改用 lit_source=auto/arxiv。"
+            )
+        return pool[0], load_snapshot(pool[0])
     goal_tokens = _tokens(goal)
-    best = max(names, key=lambda n: (len(goal_tokens & _tokens(n.replace("-", " "))), n))
+    # auto/arxiv 路径：优先在**离线冻结**快照里选（可复现）；
+    # 只有当一个冻结快照都没有时，才允许用 live-*（否则在线抓取产物就永远选不到了）。
+    pool = frozen or names
+    best = max(pool, key=lambda n: (len(goal_tokens & _tokens(n.replace("-", " "))), n))
     return best, load_snapshot(best)

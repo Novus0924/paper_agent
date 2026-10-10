@@ -62,4 +62,53 @@ describe('工作流规格契约（BFF ⟷ Python 内核）', () => {
       expect(kernel[name]!.map((s) => s.label)).toEqual(steps.map((s) => s.label))
     }
   }, 60000)
+
+  it('API 可选的工作流**必须都是已实现的**（不许声明了却跑不通）', async () => {
+    // 这条防的是"契约声明了能力、后端没实现"——比缺功能更糟：
+    // 用户建完任务、连 AGH 会话都建好了，才在执行某一步时被告知"尚未实现"，
+    // 白白消耗一次真实模型回合（我这次就踩到：materials 直到 pipeline 抛错才暴露）。
+    //
+    // 断言方式：直接问内核"这个工作流能不能真跑起来"，
+    // 而不是比对步骤表（步骤表定义了 ≠ 步骤有实现 —— 恰恰是这次的真实情况）。
+    if (!existsSync(KERNEL_DIR)) {
+      console.warn('[skip] 未找到 kernel/，跳过未实现工作流校验')
+      return
+    }
+    // BFF 侧"接受创建"的白名单：与 tasks.ts 的 WORKFLOWS 同源
+    const API_ACCEPTS: Record<string, boolean> = { research: true, materials: false }
+
+    for (const [name, apiAccepts] of Object.entries(API_ACCEPTS)) {
+      const probe = await runKernelPlanProbe(name)
+      if (probe === 'unknown') {
+        console.warn(`[skip] 无可用 Python，跳过 ${name} 的可执行性探测`)
+        continue
+      }
+      const kernelAccepts = probe === 'accepted'
+      // 核心不变量：两侧口径必须一致。
+      // 不一致的后果：一边说可用（建了任务、开了会话），一边说没实现（执行报错）。
+      expect(
+        apiAccepts,
+        `工作流 ${name} 两侧口径不一致：API ${apiAccepts ? '接受' : '拒绝'} 但内核 ${kernelAccepts ? '接受' : '拒绝'}`,
+      ).toBe(kernelAccepts)
+    }
+  }, 90000)
 })
+
+/** 探测内核是否真的接受该工作流：`plan` 成功=接受，抛"尚未实现"=不接受。 */
+async function runKernelPlanProbe(workflow: string): Promise<'accepted' | 'not-implemented' | 'unknown'> {
+  if (!existsSync(KERNEL_DIR)) return 'unknown'
+  const probeDir = resolve(KERNEL_DIR, '.contract-probe-wf')
+  for (const py of pythonCandidates()) {
+    const r = await run(
+      py,
+      [
+        '-m', 'sciret_kernel', 'plan', '--run-dir', probeDir,
+        '--args-json', JSON.stringify({ goal: '契约探测', workflow }),
+      ],
+      { cwd: KERNEL_DIR },
+    )
+    if (r.code === 0) return 'accepted'
+    if (r.out.includes('尚未实现') || r.err.includes('尚未实现')) return 'not-implemented'
+  }
+  return 'unknown'
+}

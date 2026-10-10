@@ -30,3 +30,9 @@ Thumbs.db
 # AGH 实例目录（本地实验/专用 home）
 .agh/
 .agh-probe/
+
+# ===== 在线检索的运行时快照（live-*）=====
+# 它们是 `lit_source=arxiv/auto` 运行时**真联网抓取**的产物，
+# 带 retrieved_at 时间戳 → 每次抓取都不同 → 入库必然变脏。
+# 离线冻结的语料（sse-interface.json）是仓库资产，要入库。
+kernel/sciret_kernel/corpus/live-*.json

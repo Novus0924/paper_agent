@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sciret_kernel import chaos, report as report_mod  # noqa: E402
+from sciret_kernel import chaos, corpus, online, report as report_mod  # noqa: E402
 from sciret_kernel.__main__ import PathGuardError, guard_run_dir, main  # noqa: E402
 from sciret_kernel.jsonio import canonical_json, sha256_text  # noqa: E402
 from sciret_kernel.ledger import Ledger, LedgerError  # noqa: E402
@@ -403,8 +403,12 @@ class TestDegradationSemantics(unittest.TestCase):
                 chaos_sources: str | None = None) -> RunState:
         run_dir = make_run(tmp, task_id)
         state = plan(run_dir, lit_source=lit_source, task_id=task_id)
-        keys = (chaos.ENV_FLAG, chaos.ENV_SCOPE, chaos.ENV_SOURCES)
+        keys = (chaos.ENV_FLAG, chaos.ENV_SCOPE, chaos.ENV_SOURCES, online.ENV_OFFLINE)
         saved = {k: os.environ.get(k) for k in keys}
+        # ⚠️ 必须**强制离线**：本组用例验的是"降级语义"（靠 chaos 注入制造不可用），
+        # 不是"联网是否成功"。若让它真联网，结果会随 CI 网络状况飘——测试就不确定了。
+        # lit_source 仍是 auto（在线语义），只是抓取会失败并回落既有快照。
+        os.environ[online.ENV_OFFLINE] = "1"
         if chaos_scope:
             os.environ[chaos.ENV_FLAG] = "1"
             os.environ[chaos.ENV_SCOPE] = chaos_scope
@@ -422,7 +426,10 @@ class TestDegradationSemantics(unittest.TestCase):
     def test_L0_all_sources_ok_no_degradation(self) -> None:
         """L0：全源可用 → 无降级记录，degraded=false。"""
         with tempfile.TemporaryDirectory() as t:
-            state = self._run_r1(Path(t), lit_source="auto")
+            # 用 local：本用例验的是"**源全部可用时**不判降级"，
+            # 而 _run_r1 会强制离线开关 → auto 模式下抓取必然失败 → 记L1（回落）。
+            # 那是**正确的**产品行为（online 回落确实该留痕），但不是本用例要验的东西。
+            state = self._run_r1(Path(t), lit_source="local")
             self.assertFalse(state.degraded)
             self.assertEqual(state.degraded_reasons, [])
             self.assertEqual(state.source_status.get("crossref"), "ok:8")
@@ -473,6 +480,8 @@ class TestDegradationSemantics(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             state = self._run_r1(
                 Path(t),
+                # ⚠️ 这个用例**必须**是 local（它验的就是"用户主动选离线"这条语义）。
+                # 批量替换 lit_source 时我把它一起改成了 auto，导致它测的是另一件事而失败。
                 lit_source="local",
                 task_id="run-local",
                 policy=CoveragePolicy(min_ok_sources=99, min_hits=999),
@@ -572,6 +581,114 @@ class TestDegradationSemantics(unittest.TestCase):
             CoveragePolicy(min_ok_sources=-1)
         with self.assertRaises(ValueError):
             CoveragePolicy(retrieval_limit=0)
+
+
+class TestOnlineRetrieval(unittest.TestCase):
+    """在线检索（`lit_source` = arxiv/auto）：真联网 + 失败回落 + 绝不伪造。
+
+    背景：此前 `arxiv`/`auto` 在 BFF 层被声明可用，但内核**根本没联网**——
+    `fetch_corpus.py` 存在却无任何代码调用，`arxiv` 与 `auto` 都落到本地快照选优。
+    这是典型的"契约声明了能力、后端没实现"，演示时会被识破。
+    """
+
+    def test_snapshot_name_is_stable_for_same_goal(self) -> None:
+        """快照名必须由目标**稳定派生**（不能含时间戳）。
+
+        否则同一目标两次运行产生不同文件名 → `corpus_snapshot` 字段抖动
+        → 摘要不可复现，直接违反项目"可复现"红线。
+        """
+        a = online.snapshot_name_for("solid-state electrolyte")
+        b = online.snapshot_name_for("solid-state electrolyte")
+        c = online.snapshot_name_for("solid-state electrolyte ")
+        self.assertEqual(a, b)
+        self.assertEqual(a, c, "首尾空白不应改变快照名")
+        self.assertNotEqual(a, online.snapshot_name_for("lithium dendrite"))
+
+    def test_local_never_touches_network(self) -> None:
+        """local 必须**绝不联网**（用户显式选的离线路径 + 可复现要求）。"""
+        saved = os.environ.pop(online.ENV_OFFLINE, None)
+        try:
+            with mock.patch.object(online, "refresh_snapshot", side_effect=AssertionError("local 不应联网")) as m:
+                name, snap, note = online.resolve_online("goal", "local", ["crossref"])
+            m.assert_not_called()
+            self.assertFalse(note["online_attempted"])
+            self.assertIsInstance(snap, dict)
+        finally:
+            if saved is not None:
+                os.environ[online.ENV_OFFLINE] = saved
+
+    def test_online_fallback_when_offline_and_records_reason(self) -> None:
+        """离线开关下：抓取不发生，但**回落原因必须留痕**。
+
+        留痕是关键：原因若被快照里的 `ok:N` 覆盖，降级语义会误判为 L0，
+        "这次其实没联网"这件事就从审计里消失了（§2.2 的前提是状态如实可见）。
+        """
+        saved = os.environ.get(online.ENV_OFFLINE)
+        os.environ[online.ENV_OFFLINE] = "1"
+        try:
+            name, snap, note = online.resolve_online("solid-state electrolyte", "auto", ["crossref"])
+        finally:
+            if saved is None:
+                os.environ.pop(online.ENV_OFFLINE, None)
+            else:
+                os.environ[online.ENV_OFFLINE] = saved
+        self.assertTrue(note["online_attempted"])
+        self.assertFalse(note["online_refresh"])
+        self.assertIn("online_fallback_reason", note)
+        self.assertIn("PAPER_AGENT_OFFLINE", note["online_fallback_reason"])
+        # 回落到既有快照，而不是报错或返回空
+        self.assertTrue(snap.get("records"), "回落时必须拿到已有快照记录")
+
+    def test_offline_flag_makes_refresh_fail_fast(self) -> None:
+        """离线开关必须让 refresh_snapshot 立刻失败，而不是真去联网试。"""
+        saved = os.environ.get(online.ENV_OFFLINE)
+        os.environ[online.ENV_OFFLINE] = "1"
+        try:
+            with mock.patch.object(online.subprocess, "run") as run:
+                r = online.refresh_snapshot("goal", ["crossref"])
+            run.assert_not_called()  # 关键：根本没起子进程
+            self.assertFalse(r["ok"])
+        finally:
+            if saved is None:
+                os.environ.pop(online.ENV_OFFLINE, None)
+            else:
+                os.environ[online.ENV_OFFLINE] = saved
+
+    def test_local_ignores_live_snapshots(self) -> None:
+        """local 必须排除 `live-*`（在线运行时产物），否则 local 不再可复现。
+
+        回归来源：实现在线检索后，目录里多了 `live-*` 快照，而 `available_snapshots()`
+        按字典序返回 → `names[0]` 变成 live-* → `local` 选中了在线产物。
+        后果是用户明明选了离线，却吃到了"取决于抓取时刻"的结果，违反可复现红线。
+        这个 bug 是靠 L0 降级用例意外挂掉才发现的（`'ok:8' != 'ok:4'`），
+        故固化成显式用例，不等它再自然暴露一次。
+        """
+        import tempfile as _tf
+
+        with _tf.TemporaryDirectory() as t:
+            fake = Path(t)
+            (fake / "sse-interface.json").write_text(
+                json.dumps({"records": [{"title": "frozen", "doi": "10.1/frozen"}], "source_status": {"crossref": "ok:8"}}),
+                encoding="utf-8",
+            )
+            (fake / "live-goal-abcdef123456.json").write_text(
+                json.dumps({"records": [{"title": "live", "doi": "10.1/live"}], "source_status": {"crossref": "ok:4"}}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(corpus, "CORPUS_DIR", fake):
+                names = corpus.available_snapshots()
+                # 前提：字典序确实把 live-* 排在前面（否则这个用例测不到东西）
+                self.assertTrue(names[0].startswith("live-"), f"前提失效：{names}")
+                name, snap = corpus.select_snapshot("goal", "local")
+                self.assertFalse(name.startswith("live-"), f"local 选中了在线快照：{name}")
+                self.assertEqual(snap["records"][0]["doi"], "10.1/frozen")
+
+    def test_no_snapshot_and_no_network_fails_closed(self) -> None:
+        """既抓不到、也无快照可回落 → **报错**，绝不返回空（会产出"检索到 0 篇"的假成功）。"""
+        with mock.patch.object(online, "refresh_snapshot", return_value={"ok": False, "reason": "模拟断网"}), \
+             mock.patch.object(online.corpus, "available_snapshots", return_value=[]):
+            with self.assertRaises(FileNotFoundError):
+                online.resolve_online("goal", "auto", ["crossref"])
 
 
 class TestResiliencePolicy(unittest.TestCase):

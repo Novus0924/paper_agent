@@ -45,7 +45,7 @@ paper-agent-2/
 │   │   ├── export/               # ★ zip.ts（零依赖 ZIP 写入器）+ service.ts（Exporter SPI）
 │   │   └── routes/               # health + /api/v1/{tasks,events,report,export,messages}
 │   ├── types/                   # AGH 最小类型声明（见 §6 说明）
-│   ├── test/                    # 单测 + 契约测试（115 个）
+│   ├── test/                    # 单测 + 契约测试（116 个）
 │   └── scripts/                 # 诊断脚本（spike-* / zip-probe / daemon-ready / *-probe）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
@@ -129,7 +129,7 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 |---|---|---|---|
 | 1 | GET | `/api/health` | ✅ 版本/根/运行目录/任务数/AGH 会话状态 |
 | 2 | GET | `/api/v1/tasks` | ✅ 支持 `?status=` |
-| 3 | POST | `/api/v1/tasks` | ✅ goal/workflow/lit_source/sources + preflight + 建立 AGH 会话（1:1） |
+| 3 | POST | `/api/v1/tasks` | ✅ goal/workflow/lit_source/sources + preflight + 建立 AGH 会话（1:1）；**未实现的工作流在入口即400**（见 §5.8） |
 | 4 | GET | `/api/v1/tasks/{id}` | ✅ 面向视图 DTO |
 | 5–8 | POST | `run-all` / `step` / `resume` / `stop` | ✅ 经会话下发 + per-Task 互斥 + 终态收敛（202/200；BUSY 409） |
 | 9 | GET | `/events`（SSE） | ✅ 快照先发 + 实时续接 + 幂等去重 + Last-Event-ID 续传 + 终态必达 |
@@ -256,6 +256,68 @@ L2 路径实质改变 → `degraded=true` + 五要素（来源/原因/影响/可
   漏了不会报错，只会让前端**静默**拿到本不该有的字段，响应看起来完全正常。
   测试里同时有一条**反向用例**（故意注入泄漏，验证探测器能抓到），否则"没抓到"可能只是探测器坏了。
 
+### 5.8 「声明了但没实现」的两处收口（实测发现并修复）
+
+这是我在 DoD 后逐条对代码核查才发现的问题——**文档说支持，代码没实现**。
+
+####① `workflow=materials`：从"跑到一半才炸"改为"入口即拒"
+
+**原状**：API 的 `WORKFLOWS` 含 `materials`、步骤表也定义了P1–P5，
+但内核 `execute_step` 只注册了 R1–R6 → 一路跑到 P1 才抛「步骤 P1 尚未实现」。
+**失败点太晚**：任务已建、AGH 会话已开、模型回合已跑，才告知选的工作流跑不通。
+
+**现在**：
+```
+POST /api/v1/tasks {"workflow":"materials"}
+→ 400 {"code":"BAD_PARAM","error":"workflow=materials 暂不可用（材料发现工作流…尚未实现内核算子。MVP 请用 workflow=research。）"}
+```
+内核侧同步在 `plan` 就拦（`workflow.is_implemented`），**两侧口径一致**，
+并由 `workflow-contract.test.ts` 断言"API 口径 == 内核口径"。
+
+**顺带修掉一个更隐蔽的问题**：原先 `plan` 对**完全未知**的工作流会**静默回退**research，
+只在返回值里写一行 `workflow_fallback`。用户以为跑的是 materials、实际跑的是 research，
+产物结构与预期不符却毫无拦截。**工作流决定步骤集与产物结构，跑错就是错的** → 改为报错。
+
+- 术语区分（`kernel/sciret_kernel/workflow.py`）：`is_known()`（规格已定义）
+  vs `is_implemented()`（算子齐备）。**规格存在 ≠ 可执行**，两者必须分开声明。
+
+#### ② `lit_source=arxiv/auto`：现在真联网抓取
+
+**原状**：`LIT_SOURCES` 含 `arxiv`/`auto`，但内核里这两个值都落到
+`select_snapshot()`的**本地快照选优**；真正联网的 `fetch_corpus.py`
+**没有任何代码调用**（只被文档提到）。语料是真实的（真DOI），
+但只有 6 条、不会随时间更新。
+
+**现在**（新增 `kernel/sciret_kernel/online.py`）：
+- `arxiv`/`auto` → 先尝试真联网抓 Crossref/OpenAlex → 冻结成快照 → 走原有确定性读取路径；
+- 抓取失败 → **回落既有快照**，且原因**如实写进 `source_status` 与 `human_summary`**；
+- 抓取器无记录时返回 1（明确禁止伪造），此时**不生成空快照**（否则一路读到底 = "检索到 0 篇"的假成功）；
+- `PAPER_AGENT_OFFLINE=1` 可强制离线（供测试与"保证不联网"场景）。
+
+实测（联网成功）：
+```
+human_summary: 已检索 6 篇文献（语料快照 live-solid-state-...-e873c25b63f3；来源：crossref=ok:8, openalex=ok:8）
+degraded: false
+```
+实测（离线回落）：
+```
+human_summary: 已检索 6 篇文献（…来源：crossref=ok:8, openalex=ok:8,
+              __online_fetch__=fallback:已由 PAPER_AGENT_OFFLINE=1 强制离线）；
+              ⚠️ 在线抓取失败已回落本地快照（…），元数据为历史版本
+degraded: false     ← L1（info），不置degraded：数据仍真实，只是时效性打折
+```
+
+**三条必须守住的设计约束**：
+
+| 约束 | 理由 |
+|---|---|
+| 快照名由**目标哈希**派生，不含时间戳 | 否则同一目标两次抓取产生不同文件名 → `corpus_snapshot` 抖动 → **违反可复现红线** |
+| `local` **排除 `live-*` 快照** | `live-*` 取决于抓取时刻；让 `local` 选中它，`local` 就不再可复现，且用户明明选了离线却吃到联网结果 |
+| 在线抓取子进程需 `PYTHONPATH=<kernel/>` + `cwd=<kernel/>` | 内核**不装包**（靠路径定位自身）。只设 `cwd` 仍报 `No module named sciret_kernel`——**我连踩两次**；且 `PYTHONPATH` 要**包目录的父目录**，写成包目录会变成去找 `kernel/sciret_kernel/sciret_kernel` |
+
+`live-*.json` 是运行时产物（带时间戳，会变脏），已 `.gitignore`；
+离线冻结的 `sse-interface.json` 是仓库资产，照常入库。
+
 ### 5.7 一键启动器与 doctor（§12.1/ §12.2，实测要点）
 
 ```bash
@@ -354,7 +416,7 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 > 本机裸 `node` 可能解析到 WorkBuddy 托管的 22.x，故统一走 `bash scripts/quality-gate.sh`（自动挑选合规 Node，
 > 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
 
-- `bash scripts/quality-gate.sh` → BFF **115/115 通过** + 内核 **39/39 通过**（连跑两次查抖动）+ `tsc` **零错误**
+- `bash scripts/quality-gate.sh` → BFF **116/116 通过** + 内核 **45/45 通过**（连跑两次查抖动）+ `tsc` **零错误**
   （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/多轮消息队列/分层 DTO/AGH 接口契约）；
   > 注：`contract.test.ts` 的 scope 解析用例在本机依赖 AGH home 的 ACL 合规；
   > 该ACL 已于 2026-10-10 修复，用例**真正通过**（保留了「遇到 `CONFIG_CREDENTIAL_STORE`
@@ -543,6 +605,16 @@ state.json → {"degraded": true,
     `replace ...? [y]es, [n]o, [A]ll`，脚本卡住等输入 → 验收"假超时"。
     E2E 脚本顶部统一把 `vendor/shim/safe-bin` 从 PATH 剔除；
     删本脚本自己的工作目录改用 `mv "$X" "$X.old.$$"`（可逆，且不触发询问）。
+24. **「规格存在」≠「算子已实现」**：新增工作流/参数时，两侧口径不一致会出现
+    "API 收下了、建了会话、跑到某步才说没实现"。把"规格声明"与"可执行"分成两个函数
+    （`is_known` / `is_implemented`），并在 plan 与 execute 两处都 Fail-fast；
+    用契约测试断言两侧口径一致。
+25. **静默回退到默认行为通常是有害的**：原先未知工作流会静默回退research 只写一行
+    `workflow_fallback`—— 用户以为跑的是 A、实际跑的是 B，产物结构不符却无拦截。
+    工作流/模式这类**决定产物结构**的选择必须报错，不能悄悄换。
+26. **子进程调内核脚本要`cwd` + `PYTHONPATH` 双保险**：内核不装包（靠路径定位自身）。
+    只设 `cwd` 不会把目录加进 `sys.path`；且 `PYTHONPATH` 要**包目录的父目录**
+    （写成包目录 → 去找 `kernel/sciret_kernel/sciret_kernel`）。
 15. **探测输出要用标记行匹配，不要 `tail -1`**：tsx / daemon 会在 stdout 混入实验性警告等噪声行，
     `tail -1` 取到无关行导致误判（本项目 tsx 冷启动会打 `ExperimentalWarning: SQLite …`）。
     用 `grep -E '^READY' | tail -1`。

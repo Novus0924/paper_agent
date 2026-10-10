@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from . import chaos, corpus
+from . import chaos, corpus, online
 from .jsonio import atomic_write_json, atomic_write_text, canonical_json, sha256_text
 from .ledger import Ledger
 from .state import RunState
@@ -110,10 +110,19 @@ def step_R1(
     policy: CoveragePolicy | None = None,
 ) -> dict[str, Any]:
     cov = policy or DEFAULT_COVERAGE
-    snap_name, snapshot = corpus.select_snapshot(state.goal, state.lit_source)
+    # 检索源解析：local → 只读既有快照（绝不联网，保可复现）；
+    # arxiv/auto → 先尝试联网刷新，失败则回落既有快照（online.py）。
+    snap_name, snapshot, online_note = online.resolve_online(
+        state.goal, state.lit_source, list(state.sources)
+    )
     records = corpus.rank_records(snapshot, state.goal, cov.retrieval_limit)
 
     source_status_raw: dict[str, str] = dict(snapshot.get("source_status", {}))
+    # ⚠️ 在线抓取失败的原因**不能被快照里的 ok:N 覆盖掉**：
+    #    否则"抓取失败、靠旧快照跑完"会被判成 L0（无降级），
+    #    与事实相反，也骗过了 §2.2 的三级语义。回落原因必须留痕。
+    if online_note.get("online_fallback_reason"):
+        source_status_raw["__online_fetch__"] = f"fallback:{online_note['online_fallback_reason']}"
 
     # 故障注入（§2.2⑤）：默认关闭；开启时仅改写「源可达性」，**不伪造任何文献记录**，
     # 故覆盖不足是真覆盖不足，产物里也能看出这次失败是人为注入的。
@@ -122,6 +131,10 @@ def step_R1(
 
     ok_sources = [s for s, v in source_status_raw.items() if str(v).startswith("ok")]
     unavailable = [s for s, v in source_status_raw.items() if str(v).startswith("unavailable")]
+    # 在线抓取失败但靠旧快照跑完：**检索路径实质改变**（拿到的是历史元数据而非当前文献），
+    # 故按 §2.2 判L1（info）——覆盖可能仍充足，但结果未必反映最新进展。
+    # 不判 L2：旧快照本身是**真实**元数据，结论未必错误，只是时效性打折。
+    online_fellback = bool(online_note.get("online_fallback_reason"))
     hits = len(records)
     covered = cov.satisfied_by(len(ok_sources), hits)
 
@@ -136,6 +149,15 @@ def step_R1(
         # 主动离线：显式预期路径。即使快照里某源标记 unavailable 也不置 degraded，
         # 但仍记录 source_status 供审计查看。
         level = None
+    elif online_fellback and not injections:
+        # 在线模式但抓取失败 → 回落旧快照。记 L1（info），**不置 degraded**：
+        # 数据仍真实，只是时效性打折；置degraded 会让用户以为结论不可信。
+        #
+        # ⚠️ `and not injections`：若本次同时开了 chaos 演练，源不可用的原因是**注入**，
+        #    应按注入语义判定（注入本身正是用来验证 L1/L2 的）。
+        #    不加这个条件，演练结果会被"抓取失败"这条噪声覆盖，测出来的降级级别是错的
+        #    —— 我自己就踩了：三个降级用例全挂在这里。
+        level = "info"
     elif not covered:
         level = "degraded"
     elif unavailable:
@@ -190,7 +212,9 @@ def step_R1(
 
     return {
         "step": "R1",
-        "human_summary": f"已检索 {len(ev_ids)} 篇文献（语料快照 {snap_name}；来源：{', '.join(f'{k}={v}' for k, v in source_status_raw.items())}）",
+        "human_summary": f"已检索 {len(ev_ids)} 篇文献（语料快照 {snap_name}；来源：{', '.join(f'{k}={v}' for k, v in source_status_raw.items())}）"
+        + (f"；⚠️ 在线抓取失败已回落本地快照（{online_note['online_fallback_reason']}），元数据为历史版本"
+           if online_note.get("online_fallback_reason") else ""),
         "evidence_ids": ev_ids,
         "source_status": state.source_status,
         "degraded": state.degraded,
@@ -477,7 +501,14 @@ def execute_step(
         }
     func = STEP_FUNCS.get(step_id)
     if func is None:
-        raise PipelineError(f"步骤 {step_id} 尚未实现（materials 工作流将在后续里程碑补齐）")
+        # ⚠️ Fail-fast 要发生在**这里**（执行前），而不是让调用方跑到一半才发现。
+        #   但真正的第一道闸门在 plan 阶段（见 plan() 里对未实现工作流的拒绝）——
+        #   那里才能省下"建目录 + 建 AGH 会话"的资源浪费。两处都留：
+        #   plan 拦不住时（历史任务/状态被外部改过）这里兜底。
+        raise PipelineError(
+            f"步骤 {step_id} 尚未实现（当前仅 research 工作流 R1–R6 已实现；"
+            f"materials 工作流的算子将在后续里程碑补齐）"
+        )
 
     state.start_step(run_dir, step_id)
     try:

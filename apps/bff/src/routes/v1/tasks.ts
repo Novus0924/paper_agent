@@ -14,7 +14,24 @@ import { resolve } from 'node:path'
  * 面向视图 DTO（P-02）：用户字段与审计字段分离，默认响应不含原始提示词/哈希。
  */
 
-const WORKFLOWS = ['research', 'materials'] as const
+/**
+ * 工作流白名单。
+ *
+ * ⚠️ `materials` 已从"声明可用"改为**显式未实现**（2026-10-11）。
+ * 之前它和其他值一样被接受、步骤表也定义了，直到执行到某一步才抛
+ * `PipelineError: 步骤 P1 尚未实现`——**失败点太晚**：用户建完任务、连会话都建好了、
+ * 才发现自己选的工作流根本跑不通，白白消耗一次 AGH 回合。
+ *
+ * 现在的行为：创建时即400，并说清"未实现 + 可用什么替代"。
+ * 这是 §11 Fail-fast 原则的直接应用：越早暴露��越省资源。
+ */
+const WORKFLOWS = ['research'] as const
+
+/** 已声明但**尚未实现**的工作流（入口即拒绝，附替代方案）。 */
+const WORKFLOWS_NOT_IMPLEMENTED: Record<string, string> = {
+  materials: '材料发现工作流（候选生成/性质预测/条件搜索/多目标排序/报告汇总）尚未实现内核算子。MVP 请用 workflow=research。',
+}
+
 const LIT_SOURCES = ['local', 'arxiv', 'auto'] as const
 
 /** 工作流步骤定义（与领域内核 WorkflowSpec 同源；M2 内核落地后由其提供） */
@@ -71,6 +88,20 @@ export function registerTasksRoutes(app: import('fastify').FastifyInstance, ctx:
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>
     const goal = validateGoal(body['goal'])
 
+    // ⚠️ 顺序要紧：先判"未实现"再走 validateEnum。
+    // 反过来的话，materials 会先被 validateEnum 拦下，抛通用错误，
+    // 我写的"未实现 + 替代方案"说明永远轮不到执行（等于白写）。
+    const wfRaw = typeof body['workflow'] === 'string' ? body['workflow'].trim() : ''
+    if (wfRaw && !WORKFLOWS.includes(wfRaw as (typeof WORKFLOWS)[number])) {
+      const why = WORKFLOWS_NOT_IMPLEMENTED[wfRaw]
+      throw new ApiError(
+        'BAD_PARAM',
+        `workflow=${wfRaw} 暂不可用`,
+        why ??
+          `支持的工作流：${WORKFLOWS.join(' / ')}。` +
+            `注：白名单按实现情况收紧——新增工作流须先落地内核算子，不能只在 API 层声明。`,
+      )
+    }
     const workflow = validateEnum(body['workflow'], WORKFLOWS, 'research', 'workflow')
     const litSource = validateEnum(body['lit_source'], LIT_SOURCES, 'auto', 'lit_source')
     const sources = validateSources(body['sources'], KNOWN_SOURCES)

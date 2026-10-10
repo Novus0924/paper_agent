@@ -79,7 +79,25 @@ def tool_plan(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     if not goal:
         raise ValueError("plan 需要 goal")
     wf_raw = str(args.get("workflow") or workflow.DEFAULT_WORKFLOW)
-    wf = wf_raw if workflow.is_known(wf_raw) else workflow.DEFAULT_WORKFLOW
+    # ⚠️ Fail-fast：**规格存在**与**算子已实现**是两件事，这里按后者拦。
+    #
+    #   之前的做法有两个问题，都会让用户吃亏：
+    #   ① 对「规格已知但未实现」（materials）照收 → 建好任务、连AGH 会话都开了，
+    #      才在执行某一步时被告知"尚未实现"；
+    #   ② 对**完全未知**的工作流静默回退research，只在返回值里写一行
+    #      workflow_fallback → 用户以为自己跑的是 materials，其实跑的是 research，
+    #      结果与预期不符却没有任何拦截。静默回退在这里是有害的：
+    #      工作流决定了步骤集与产物结构，跑错就是错的。
+    #
+    #   故：未知 → 报错；已知但未实现 → 报错并说明可用的替代。
+    if not workflow.is_known(wf_raw):
+        raise ValueError(
+            f"未知工作流：{wf_raw}（可用：{', '.join(sorted(workflow.WORKFLOWS))}）。"
+            f"不再静默回退到 {workflow.DEFAULT_WORKFLOW} —— 工作流决定步骤集与产物结构，跑错就是错的。"
+        )
+    if not workflow.is_implemented(wf_raw):
+        raise ValueError(workflow.NOT_IMPLEMENTED_REASON.get(wf_raw, f"工作流 {wf_raw} 尚未实现。"))
+    wf = wf_raw
     lit_source = str(args.get("lit_source") or "auto")
     sources = [str(s) for s in (args.get("sources") or [])]
     state = RunState.create(
