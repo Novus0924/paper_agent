@@ -45,7 +45,7 @@ paper-agent-2/
 │   │   ├── export/               # ★ zip.ts（零依赖 ZIP 写入器）+ service.ts（Exporter SPI）
 │   │   └── routes/               # health + /api/v1/{tasks,events,report,export,messages}
 │   ├── types/                   # AGH 最小类型声明（见 §6 说明）
-│   ├── test/                    # 单测 + 契约测试（91 个）
+│   ├── test/                    # 单测 + 契约测试（106 个）
 │   └── scripts/                 # 诊断脚本（spike-* / zip-probe / daemon-ready / *-probe）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
@@ -57,7 +57,9 @@ paper-agent-2/
 ├── scripts/verify-report.sh     # M6 端到端验收（28 项）
 ├── scripts/verify-export.sh     # M7 端到端验收（50 项）
 ├── scripts/verify-degrade.sh    # M5 端到端验收（17 项）
-├── scripts/verify-message.sh# M8 端到端验收（含真实 AGH 会话追问）
+├── scripts/verify-message.sh    # M8 端到端验收（含真实 AGH 会话追问，26 项）
+├── scripts/verify-startup.sh    # M9 端到端验收（doctor + 启动器 + 分层 DTO，45 项）
+├── scripts/start.mjs             # ★ 一键启动器（BE-13，§12.1；pnpm start）
 ├── scripts/agh-daemon-up.sh     # 启动 AGH daemon 并等待就绪（供 E2E）
 ├── runs/                        # 运行产物（git 忽略）
 ├── data/task-index.json         # 任务索引（git 忽略）
@@ -129,8 +131,8 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 4 | GET | `/api/v1/tasks/{id}` | ✅ 面向视图 DTO |
 | 5–8 | POST | `run-all` / `step` / `resume` / `stop` | ✅ 经会话下发 + per-Task 互斥 + 终态收敛（202/200；BUSY 409） |
 | 9 | GET | `/events`（SSE） | ✅ 快照先发 + 实时续接 + 幂等去重 + Last-Event-ID 续传 + 终态必达 |
-| 10–11 | GET | `/report` / `/report.md` | ✅ 就绪 `200 {status:"ready",report:{…}}` / 未就绪 `200 {status:"generating"}`；MD 带 nosniff + inline |
-| 12–13 | GET | `/evidence` / `/cite` | ✅ 证据/结论/轨迹只读装配；cite 支持 EV 编号与 ≥6 位哈希前缀 |
+| 10–11 | GET | `/report` / `/report.md` | ✅ 就绪 `200 {status:"ready",view:"view",report:{…}}` / 未就绪 `200 {status:"generating"}`；**`?view=audit` 才回传哈希与链信息**；MD 带 nosniff + inline |
+| 12–13 | GET | `/evidence` / `/cite` | ✅ 证据/结论/轨迹只读装配（同支持 `?view=audit`）；cite 支持 EV 编号与 ≥6 位哈希前缀 |
 | 14 | POST | `/messages`（+ GET/DELETE 队列） | ✅ 同会话追问/修订；运行中**入队**（`queued:true`+`order`）而非拒绝；回合结束按序放行 |
 | 15 | GET | `/export?kind=report｜audit｜session` | ✅ 报告 MD 文件流 / 审计包 ZIP（含校验脚本）/ AGH 原生会话轨迹；未就绪 409 NOT_READY |
 
@@ -232,6 +234,50 @@ L2 路径实质改变 → `degraded=true` + 五要素（来源/原因/影响/可
 - **指令模板硬约束模型不许凭空断言**（§11）：`ask` 要求回查证据并用 `[EV-xxxx]` 标注，
   证据不足时明确说「现有证据无法支持」；`revise` 要求修订落到内核工具并跑 `sciret_verify`。
 
+### 5.6 分层 DTO（P-02，实测要点）
+
+三个层次（实现见 `apps/bff/src/http/dto.ts`）：
+
+| 视图 | 获取方式 | 内容 |
+|---|---|---|
+| `view` | **默认** | 用户界面渲染所需。不含哈希/提示词/链哈希 |
+| `audit` | `?view=audit` | 额外含`ledger_digest` / `chain_hash` 等审计字段 |
+| `raw` | **无HTTP 出口** | 内核原始产物只在服务内部流转；对外经 `kind=audit` 导出包（接口 15） |
+
+- **响应恒回显 `view`**（`"view":"view"|"audit"`）：否则"偶尔有哈希"会让人误以为哈希不稳定。
+- **非法 `view` → 400，不静默回退到 `view`**：静默回退会让审计请求"看起来成功但没数据"。
+- **DTO 是投影，不是裁剪**：磁盘上的 `runs/<id>/report.json` 原样保留 `ledger_digest`。
+- ⚠️ **`gate` 与 `ledger_head` 刻意**不**归为审计字段**：§9.2 要求「门禁拒绝出报告**可被观测**」
+  （M6 验收直接断言 `gate.passed === false`）。用户界面必须能显示"为什么还没出报告"——
+  把 `gate` 挡掉不是"暴露内部对象"，那是把关键状态藏成黑盒。我第一版误挡了，被 M6 测试当场抓出。
+- **必须为"剥字段"配泄漏探测正向断言**（`findLeakedAuditFields`）：剥字段是**负向操作**，
+  漏了不会报错，只会让前端**静默**拿到本不该有的字段，响应看起来完全正常。
+  测试里同时有一条**反向用例**（故意注入泄漏，验证探测器能抓到），否则"没抓到"可能只是探测器坏了。
+
+### 5.7 一键启动器与 doctor（§12.1/ §12.2，实测要点）
+
+```bash
+pnpm start                # 一键启动（等价 node scripts/start.mjs）
+pnpm doctor               # 环境自检（--json 供启动器消费 / --quiet 仅退出码）
+node scripts/start.mjs --bff-only   # 只起 BFF
+```
+
+- **退出码语义（§12.2）**：`0` 全绿 / `2` 有可继续告警 / `1` 有阻断。
+  AGH 缺失时相关项降级为 `warn` 而非硬失败（§12.2 明文要求，避免 demo-kit 强依赖）。
+- **doctor 13 项检查**（覆盖 §12.2 全部列举项）：Node≥24、Python≥3.10、内核存在与可执行（ping）、
+  运行目录可写、AGH 产物、**daemon 状态**、端口、插件信任与启用、**工具注册数**、
+  **环境变量生效值**、**模型已配置**、**数据源连通性**、遗留包冲突。
+- **环境变量回显「生效值」而非「磁盘配置」**，且密钥类只显示 `(已设置)/(未设置)`，**绝不回显值**。
+- **daemon 探测必须校验进程存活**：AGH daemon 是**派生进程**，被回收后
+  `~/.agh/data/daemon/{owner,discovery}.json` **仍留在盘上**。只看文件会判"就绪"，
+  而 BFF 走 AGH 的 `identity()` 校验必然失败 → 症状是「启动器说就绪、BFF 说找不到 daemon」。
+  启动器发现僵尸记录会**改名隔离**（可逆、不删）再启动新 daemon。
+- **启动器不假设前端已交付**：本需求文档是后端交付，`web/` 不存在时**跳过并说明归属**、**不阻断**；
+  前端就位后同一条命令自动托管（dev server 或静态产物）。
+- **端口占用不做"自动顺延"**：端口是配置契约，静默换端口会让用户访问到错误的服务；
+  改为明确报告 + 给出 `PAPER_AGENT_PORT` 换端口指引（§12.1「占用即报告并支持自动顺延或给出释放指引」）。
+- **Ctrl+C 连带停止子进程**，不留孤儿进程（E2E 有专门断言：退出后端口必须被释放）。
+
 ---
 
 ## 6. AGH 集成要点（实测结论，避免重踩）
@@ -306,11 +352,13 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 > 本机裸 `node` 可能解析到 WorkBuddy 托管的 22.x，故统一走 `bash scripts/quality-gate.sh`（自动挑选合规 Node，
 > 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
 
-- `bash scripts/quality-gate.sh` → BFF **91/91 通过** + 内核 **37/37 通过**（连跑两次查抖动）+ `tsc` **零错误**
-  （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/多轮消息队列/AGH 接口契约）；
-  > 注：`contract.test.ts` 的 scope 解析用例在本机因 AGH home ACL 不满足凭据策略而**显式跳过**
-  > （打印诊断指引，不假装通过也不让环境问题长驻红灯，详见 §8 第 9 条）。
-- `node scripts/doctor.mjs` → 逐项状态 + 修复指引（`--json` / `--quiet`，退出码 0/2/1）。
+- `bash scripts/quality-gate.sh` → BFF **106/106 通过** + 内核 **37/37 通过**（连跑两次查抖动）+ `tsc` **零错误**
+  （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/多轮消息队列/分层 DTO/AGH 接口契约）；
+  > 注：`contract.test.ts` 的 scope 解析用例在本机依赖 AGH home 的 ACL 合规；
+  > 该ACL 已于 2026-10-10 修复，用例**真正通过**（保留了「遇到 `CONFIG_CREDENTIAL_STORE`
+  > 则显式跳过并打印诊断指引」的兜底，避免环境问题让质量门长驻红灯，详见 §8 第 9 条）。
+- `node scripts/doctor.mjs` → 13 项逐项状态 + 修复指引（`--json` / `--quiet`，退出码 0/2/1）。
+- `node scripts/start.mjs` → 一键启动 AGH + BFF（+ 前端，存在时），健康等待后给出唯一 URL。
 
 **M6 报告聚合端到端**（`bash scripts/verify-report.sh` → PASS=28 FAIL=0）
 
@@ -465,10 +513,22 @@ state.json → {"degraded": true,
     （如两源全挂时任何正阈值都判降级），测出来的是"两个都不满足"，不是"策略可配置"。
 13. **新写 Python 模块后立刻跑一次导入**：本项目内核"零第三方依赖 + 单测驱动"，
     任何语法错误（如 `from __future__ import annotations` 拼错）都会在质量门立刻暴露，成本极低。
-14. **就绪检测必须复用被测系统自己的校验逻辑**：自己写一个"看起来对"的判据，
+14. **就绪检测必须复用「被测系统自己的校验逻辑」**：自己写一个"看起来对"的判据，
     只会把"没起来"伪装成"起来了"。踩过两次：就绪轮询只读 AGH `discovery.json` 的 `socketPath`，
     而**上一代 daemon 留下的僵尸 discovery.json 里也有 socketPath** → 假通过。
-    AGH 的 `readDaemonDiscovery()` 会校验 `sameOwner(owner, discovery.owner)` 与进程存活，必须一并校验。
+    AGH 的 `readDaemonDiscovery()` 会校验 `sameOwner(owner, discovery.owner)` 与**进程存活**，
+    必须一并校验。**光看文件永远不够**——进程被回收后文件还在。
+18. **异步函数的返回值当布尔用会恒为真**：`if (!processAlive(pid))` 里`processAlive` 返回 Promise，
+    `!Promise === false` → 校验形同虚设（我因此把"已死的daemon"报成"复用已运行的"）。
+    凡是有 `await` 的判定，先确认**每一处调用都 await 了**；类型系统不保证这件事。
+19. **判定"通过"的工具，解析失败时绝不能落到通过分支**。
+    例：`icacls /save` 是 UTF-16LE **且无 BOM** → 解析出"0 个 ACE"→ 假通过。
+    **解析失败必须是显式错误**（`apps/bff/scripts/acl-audit.mts` 已固化此约定）。
+20. **MSYS 会把带 `/` 的参数当路径转换**：`icacls ... /remove`、`timeout 120 …` 都中招
+    （报`无效参数 …/PortableGit/remove`）。`MSYS_NO_PATHCONV=1` 对**已在 PATH 中的可执行文件无效**
+    （环境变量只影响未解析的命令名），最可靠的做法是**避开该命令**（doctor/start.mjs 自己管超时）。
+21. **传给 Windows node 的路径必须是 Windows 形式**：Bash 里的 `/d/...` 会被 node 解析成 `D:\d\...`。
+    用 `pwd -W` 转换，或让脚本内部用 `process.cwd()` 自己解析。
 15. **探测输出要用标记行匹配，不要 `tail -1`**：tsx / daemon 会在 stdout 混入实验性警告等噪声行，
     `tail -1` 取到无关行导致误判（本项目 tsx 冷启动会打 `ExperimentalWarning: SQLite …`）。
     用 `grep -E '^READY' | tail -1`。
@@ -497,7 +557,8 @@ state.json → {"degraded": true,
 | M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ✅ 通过 §9.4 验收（E2E 17/17，内核新增 19 项单测；三级语义从"不可达分支"变为可复测行为） |
 | M6 | 报告聚合（终态自动出报告 + 门禁 + 幂等 + 原子写）+ 证据只读 + cite | ✅ 通过 §9.5 / §9.6 验收（E2E 28/28） |
 | M7 | 导出三件套（报告 MD / 审计包 ZIP / AGH 会话轨迹）+ Exporter SPI | ✅ 通过 §9.6 验收（E2E 50/50，单测 16 项；含 verify.py 反向篡改用例） |
-| M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | 🟡 **M8 全验收通过**（E2E 26/26，含 §9.7「同一会话留痕」直接证据：会话事件 2→50 且追问原文在 AGH 账本中）· M9 ⏳ |
+| M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | ✅ **M8 E2E 26/26**（§9.7 同一会话留痕直接证据：会话事件 2→50、追问原文在 AGH 账本中）· ✅ **M9 E2E 45/45**（doctor 13 项检查 / 启动器 §12.1 六步 / 分层 DTO） |
+| M10 | DoD 全量验收（chaos 故障注入、崩溃续跑 resume、12 条 P 全覆盖） | ⏳ |
 | M10 | 单测/集成/契约/E2E + DoD 验收 | ⏳ |
 
 ---

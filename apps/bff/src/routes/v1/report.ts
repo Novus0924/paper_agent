@@ -2,19 +2,25 @@ import type { FastifyInstance } from 'fastify'
 import type { AppContext } from '../../app.js'
 import { ApiError } from '../../infra/errors.js'
 import { validateTaskId } from '../../infra/validate.js'
+import { parseViewLevel, respond } from '../../http/dto.js'
 import type { ReportService } from '../../services/report.js'
 
 /**
  * 报告与证据路由（BE-08/09，需求 §8.1 接口 10–13、§8.2 契约）：
  *   GET /api/v1/tasks/{id}/report        结构化报告
- *        就绪 → 200 { status:"ready", report:{ title, abstract, sections, conclusions[] } }
+ *        就绪 → 200 { status:"ready", view:"view", report:{ title, abstract, sections, conclusions[] } }
  *        未就绪 → 200 { status:"generating" }（**不报错**）；任务不存在 → 404 NOT_FOUND
+ *        `?view=audit` 额外返回账本摘要/门禁等审计字段（P-02：默认不含哈希与提示词）
  *   GET /api/v1/tasks/{id}/report.md     报告 Markdown（text/markdown）
  *        200 + X-Content-Type-Options: nosniff + Content-Disposition: inline；未就绪 → 404 NO_REPORT
- *   GET /api/v1/tasks/{id}/evidence      证据/结论/轨迹只读（面向视图 DTO）
+ *   GET /api/v1/tasks/{id}/evidence      证据/结论/轨迹只读（分层 DTO，P-02）
  *   GET /api/v1/tasks/{id}/cite?ev=      引用回查（EV 编号或 ≥6 位哈希前缀）
  *
  * 全部只读内核产物，不 spawn 内核（执行一律经 AGH）。
+ *
+ * P-02 分层（见 apps/bff/src/http/dto.ts）：内核 report.json 里含
+ * `ledger_digest` / `ledger_head` / `gate` / 证据哈希——这些对用户界面零价值，
+ * 但一旦渲染就成对外承诺。故默认剥掉，`?view=audit` 才回传。
  */
 
 const EV_MAX_LENGTH = 128
@@ -29,7 +35,9 @@ export function registerReportRoutes(app: FastifyInstance, ctx: AppContext, repo
 
   app.get('/tasks/:id/report', async (req) => {
     const taskId = requireTask((req.params as { id: string }).id)
-    return reports.getReport(taskId)
+    const level = parseViewLevel((req.query as { view?: unknown }).view)
+    const out = reports.getReport(taskId)
+    return respond(taskId, level, out as unknown as Record<string, unknown>)
   })
 
   app.get('/tasks/:id/report.md', async (req, reply) => {
@@ -50,11 +58,14 @@ export function registerReportRoutes(app: FastifyInstance, ctx: AppContext, repo
 
   app.get('/tasks/:id/evidence', async (req) => {
     const taskId = requireTask((req.params as { id: string }).id)
-    return reports.getEvidence(taskId)
+    const level = parseViewLevel((req.query as { view?: unknown }).view)
+    const out = reports.getEvidence(taskId)
+    return respond(taskId, level, out as unknown as Record<string, unknown>)
   })
 
   app.get('/tasks/:id/cite', async (req) => {
     const taskId = requireTask((req.params as { id: string }).id)
+    const level = parseViewLevel((req.query as { view?: unknown }).view)
     const query = req.query as { ev?: unknown }
     const ev = typeof query.ev === 'string' ? query.ev.trim() : ''
     if (ev.length > EV_MAX_LENGTH) {
@@ -69,6 +80,7 @@ export function registerReportRoutes(app: FastifyInstance, ctx: AppContext, repo
         out.available && out.available.length > 0 ? `可查证据编号：${out.available.join(', ')}` : undefined,
       )
     }
-    return { task_id: taskId, ...out }
+    // cite 的 `available` 列表由哈希前缀算出来，默认视图里哈希前缀本身不该外泄 → 一并剥
+    return respond(taskId, level, out)
   })
 }

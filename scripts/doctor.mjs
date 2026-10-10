@@ -52,6 +52,9 @@ const ROOT = resolve(process.env['PAPER_AGENT_ROOT'] ?? process.cwd())
 const AGH_ROOT = process.env['PAPER_AGENT_AGH_ROOT'] ?? 'D:/agnes-harness-main'
 const AGH_CLI = resolve(AGH_ROOT, 'packages/cli/dist/local/agnes.mjs')
 const BFF_PORT = Number(process.env['PAPER_AGENT_PORT'] ?? 8787)
+/** AGH home（发现文件与包锁都在此处）。提前定义：下方多处检查项都要用。 */
+const AGH_HOME = process.env['AGH_HOME'] ?? join(homedir(), '.agh')
+const AGNES_PROFILE = process.env['AGNES_PROFILE'] ?? 'local-dev'
 
 /** @type {Array<{id:string, name:string, status:'ok'|'warn'|'fail', value:string, hint?:string, blocking:boolean}>} */
 const checks = []
@@ -131,17 +134,27 @@ async function main() {
   const cliExists = existsSync(AGH_CLI)
   add('agh', 'AGH 仓库与构建产物', cliExists ? 'ok' : 'warn', AGH_CLI, cliExists ? undefined : '未找到 AGH 构建产物。请设置 PAPER_AGENT_AGH_ROOT，或在 AGH 仓库执行构建（详见 AGH install 文档）。AGH 缺失时任务无法执行，但 BFF 可启动。')
 
-  // 6. AGH daemon 运行中（discovery/owner 记录 + 进程存活）
+  // 6. AGH daemon 运行中（**零副作用**：只读发现文件，不执行任何 CLI）
+  //
+  // ⚠️ 不要用 `agnes.mjs daemon status` 判断——它会 ensureLocalBackend **自动拉起一个
+  // 不带本项目环境变量**（PAPER_AGENT_PYTHON / KERNEL_ROOT / RUNS_DIR）的 daemon；
+  // 之后用户/启动器启动的 serve 会复用这个 daemon，导致插件子进程找不到 Python 内核。
+  // 这是本项目踩过的经典误诊：「插件工具调不动」被当成插件问题，实为 daemon 被抢跑污染。
+  // 这里改读~/.agh/data/daemon/{owner,discovery}.json（依据见 §8.6）。
   if (cliExists) {
-    const probe = await run(process.execPath, [AGH_CLI, 'daemon', 'status'], { timeoutMs: 25000 })
-    const out = `${probe.out}${probe.err}`
-    const running = probe.status === 0 && /"running"\s*:\s*true/.test(out)
+    const probe = await probeDaemon(AGH_HOME)
     add(
       'daemon',
       'AGH daemon 状态',
-      running ? 'ok' : 'warn',
-      running ? out.trim().slice(0, 200) : '未运行',
-      running ? undefined : `执行: node "${AGH_CLI}" daemon start 启动 AGH 后台（首次使用请在 AGH Web 完成模型配置）。`,
+      probe.running ? 'ok' : 'warn',
+      probe.detail,
+      probe.running
+        ? undefined
+        : probe.stale
+          // 僵尸记录要给出**可执行**的处置，而不是笼统的"没运行"
+          ? `${probe.reason}。执行 node scripts/start.mjs 会自动隔离该记录并启动新 daemon；` +
+            `也可手工改名隔离（勿直接删，AGH 用它识别"上一代已死"）。`
+          : `未运行（${probe.reason ?? '无发现记录'}）。执行: node "${AGH_CLI}" daemon start 启动 AGH 后台（首次使用请在 AGH Web 完成模型配置）。`,
       false,
     )
   }
@@ -153,9 +166,7 @@ async function main() {
   // 8. sciret 插件安装状态（零副作用：直接读 AGH 锁文件，不启动 daemon）
   //    注意：不要用 `package status` 检查——它会自动拉起一个**不带环境变量**的 daemon，
   //    之后用户启动的 serve 会复用该 daemon，导致插件子进程找不到 Python 内核（经典误诊）。
-  const aghHome = process.env['AGH_HOME'] ?? join(homedir(), '.agh')
-  const profile = process.env['AGNES_PROFILE'] ?? 'local-dev'
-  const lockPath = join(aghHome, 'profiles', profile, 'agnes-lock.json')
+  const lockPath = join(AGH_HOME, 'profiles', AGNES_PROFILE, 'agnes-lock.json')
   try {
     const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
     const packages = lock.packages ?? {}
@@ -204,6 +215,67 @@ async function main() {
     )
   }
 
+  // 9. 环境变量**实际生效值**（§12.2 要求：不只是"设了没"，而是"程序读到的值是什么"）
+  //    只报关键项；密钥类**只报是否已设置，绝不回显值**（安全红线）。
+  const envRows = [
+    ['PAPER_AGENT_ROOT', ROOT],
+    ['PAPER_AGENT_PYTHON', py],
+    ['PAPER_AGENT_PORT', String(BFF_PORT)],
+    ['AGH_HOME', AGH_HOME],
+    ['AGNES_PROFILE', AGNES_PROFILE],
+  ]
+  const secrets = [
+    ['PAPER_AGENT_TOKEN', Boolean(process.env['PAPER_AGENT_TOKEN'])],
+    ['AGNES_API_KEY', Boolean(process.env['AGNES_API_KEY'])],
+    ['HTTP_PROXY / HTTPS_PROXY', Boolean(process.env['HTTP_PROXY'] || process.env['HTTPS_PROXY'])],
+  ]
+  add(
+    'env',
+    '环境变量生效值',
+    'ok',
+    envRows.map(([k, v]) => `${k}=${v}`).join('  ') + secrets.map(([k, has]) => `  ${k}=${has ? '(已设置)' : '(未设置)'}`).join(''),
+    '以上为本进程实际读到的值（非磁盘配置）。写路由令牌请用 PAPER_AGENT_TOKEN；模型密钥建议经 AGH 原生设置而非明文环境变量。',
+    false,
+  )
+
+  // 10. AGH 工具注册数（§12.2：插件"已信任并启用（工具注册数）"）
+  //     从 AGH 锁文件里的包信息推断，不启动会话——真要数注册数得跑会话，故此处标明来源。
+  const toolCount = await countRegisteredTools(lockPath)
+  if (toolCount.status === 'ok') {
+    add(
+      'tools',
+      'AGH 工具注册数',
+      toolCount.count > 0 ? 'ok' : 'warn',
+      `${toolCount.count} 个（插件包 ${toolCount.pkg}）`,
+      toolCount.count > 0 ? undefined : '插件已安装但未查到工具定义：请检查 plugin/sciret 的 package.json 是否声明 tools，以及是否需要重启 daemon 使新能力生效（插件被拷贝到 AGH home 运行）。',
+      false,
+    )
+  } else {
+    add('tools', 'AGH 工具注册数', 'warn', toolCount.reason, '插件安装状态未知，先确认上一项「sciret 插件安装状态」。', false)
+  }
+
+  // 11. 模型已配置（§12.2）——只报**有没有**，不回显任何密钥
+  const modelInfo = inspectModelConfig(AGH_HOME, AGNES_PROFILE)
+  add(
+    'model',
+    '模型配置',
+    modelInfo.configured ? 'ok' : 'warn',
+    modelInfo.detail,
+    modelInfo.configured ? undefined : modelInfo.hint,
+    false,
+  )
+
+  // 12. 数据源连通性（含代理，§12.2）—— 零网络，只查源定义/代理/冻结语料就位情况
+  const ds = probeDataSources(ROOT)
+  add(
+    'datasources',
+    '数据源连通性',
+    ds.status,
+    ds.detail,
+    ds.hint,
+    false,
+  )
+
   // 汇总
   const hasFail = checks.some((c) => c.status === 'fail')
   const exitCode = hasFail ? 1 : checks.some((c) => c.status === 'warn') ? 2 : 0
@@ -229,6 +301,205 @@ function checkPortFree(port) {
     srv.once('listening', () => srv.close(() => resolveFree(true)))
     srv.listen(port, '127.0.0.1')
   })
+}
+
+/**
+ * 只读探测 AGH daemon 是否可用（**不启动任何东西**）。
+ *
+ * 判据与 AGH 自己的 `readDaemonDiscovery()` 对齐（§8.6）：
+ *   owner.json 与 discovery.json 必须指向**同一 pid/管道**（同代数），
+ *   且 discovery.ready === true。
+ * 只看 discovery.json 里的 socketPath 会**假通过**——上一代 daemon 留下的僵尸记录里也有 socket。
+ */
+async function probeDaemon(aghHome) {
+  const dir = join(aghHome, 'data', 'daemon')
+  const readJson = (p) => {
+    try {
+      return JSON.parse(readFileSync(p, 'utf8'))
+    } catch {
+      return null
+    }
+  }
+  const owner = readJson(join(dir, 'owner.json'))
+  const discovery = readJson(join(dir, 'discovery.json'))
+  if (!owner) return { running: false, reason: `未找到 ${join(dir, 'owner.json')}`, detail: '未运行' }
+  if (!discovery) return { running: false, reason: `未找到 ${join(dir, 'discovery.json')}`, detail: '未运行' }
+  const ownerPid = Number(owner.pid)
+  if (Number(discovery.owner?.pid) !== ownerPid) {
+    return { running: false, reason: `代数不符（owner=${ownerPid} / discovery=${discovery.owner?.pid}），属僵尸发现记录`, detail: '未运行' }
+  }
+  if (discovery.ready !== true) return { running: false, reason: 'discovery.ready 不为 true', detail: '未就绪' }
+  if (!discovery.socketPath) return { running: false, reason: 'discovery.socketPath 为空', detail: '未就绪' }
+  // ⚠️ 关键：文件在≠ 进程还活着。AGH daemon 是派生进程，进程被回收后
+  // 发现文件仍留在盘上——只查文件会把"僵尸记录"报成"运行中"（假通过）。
+  if (!(await processAlive(ownerPid))) {
+    return {
+      running: false,
+      stale: true,
+      reason: `僵尸发现记录：pid ${ownerPid} 已不存在，但 owner.json / discovery.json 仍在`,
+      detail: '未运行（发现记录已失效）',
+    }
+  }
+  return { running: true, detail: `pid=${ownerPid} pipe=${discovery.socketPath}` }
+}
+
+/**
+ * 进程存活检测（Windows 用 tasklist；注意必须**异步** spawn——本机 spawnSync 一律 EBUSY）。
+ */
+async function processAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  return new Promise((resolveAlive) => {
+    let done = false
+    const finish = (v) => {
+      if (done) return
+      done = true
+      resolveAlive(v)
+    }
+    let child
+    try {
+      child = spawn('tasklist.exe', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch {
+      finish(false)
+      return
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill()
+      } catch {
+        /* ignore */
+      }
+      finish(false)
+    }, 8000)
+    let out = ''
+    child.stdout?.on('data', (d) => (out += d))
+    child.on('error', () => {
+      clearTimeout(timer)
+      finish(false)
+    })
+    child.on('close', () => {
+      clearTimeout(timer)
+      finish(out.includes(`"${pid}"`) && !/没有运行|no tasks/i.test(out))
+    })
+  })
+}
+
+/**
+ * 统计插件注册的 sciret 工具数（只读本项目插件源码，不启动会话）。
+ *
+ * ⚠️ 工具**不是**在 package.json 里声明的（那里只有 extension 入口），
+ * 而是在 plugin/sciret/index.mjs 里逐个 `register('sciret_xxx', ...)` 声明的。
+ * 早先我按 `package.json.tools` 读 → 恒为 0 → 会把正常状态报成告警（假告警）。
+ *
+ * count 来源是**本项目源码**，不是 AGH 运行时真值；真正权威的注册数需在会话里问 AGH
+ * （apps/bff/scripts/verify-tool-call.ts）。故 value 里标明来源，不冒充运行时观测。
+ */
+async function countRegisteredTools(lockPath) {
+  try {
+    if (!existsSync(lockPath)) return { status: 'skip', reason: '读不到 AGH 锁文件' }
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'))
+    const pkgName = Object.keys(lock.packages ?? {}).find((n) => /plugin-sciret/.test(n))
+    if (!pkgName) return { status: 'skip', reason: '未安装 sciret 插件' }
+    const indexPath = resolve(ROOT, 'plugin/sciret/index.mjs')
+    if (!existsSync(indexPath)) return { status: 'ok', count: 0, pkg: pkgName, note: '插件入口不可读' }
+    const src = readFileSync(indexPath, 'utf8')
+    const names = [...src.matchAll(/\bregister\(\s*'(sciret_[a-z0-9_]+)'/g)].map((m) => m[1])
+    const unique = [...new Set(names)]
+    return { status: 'ok', count: unique.length, pkg: pkgName, names: unique }
+  } catch (e) {
+    return { status: 'skip', reason: `解析失败：${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+/**
+ * 检查模型是否已配置（**只看有无与来源，绝不回显密钥**）。
+ * 判据：AGH profile 配置里是否声明了带 routes 的 provider；或在 BFF 侧有可用的 api-key。
+ */
+function inspectModelConfig(aghHome, profile) {
+  const cfgPath = join(aghHome, 'profiles', profile, 'configuration.json')
+  if (!existsSync(cfgPath)) {
+    return {
+      configured: false,
+      detail: `未找到 ${cfgPath}`,
+      hint: '尚未配置 AGH 模型：启动一次 AGH（bash agh.sh daemon start）后在 AGH Web 完成模型配置，或写入 AGH 原生设置。',
+    }
+  }
+  try {
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    const accounts = Array.isArray(cfg.accounts) ? cfg.accounts : []
+    const enabled = accounts.filter((a) => a?.enabled !== false)
+    const withRoutes = enabled.filter((a) => Array.isArray(a?.routes) && a.routes.length > 0)
+    const withKey = enabled.filter((a) => a?.credentialRef || a?.apiKey)
+    if (withRoutes.length > 0 || withKey.length > 0) {
+      return {
+        configured: true,
+        detail: `已配置 ${enabled.length} 个账户（routes=${withRoutes.length} 含凭据引用=${withKey.length}）；凭据值不回显`,
+      }
+    }
+    return {
+      configured: false,
+      detail: `存在 ${accounts.length} 个账户但均无可用 routes`,
+      hint: '模型未配置：模型与供应商建议经 AGH 原生设置完成（AGH Web 或 agh config），避免明文密钥进环境变量。',
+    }
+  } catch (e) {
+    return {
+      configured: false,
+      detail: `读取配置失败：${e instanceof Error ? e.message : String(e)}`,
+      hint: `检查 ${cfgPath} 是否为合法 JSON。`,
+    }
+  }
+}
+
+/**
+ * 数据源连通性（§12.2，含代理）。
+ *
+ * ⚠️ **刻意不发任何网络请求**：doctor 是"环境自检"，不是"功能测试"。
+ * 发请求会带来三个问题：①拖慢启动（每个源都要等超时）②在受限网络下把环境问题
+ * 误报成项目问题 ③可能真的抓下数据，产生副作用。
+ *
+ * 故这里只做**零网络**的检查：源定义是否就位 + 代理是否配置 + 冻结语料是否可用。
+ * 真正的连通性由内核 resilience 层在运行时处理（429/5xx 重试、降级回退冻结语料），
+ * 其行为由 scripts/verify-degrade.sh 验收，不在 doctor 里重复验证。
+ */
+function probeDataSources(root) {
+  const fetchTool = resolve(root, 'kernel/tools/fetch_corpus.py')
+  if (!existsSync(fetchTool)) {
+    return { status: 'warn', detail: `未找到 ${fetchTool}`, hint: '内核检索工具缺失，在线检索不可用（冻结语料仍可用）。' }
+  }
+  let declared = []
+  try {
+    const src = readFileSync(fetchTool, 'utf8')
+    // 只读源定义表，不 import —— import 会带来网络/副作用
+    const m = src.match(/=\s*\{\s*([\s\S]*?)\n\}/)
+    if (m) declared = [...m[1].matchAll(/"([a-z0-9_-]+)":\s*"https?:/gi)].map((x) => x[1])
+  } catch {
+    /* 读不到就当没解析出，不假装通过 */
+  }
+  const proxy = process.env['HTTP_PROXY'] || process.env['HTTPS_PROXY'] || process.env['http_proxy'] || process.env['https_proxy']
+  // 冻结语料的真实位置由内核定义：kernel/sciret_kernel/corpus.py → CORPUS_DIR = <包目录>/corpus
+  // 早先我按 kernel/corpus、data/corpus 猜 → 恒为"未找到"（假告警）。改为跟随内核定义。
+  const corpusDir = resolve(root, 'kernel/sciret_kernel/corpus')
+  const corpus = existsSync(corpusDir)
+  const bits = [
+    declared.length > 0 ? `在线源 ${declared.length} 个（${declared.join(',')}）` : '未解析到在线源定义',
+    proxy ? `代理已配置（${proxy.replace(/:\/\/[^@/]*@/, '://***@')}）` : '未配置代理',
+    corpus ? '冻结语料已就位（可离线运行）' : '未找到冻结语料目录',
+  ]
+  return {
+    status: declared.length > 0 ? 'ok' : 'warn',
+    detail: bits.join('；'),
+    hint:
+      declared.length > 0
+        ? undefined
+        : '若需在线检索，请确认 kernel/tools/fetch_corpus.py 的源定义表完整；离线场景依赖冻结语料。',
+  }
 }
 
 main().catch((e) => {
