@@ -53,21 +53,15 @@ pass=0; fail=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
 ng(){ echo "  [FAIL] $1"; fail=$((fail+1)); }
 
-# 经 **AGH 原生 CLI** 导出会话（证明"同一会话留痕"用的是 AGH 自己的账本，非本项目自造）。
-# 必须带 `--connect <pipe>`：不带时 CLI 会 ensureLocalBackend 另拉 daemon，与本脚本已启动的
-# daemon 抢同一份 mutation 锁 → "state lock timeout"。带上则直接连现有管道。
-export_session(){ # $1=输出文件
-  [ -z "${SOCK:-}" ] && return 1
-  # --connect 只接受 URI 形式，且本地命名管道必须是 **pipe:///<URL编码的管道名>**（三个斜杠）。
-  # 依据：AGH cli/src/boot/connect.ts 的 unixConnectTarget()：
-  #   path.startsWith('\\\\.\\pipe\\') → `pipe:///${encodeURIComponent(name)}`
-  # 直接传管道名或用两个斜杠都会被拒（invalid local pipe URL / expected pipe:///name）。
-  local pipe_uri
-  pipe_uri=$("$NODE24" apps/bff/scripts/pipe-uri.mjs "$SOCK")
-  NODE_OPTIONS="" timeout 120 \
-    "$NODE24" "D:/agnes-harness-main/packages/cli/dist/local/agnes.mjs" \
-    --profile local-dev --connect "$pipe_uri" export "$SID" --format agnes -o "$1" >"$WORK/export.log" 2>&1
-}
+# 会话账本导出走**项目自己的 `kind=session` 接口**（见下方第 2 节的 export_session 定义）。
+#
+# ⚠️ 这里**不用** `agnes.mjs export` CLI，三条原因都是实测踩出来的：
+#   ① 不带 --connect 时 CLI 会 ensureLocalBackend 另拉 daemon，与本脚本已启动的 daemon
+#      抢同一份 mutation 锁 → "state lock timeout"；
+#   ② 带 --connect 需 URI 形式且本地管道是**三个斜杠** `pipe:///${encodeURIComponent(NAME)}`
+#      （依据 cli/src/boot/connect.ts 的 unixConnectTarget()），还得显式 --cwd 让 scopeID 对上；
+#   ③ 即便都做对，CLI 也会与 BFF 的事件泵争抢同一会话的 turn → **超时（退出码 124）**。
+# 走项目自己的导出服务反而更对：它就是生产代码路径（M7 已验收 50 项）。
 
 # 前置：启动 AGH daemon，并**保持它存活到本脚本结束**。
 # 关键：不能写成 `bash scripts/agh-daemon-up.sh` 子调用——子 shell 退出时其 EXIT trap
@@ -172,9 +166,23 @@ esac
 B="http://127.0.0.1:$PORT/api/v1/tasks/$TID/messages"
 
 echo "== 2. 导出追问前的会话基线（用于证明'新增'）=="
-export_session "$WORK/before.jsonl"
+# 用**项目自己的** `kind=session` 导出接口（M7 已验收 50 项；AGH 原生 CLI 的 export 会超时，
+# 因为它会与 BFF 事件泵争抢同一会话的 turn → 退出码 124 timeout）。
+# 这样验证的是同一条生产代码路径，不是另造一套。
+export_session(){ # $1=输出文件
+  local code
+  code=$(curl -s --noproxy '*' -o "$1" -w '%{http_code}' \
+    "$ROOT_URL/api/v1/tasks/$TID/export?kind=session&format=agnes")
+  echo "$code"
+}
+
+EXPC1=$(export_session "$WORK/before.jsonl")
 BASE=$( [ -s "$WORK/before.jsonl" ] && wc -l <"$WORK/before.jsonl" | tr -d ' ' || echo 0)
-[ -s "$WORK/before.jsonl" ] && ok "会话基线已导出（$BASE 行）" || ng "基线导出失败——后续'新增'断言将不可信"
+if [ "$EXPC1" = "200" ] && [ "$BASE" -gt 0 ]; then
+  ok "会话基线已导出（HTTP $EXPC1，$BASE 行）"
+else
+  ng "基线导出失败（HTTP $EXPC1，$BASE 行）——后续'新增'断言将不可信"
+fi
 
 echo "== 3. 参数校验（先做，避免污染真实会话）=="
 C1=$(curl -s -o "$WORK/e1.json" -w '%{http_code}' --noproxy '*' -X POST "$B" -H 'Content-Type: application/json' -d '{}')
@@ -217,10 +225,10 @@ done
 [ "$DONE_OK" = "1" ] && ok "追问回合真实完成（history 末条 status=done）" || ng "追问回合未完成（末条状态=$ST）"
 
 echo "== 5. §9.7「全程在同一 AGH 会话留痕」=="
-export_session "$WORK/after.jsonl"
+EXPC2=$(export_session "$WORK/after.jsonl")
 AFTER=$( [ -s "$WORK/after.jsonl" ] && wc -l <"$WORK/after.jsonl" | tr -d ' ' || echo 0)
-[ "$AFTER" -gt "$BASE" ] && ok "会话事件数增加（$BASE → $AFTER），追问确实落在同一会话" \
-  || ng "会话无新增事件（$BASE → $AFTER）——追问可能没进会话"
+[ "$AFTER" -gt "$BASE" ] && ok "会话事件数增加（$BASE → $AFTER，HTTP $EXPC2），追问确实落在同一会话" \
+  || ng "会话无新增事件（$BASE → $AFTER，HTTP $EXPC2）——追问可能没进会话"
 if [ -s "$WORK/after.jsonl" ]; then
   # 追问内容应出现在会话记录里（证明是"发进会话"而不是被BFF 自己吞了）
   if node -e '

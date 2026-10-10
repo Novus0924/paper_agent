@@ -358,6 +358,28 @@ manifest.json → {"task_id":…,"gate":{"passed":true,…},"counts":{…},
                  "how_to_verify":"python verify.py --run-dir run"}
 ```
 
+**M8 多轮消息端到端**（`bash scripts/verify-message.sh` → PASS=26 FAIL=0，含真实 AGH 会话与真实模型回合）
+
+```jsonc
+// §8.2 空闲追问 → 立即投递
+POST /api/v1/tasks/<id>/messages  {"text":"请用一句话说明检索覆盖并列出证据编号"}
+200 {"queued":false,"turn_id":"turn-2","status":"running"}
+
+// §8.2 运行中发送 → 入队（不是 409 拒绝，P-05 核心）
+200 {"queued":true,"order":1,"turn_id":"turn-3","status":"queued"}
+200 {"queued":true,"order":2,"turn_id":"turn-4","status":"queued"}   // order 从 1 起、单调
+
+// §9.7「全程在同一 AGH 会话留痕」——直接证据（经项目 kind=session 导出比对）
+GET /api/v1/tasks/<id>/export?kind=session&format=agnes
+  追问前：2 行 → 追问后：50 行，且能在导出内容里 grep 到追问原文
+
+// 真实会话 id（1:1 映射，§4.2）
+agnes:local:local-dev:cli:workspace:0afa16d217cddf08
+```
+> ⚠️ 会话账本比对**必须走项目自己的 `kind=session` 导出**，不能用 `agnes.mjs export` CLI：
+> 后者会与 BFF 事件泵争抢同一会话的 turn → **超时（退出码 124）**（另需处理 `--connect`
+> 的 `pipe:///` 三斜杠格式、`--cwd` 对齐 scopeID、以及不带 `--connect` 时会抢 mutation 锁）。
+
 **M5 降级治理端到端**（`bash scripts/verify-degrade.sh` → PASS=17 FAIL=0）
 
 ```jsonc
@@ -412,15 +434,25 @@ state.json → {"degraded": true,
      并把真实 reason 吞成笼统的"凭据不可用"。
    - **排查顺序**（关键：AGH 把底层异常全catch 后重抛，别信错误文本，直接打真因）：
      ```bash
-     # 1) 先排 Node 版本：不同 Node 各跑一次
+     # 1) 先排 Node 版本
      bash scripts/quality-gate.sh
-     # 2) 再打被吞掉的真因（直接调 AGH 的 credentialStore.read）
-     tsx apps/bff/scripts/credential-read-probe.mts# 看 reason 字段（mode / kind-conflict / …）
-     # 3) 再逐级查 ACL
-     tsx apps/bff/scripts/credential-parent-acl.mts         # 打印各级原始 DACL
+     # 2) 打被吞掉的真因（直接调 AGH 的 credentialStore.read）
+     tsx apps/bff/scripts/credential-read-probe.mts     # 看 reason 字段（mode / …）
+     # 3) 逐级审计 ACL（自动判定；退出码 0=合规，1=不合规）
+     tsx apps/bff/scripts/acl-audit.mts
      ```
-   > 我在 M7时把这条一律归因为根因 A，并写进了本README；M8 实测证明**本机真实原因是根因 B**，
+   - ⚠️ **修复时两个坑**（都实测踩过）：
+     - `Set-Acl`（PowerShell）会抛 `PrivilegeNotHeldException`（要 SeSecurityPrivilege）→ 改用 `icacls`；
+     - 但在 Bash 工具里 `icacls /remove` 会被 MSYS 当成路径转换（报 `无效参数 …/PortableGit/remove`），
+       **必须加 `MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*"`**。
+     - 改完**立刻用 `acl-audit.mts` 复核**，别只信 `icacls` 的输出（它的表格随系统语言变化）。
+   - ⚠️ `icacls /save` 写出的是 **UTF-16LE 且不带 BOM**，按 BOM 判断编码会失效 → 解码成乱码 →
+     解析出"0 个 ACE" → **假通过**。必须按内容特征嗅探（有 NUL 字节即 UTF-16LE）。
+     这条已固化在 `acl-audit.mts` 里，且解析不出 ACE 时它会**直接判FAIL**而不是当作合规。
+   > 我在 M7 时把这条一律归因为根因 A，并写进了本 README；M8 实测证明**本机真实原因是根因 B**，
    > Node 版本只是必要条件之一。**错误的因果归因比不知道更贵**——它让人去改不该改的地方。
+   > **该问题已于 2026-10-10 修复**（移除 `CodexSandboxUsers`），ACL 链现全部 PASS，
+   > 凭据可正常读取（`credential-read-probe.mts` 显示 `read() 成功`）。
 10. **子进程"成功后再清理"顺序不能反**：把 `rmSync(tmp)` 放在 `finally` 里而**在 `finally` 之后**才读产物，
     会让所有导出 100% 报"未产出文件"（语法与类型检查都合法，只有真跑才暴露）。
     故导出类实现必须在 `try` 内就地读回内容，`finally` 只做清理。
@@ -465,7 +497,7 @@ state.json → {"degraded": true,
 | M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ✅ 通过 §9.4 验收（E2E 17/17，内核新增 19 项单测；三级语义从"不可达分支"变为可复测行为） |
 | M6 | 报告聚合（终态自动出报告 + 门禁 + 幂等 + 原子写）+ 证据只读 + cite | ✅ 通过 §9.5 / §9.6 验收（E2E 28/28） |
 | M7 | 导出三件套（报告 MD / 审计包 ZIP / AGH 会话轨迹）+ Exporter SPI | ✅ 通过 §9.6 验收（E2E 50/50，单测 16 项；含 verify.py 反向篡改用例） |
-| M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | 🟡 M8 代码+单测完成（91/91），端到端真实模型回合已跑通；**1 项验收被 AGH home ACL 阻塞**（根因见 §8 第 9 条，需用户授权 `icacls` 修复）· M9 ⏳ |
+| M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | 🟡 **M8 全验收通过**（E2E 26/26，含 §9.7「同一会话留痕」直接证据：会话事件 2→50 且追问原文在 AGH 账本中）· M9 ⏳ |
 | M10 | 单测/集成/契约/E2E + DoD 验收 | ⏳ |
 
 ---
