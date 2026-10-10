@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,7 @@ from .state import RunState, RunStatus
 
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
+REPORT_GATE = "report_gate.json"
 
 
 class ReportGateError(RuntimeError):
@@ -30,6 +33,45 @@ class ReportGateError(RuntimeError):
     def __init__(self, reasons: list[str]) -> None:
         super().__init__("；".join(reasons))
         self.reasons = reasons
+
+
+def _write_gate(run_dir: Path, passed: bool, reasons: list[str], summary: str) -> None:
+    """落盘门禁结论（无论通过与否都留痕，供 BFF 只读反映）。"""
+    atomic_write_json(
+        run_dir / REPORT_GATE,
+        {
+            "passed": passed,
+            "reasons": reasons,
+            "checked_at": _utc_now(),
+            "human_summary": summary,
+        },
+    )
+
+
+def write_gate_failed(run_dir: Path, reasons: list[str], summary: str) -> None:
+    """公开入口：供流水线在装配异常时留痕（保持 gate 写入单一实现）。"""
+    _write_gate(run_dir, False, reasons, summary)
+
+
+def read_gate(run_dir: Path) -> dict[str, Any] | None:
+    """公开入口：读取门禁结论（只读）。"""
+    return read_json(run_dir / REPORT_GATE)
+
+
+def _invalidate_existing(run_dir: Path) -> list[str]:
+    """门禁不过时**作废**既有报告产物（改名隔离，可逆、不删数据）。
+
+    安全必要性：账本被事后篡改时，磁盘上残留的 report.json 仍能通过"文件存在"判定被采信。
+    这里把它改名为 *.invalid，使下游（BFF /report 只读 report.json）立即回到"未就绪"。
+    """
+    touched: list[str] = []
+    for name in (REPORT_JSON, REPORT_MD):
+        p = run_dir / name
+        if p.exists():
+            target = p.with_name(p.name + ".invalid")
+            os.replace(p, target)
+            touched.append(target.name)
+    return touched
 
 
 def check_gate(ledger: Ledger, *, allow_bypass: bool = False) -> list[str]:
@@ -61,7 +103,10 @@ def assemble(run_dir: Path, *, allow_gate_bypass: bool = False) -> dict[str, Any
     ledger = Ledger(run_dir)
     problems = check_gate(ledger, allow_bypass=allow_gate_bypass)
     if problems:
-        raise ReportGateError(problems)
+        # Fail-closed：作废磁盘上可能残留的旧报告（防"篡改后仍采信旧产物"），并留痕原因
+        invalidated = _invalidate_existing(run_dir)
+        _write_gate(run_dir, False, problems, "报告门禁未通过，已拒绝出报告")
+        raise ReportGateError(problems + ([f"已作废残留产物：{', '.join(invalidated)}"] if invalidated else []))
 
     digest = ledger_digest(ledger)
     existing = read_json(run_dir / REPORT_JSON)
@@ -138,6 +183,7 @@ def assemble(run_dir: Path, *, allow_gate_bypass: bool = False) -> dict[str, Any
 
     atomic_write_json(run_dir / REPORT_JSON, report)
     atomic_write_text(run_dir / REPORT_MD, render_markdown(report, evidence_index))
+    _write_gate(run_dir, True, [], "报告门禁通过")
     return {**report, "reused": False}
 
 
@@ -176,3 +222,7 @@ def render_markdown(report: dict[str, Any], evidence_index: list[dict[str, Any]]
 
 def report_digest(report: dict[str, Any]) -> str:
     return sha256_text(str(report.get("ledger_digest", "")))
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

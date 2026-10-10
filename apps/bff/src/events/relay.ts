@@ -68,12 +68,13 @@ export class EventRelay {
     for (const c of this.readConclusions(taskId)) {
       push({ type: 'conclusion', cid: c.cid, text: c.text, evidence_ids: c.evidence_ids })
     }
-    push({ type: 'report', task_id: taskId, status: existsSync(resolve(this.runsDir, taskId, 'report.json')) ? 'ready' : 'generating' })
+    const reportReady = this.reportReady(taskId)
+    push({ type: 'report', task_id: taskId, status: reportReady ? 'ready' : 'generating' })
     if (task.run_status === 'DONE' || task.run_status === 'FAILED') {
       push({
         type: 'done',
         run_status: task.run_status,
-        report_ready: existsSync(resolve(this.runsDir, taskId, 'report.json')),
+        report_ready: reportReady,
       })
     }
     return out
@@ -200,8 +201,7 @@ export class EventRelay {
       this.bus.publish(taskId, { type: 'conclusion', cid: r.cid, text: r.text, evidence_ids: r.evidence_ids })
     }
 
-    const ready = existsSync(resolve(this.runsDir, taskId, 'report.json'))
-    this.bus.publish(taskId, { type: 'report', task_id: taskId, status: ready ? 'ready' : 'generating' })
+    this.bus.publish(taskId, { type: 'report', task_id: taskId, status: this.reportReady(taskId) ? 'ready' : 'generating' })
   }
 
   /** 只读内核 state.json 的步骤快照（权威状态源） */
@@ -216,6 +216,11 @@ export class EventRelay {
     } catch {
       return []
     }
+  }
+
+  /** 报告就绪判定（唯一口径：内核产出 report.json；门禁不过则永不就绪） */
+  private reportReady(taskId: string): boolean {
+    return existsSync(resolve(this.runsDir, taskId, 'report.json'))
   }
 
   /** 终态：执行编排器 settle 时必发（§5.2） */

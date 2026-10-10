@@ -38,9 +38,12 @@ paper-agent-2/
 │   │   ├── agh/gateway.ts       # ★ Session Gateway（唯一执行出口）
 │   │   ├── store/task-index.ts  # Task↔Session 1:1 映射 + 任务元数据（原子写）
 │   │   ├── services/preflight.ts# 数据源连通性预检
-│   │   └── routes/              # health + /api/v1/tasks
+│   │   ├── services/execution.ts# 执行编排（经会话下发 + per-Task 互斥）
+│   │   ├── services/report.ts    # ★ 报告与证据只读装配（不 spawn 内核）
+│   │   ├── events/               # 事件模型 / 总线 / AGH 事件中继（§5）
+│   │   └── routes/               # health + /api/v1/{tasks,events,report}
 │   ├── types/                   # AGH 最小类型声明（见 §6 说明）
-│   ├── test/                    # 单测 + 契约测试（15 个）
+│   ├── test/                    # 单测 + 契约测试（55 个）
 │   └── scripts/                 # 集成诊断脚本（spike-*）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
@@ -115,8 +118,8 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 4 | GET | `/api/v1/tasks/{id}` | ✅ 面向视图 DTO |
 | 5–8 | POST | `run-all` / `step` / `resume` / `stop` | ✅ 经会话下发 + per-Task 互斥 + 终态收敛（202/200；BUSY 409） |
 | 9 | GET | `/events`（SSE） | ✅ 快照先发 + 实时续接 + 幂等去重 + Last-Event-ID 续传 + 终态必达 |
-| 10–11 | GET | `/report` / `/report.md` | ⏳ M6（内核 report 工具已就绪） |
-| 12–13 | GET | `/evidence` / `/cite` | ⏳ M6 |
+| 10–11 | GET | `/report` / `/report.md` | ✅ 就绪 `200 {status:"ready",report:{…}}` / 未就绪 `200 {status:"generating"}`；MD 带 nosniff + inline |
+| 12–13 | GET | `/evidence` / `/cite` | ✅ 证据/结论/轨迹只读装配；cite 支持 EV 编号与 ≥6 位哈希前缀 |
 | 14 | POST | `/messages` | ⏳ M8 |
 | 15 | GET | `/export` | ⏳ M7 |
 
@@ -130,6 +133,18 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
   **客户端未注册处理器时默认拒绝**（实测 `sciret_run_all` → `APPROVAL_REJECTED`）。
   本项目在网关注册**受控审批策略**：仅放行「`sciret_*` 工具 + 路径全部落在本项目 `runs/` 内」，逐次放行，其余拒绝。
   ⚠️ 载荷是 ACP `ToolCallUpdate`：**没有 `name` 字段**——工具名在 `title`、参数在 `rawInput`、路径在 `locations[].path`。
+
+### 5.2 报告聚合与门禁（实测要点）
+
+- **报告由内核在终态产出**：`pipeline.run_all` 收敛到 `DONE` 后自动调用 `report.assemble`，
+  BFF **只读装配**（不 spawn 内核）——「终态 DONE 且报告就绪」由此闭合。
+- **门禁 Fail-closed**：哈希链完整 + 结论 100% 绑定 fact 级证据 + 判断批次齐全，三者任一不过即**拒绝出报告**，
+  原因写入 `report_gate.json`；`/report` 如实反映为 `status:"generating"` + `gate`（不二次放行）。
+- **篡改后残留报告会被作废**：门禁不过时 `report.json` / `report.md` 被**改名**为 `*.invalid`（可逆、不删数据）——
+  否则「改账本后旧报告仍被 `/report` 采信」会成为绕过门禁的后门（§11 审计防篡改）。
+- **幂等**：报告按 `ledger_digest` 复用（`reused=true`），重复请求不重写盘；恢复账本后可重建。
+- **产物**：`report.json`（结构化）、`report.md`（含结论证据角标与降级声明）、`report_gate.json`（门禁结论）。
+- 证据索引带**真实 DOI**（Crossref/OpenAlex 抓取后冻结，只取元数据不取全文），符合 §11 数据真实性要求。
 
 错误码全集已实现（`{error, code}` 统一体、状态码映射、人类可读修复指引并入 `error` 文本）：
 `BAD_GOAL / BAD_BODY / BAD_PARAM / BAD_ID / NOT_FOUND / NO_REPORT / BUSY / BAD_STATE / NOT_READY / SESSION_ERROR / CLI_ERROR / EXPORT_ERROR`。
@@ -202,9 +217,33 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 - `agnes export <session_id> --format agnes` 产出 JSONL（含 `session/start` 事件、可信 actor）。
 
 **质量门**
-- `npx vitest run` → **15/15 通过**（校验/错误模型单测 + AGH 接口契约测试）；
+- `npx vitest run` → **55/55 通过**（校验/错误模型/执行编排/事件总线/报告聚合 + AGH 接口契约）；
+- `python -m unittest discover -s kernel/tests` → **18/18 通过**（状态机/账本/门禁/确定性/路径白名单/CLI E2E）；
 - `npx tsc -p apps/bff/tsconfig.check.json` → **零错误**；
 - `node scripts/doctor.mjs` → 逐项状态 + 修复指引（`--json` / `--quiet`，退出码 0/2/1）。
+
+**M6 报告聚合端到端**（`bash scripts/verify-report.sh` → PASS=28 FAIL=0）
+
+```jsonc
+// GET /api/v1/tasks/{id}/report（就绪）
+{"status":"ready","report":{"title":"研究报告：…","abstract":"…",
+ "sections":[…],"conclusions":[{"cid":"C-001","evidence_ids":["EV-0014"],…}]}}
+
+// 未就绪（不报错，§8.2）
+{"status":"generating","gate":{"passed":false,"reasons":["账本校验失败[CHAIN_MISMATCH] …"]},"run_status":"RUNNING"}
+
+// GET /report.md 响应头
+Content-Type: text/markdown; charset=utf-8
+X-Content-Type-Options: nosniff
+Content-Disposition: inline
+
+// GET /cite?ev=93e31bd3（哈希前缀）
+{"task_id":"run-…","found":true,"citation":{"ev_id":"EV-0001","doi":"10.1007/s41918-019-00048-0",
+ "year":2019,"matched_by":"sha256_prefix"}}
+
+// 门禁 Fail-closed（篡改账本后）
+report.json → report.json.invalid（可逆作废）；report_gate.json → {"passed":false,"reasons":["…CHAIN_MISMATCH…"]}
+```
 
 ---
 
@@ -219,6 +258,14 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 4. **密钥只经环境注入**：`agnes-api-key.txt` 已在 `.gitignore`；日志对 `key|token|secret|password` 字段脱敏。
 5. **子进程环境白名单**：插件调内核时只透传最小 env（防提示注入诱导泄露密钥）。
 6. **沙箱/受限环境下避免 `spawnSync`**：会 `EBUSY`，一律用异步 `spawn`。
+7. **可复现性的真实边界（勿"修"成假确定性）**：账本记录带**秒级墙钟时间戳 `at`，且它参与哈希链与 `ledger_digest`**。
+   因此两次相同输入的执行，**若跨秒则摘要不同**。可承诺的是「除墙钟时间戳外完全确定」：
+   语料检索排序、要素拆解、交叉印证判定均为纯函数，同输入必同输出（`test_kernel.py::TestDeterminism` 用
+   `freeze_clock()` 注入固定时间戳来验证这一点，并另有一条用例**如实断言**"跨秒摘要不同"）。
+   > 之所以保留 `at` 进链：审计要求记录真实发生时间。若将来要"整账本逐字节可复现"，
+   > 正确做法是引入显式的 `SOURCE_DATE_EPOCH` 式冻结参数，而非把时间戳悄悄从链里剔除。
+8. **测试目录名不可从时间戳切片推导**：`stamp[-9:-7]` 这类写法对同一秒内的两个值会切出**相同**目录名，
+   第二次运行会复用已有账本文件，导致"摘要相同"的假象（我踩过，见 `test_digest_differs_when_wall_clock_crosses_second`）。
 
 ---
 
@@ -228,10 +275,11 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 |---|---|---|
 | M0 | BFF 骨架（配置/日志/错误模型/校验/CORS/版本前缀）+ health + doctor | ✅ |
 | M1 | AGH 会话网关（连接/发现/管道身份/工作区注册）+ 任务服务 + Task↔Session 1:1 映射 + preflight | ✅ |
-| M2 | sciret 插件工具集 + Python 内核（状态机/证据账本/流水线/报告装配） | 🟡 主体完成（内核 + 9 个工具 + 真实语料 + 报告门禁已实测；AGH 内真实调用待 S4 专项） |
+| M2 | sciret 插件工具集 + Python 内核（状态机/证据账本/流水线/报告装配） | ✅ 内核 + 9 个工具 + 真实语料 + 报告门禁（含篡改作废）均实测 |
 | M3–M4 | 执行编排（run-all/step/resume/stop、互斥、终态收敛）+ Event Relay（SSE、快照、Last-Event-ID） | ✅ M3/M4 均完成并通过 §9.2 / §9.3 验收 |
 | M5 | 降级治理（L0/L1/L2、覆盖策略、重试/超时/受控并发） | ⏳ |
-| M6–M7 | 报告聚合 + 证据只读/cite + 导出三件套 | ⏳ |
+| M6 | 报告聚合（终态自动出报告 + 门禁 + 幂等 + 原子写）+ 证据只读 + cite | ✅ 通过 §9.5 / §9.6 验收（E2E 28/28） |
+| M7 | 导出三件套（报告 MD / 审计包 ZIP / AGH 会话轨迹） | ⏳ |
 | M8–M9 | 多轮消息 + DTO 收口 + 一键启动器 + doctor 完整版 | ⏳ |
 | M10 | 单测/集成/契约/E2E + DoD 验收 | ⏳ |
 

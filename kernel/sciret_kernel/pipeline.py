@@ -410,7 +410,11 @@ def execute_step(state: RunState, run_dir: Path, ledger: Ledger, step_id: str) -
 
 
 def run_all(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
-    """顺序跑完剩余步骤（断点续跑：DONE/SKIPPED 复用，仅跑 PENDING/FAILED）。"""
+    """顺序跑完剩余步骤（断点续跑：DONE/SKIPPED 复用，仅跑 PENDING/FAILED）。
+
+    到达终态 DONE 后**自动装配报告**（需求 §9.5/P-03：终态 DONE 且报告就绪）：
+    门禁不通过则**拒绝出报告**并把原因写入 report_gate.json（不伪造成报告、不静默）。
+    """
     executed: list[dict[str, Any]] = []
     for step_id, _label in steps_for(state.workflow):
         if state.is_terminal:
@@ -419,11 +423,51 @@ def run_all(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
         if record.status.value in ("DONE", "SKIPPED"):
             continue
         executed.append(execute_step(state, run_dir, ledger, step_id))
-    return {
+
+    out: dict[str, Any] = {
         "executed": executed,
         "run_status": state.run_status.value,
         "remaining": state.remaining_steps(),
         "degraded": state.degraded,
+    }
+    # 仅在成功终态 DONE 时出报告（FAILED 出报告无意义，且门禁也会因步骤未完而不过）
+    if state.run_status.value == "DONE":
+        out["report"] = _finalize_report(run_dir, ledger)
+    return out
+
+
+def _finalize_report(run_dir: Path, ledger: Ledger) -> dict[str, Any]:
+    """报告装配（薄封装：延迟 import 避免 pipeline ↔ report 循环依赖）。
+
+    失败语义（Fail-closed + 人类可读）：
+    - 门禁不过 → 内核作废残留报告并写 report_gate.json（passed=false + reasons），**不产出 report.json**；
+    - 装配异常同样留痕（不吞掉）；
+    - 已就绪且账本未变 → 幂等复用（reused=true），不重复写盘。
+    """
+    from .report import ReportGateError, assemble, read_gate  # 局部导入：report 依赖 pipeline.ledger_digest
+
+    try:
+        built = assemble(run_dir)
+    except ReportGateError as e:
+        return {
+            "status": "rejected",
+            "reasons": e.reasons,
+            "gate": read_gate(run_dir),
+            "human_summary": f"报告门禁未通过：{e.reasons[0] if e.reasons else '未知原因'}",
+        }
+    except Exception as e:  # noqa: BLE001 - 装配异常同样必须留痕，不得吞掉
+        from .report import write_gate_failed
+
+        reason = f"{type(e).__name__}: {e}"
+        write_gate_failed(run_dir, [reason], "报告装配异常")
+        return {"status": "error", "reasons": [reason], "gate": read_gate(run_dir), "human_summary": f"报告装配异常：{reason}"}
+
+    return {
+        "status": "ready",
+        "reused": bool(built.get("reused")),
+        "path": str(run_dir / "report.json"),
+        "markdown": str(run_dir / "report.md"),
+        "human_summary": "报告已就绪",
     }
 
 

@@ -3,6 +3,7 @@ import { createLogger } from './infra/logger.js'
 import { AgnesGateway } from './agh/gateway.js'
 import { TaskIndex } from './store/task-index.js'
 import { ExecutionService } from './services/execution.js'
+import { ReportService } from './services/report.js'
 import { EventRelay } from './events/relay.js'
 import { buildApp } from './app.js'
 import { mkdirSync } from 'node:fs'
@@ -55,7 +56,10 @@ async function main(): Promise<void> {
     }
   }
 
-  const app = buildApp({ cfg, log, gateway, index, exec, relay })
+  // 报告与证据只读服务（BE-08/09：只读内核产物，不 spawn 内核）
+  const reports = new ReportService(cfg.runsDir, index, log)
+
+  const app = buildApp({ cfg, log, gateway, index, exec, relay, reports })
 
   // 仅回环监听
   await app.listen({ host: cfg.host, port: cfg.port })

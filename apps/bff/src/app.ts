@@ -6,6 +6,7 @@ import type { AgnesGateway } from './agh/gateway.js'
 import type { TaskIndex } from './store/task-index.js'
 import { ExecutionService } from './services/execution.js'
 import type { EventRelay } from './events/relay.js'
+import type { ReportService } from './services/report.js'
 import { registerHealthRoute } from './routes/health.js'
 import { registerV1Routes } from './routes/v1/index.js'
 
@@ -26,6 +27,8 @@ export interface AppContext {
   exec: ExecutionService
   /** 事件中继（BE-06：AGH 事件 → 归一事件 → SSE） */
   relay: EventRelay
+  /** 报告与证据只读服务（BE-08 报告聚合 / BE-09 证据只读；只读内核产物） */
+  reports: ReportService
 }
 
 export function buildApp(ctx: AppContext): FastifyInstance {
@@ -88,7 +91,7 @@ export function buildApp(ctx: AppContext): FastifyInstance {
   }))
 
   registerHealthRoute(app, ctx.cfg, ctx.gateway, ctx.index)
-  registerV1Routes(app, ctx, ctx.exec)
+  registerV1Routes(app, ctx, ctx.exec, ctx.reports)
 
   return app
 }
