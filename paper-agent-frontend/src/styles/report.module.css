@@ -1,0 +1,346 @@
+/* 报告中心 / 证据溯源 / 导出交付（FE-07 / FE-08 / FE-09）
+   视觉语言取自《前端Demo/index.html》的报告区：标题 + 元信息 + 摘要 + 分节正文 + 结论带引用。 */
+
+/* ---------- 报告骨架 ---------- */
+.rtTitle {
+  font-size: 19px;
+  font-weight: 650;
+  color: var(--ink);
+  line-height: 1.4;
+}
+.rtMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s4);
+  margin-top: var(--s3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.rtMeta span b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+.abstract {
+  border-left: 3px solid var(--line-2);
+  padding: var(--s1) 0 var(--s1) var(--s4);
+  margin-top: var(--s4);
+  font-size: 13.5px;
+  color: var(--ink-2);
+  line-height: 1.75;
+}
+.section {
+  margin-top: var(--s6);
+}
+.sectionTitle {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink);
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--line);
+}
+.citeNote {
+  margin-top: var(--s3);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+/* ---------- 结论与证据徽章 ---------- */
+.conclList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.conclLi {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  font-size: 13.5px;
+  color: var(--ink);
+  line-height: 1.7;
+}
+.conclNo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+.conclBody {
+  flex: 1;
+  min-width: 0;
+}
+.evRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  flex-wrap: wrap;
+  vertical-align: top;
+  margin-left: var(--s2);
+}
+
+/* ---------- 证据徽章（可点击跳转溯源，P-02） ---------- */
+.evBadge {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line-2);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  transition:
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+.evBadge:hover {
+  border-color: var(--run);
+  color: var(--run);
+}
+.evBadgeFact {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line-2));
+}
+.evBadgeArtifact {
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--line-2));
+}
+
+/* ---------- 结果验证卡（通过=绿，未通过=红；降级永远不用红） ---------- */
+.verdict {
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--line));
+  border-left: 3px solid var(--ok);
+  background: var(--ok-soft);
+  border-radius: var(--r);
+  padding: var(--s3) var(--s4);
+  font-size: 12.8px;
+  color: var(--ink-2);
+}
+.verdictFail {
+  border-color: color-mix(in srgb, var(--fail) 30%, var(--line));
+  border-left-color: var(--fail);
+  background: var(--fail-soft);
+}
+.verdictHead {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-weight: 650;
+  font-size: 13px;
+  color: var(--ok-ink);
+}
+.verdictFail .verdictHead {
+  color: var(--fail-ink);
+}
+
+/* ---------- 降级声明（橙，绝不用红） ---------- */
+.statement {
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  border-radius: var(--r);
+  padding: var(--s3) var(--s4);
+  font-size: 12.8px;
+  color: var(--ink-2);
+}
+.statementHead {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-weight: 650;
+  font-size: 13px;
+  color: var(--warn-ink);
+  margin-bottom: var(--s1);
+}
+
+/* ---------- 报告生成中 / 未就绪 ---------- */
+.pending {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  padding: var(--s4);
+}
+.pendingMain {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- 证据卡片 ---------- */
+.filterBar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+.filterItem {
+  min-width: 150px;
+}
+.evList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.evCard {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  padding: var(--s3) var(--s4);
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+.evCardHi {
+  border-color: var(--run);
+  box-shadow: 0 0 0 3px var(--run-soft);
+}
+.evHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+.evId {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+}
+.evTitle {
+  flex: 1;
+  min-width: 200px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.evSummary {
+  margin-top: var(--s2);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.evMeta {
+  margin-top: var(--s2);
+  display: flex;
+  align-items: center;
+  gap: var(--s2) var(--s4);
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.evBound {
+  margin-top: var(--s2);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.refLink {
+  color: var(--link);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+}
+.auditGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  font-size: 11.5px;
+}
+.auditValue {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  word-break: break-all;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s2);
+}
+.traceList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.traceItem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  font-size: 12.3px;
+  color: var(--ink-2);
+  padding: var(--s1) 0;
+  border-bottom: 1px solid var(--line);
+}
+.traceItem:last-child {
+  border-bottom: none;
+}
+.traceTime {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.traceType {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+  margin-top: 2px;
+  min-width: 76px;
+}
+
+/* ---------- 导出面板 ---------- */
+.expList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.expRow {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s3);
+  flex-wrap: wrap;
+}
+.expMain {
+  flex: 1;
+  min-width: 180px;
+}
+.expName {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.expLead {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+.expLocked {
+  font-size: 11.5px;
+  color: var(--warn-ink);
+}
+.manifest {
+  margin-top: var(--s3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--s3);
+}
+.manifestRow {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  font-size: 12.3px;
+  color: var(--ink-2);
+  padding: var(--s1) 0;
+  flex-wrap: wrap;
+}
+.manifestName {
+  flex: 1;
+  min-width: 140px;
+}

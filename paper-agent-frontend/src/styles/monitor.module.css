@@ -1,0 +1,439 @@
+/* 运行监控（FE-05 / FE-06）：视觉语言取自《前端Demo/index.html》 */
+
+/* ---------- 步骤条 ---------- */
+.stepBar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.stepItem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s2) 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.stepItem:last-child {
+  border-bottom: none;
+}
+.stepActive {
+  color: var(--ink);
+}
+.stepRunning {
+  color: var(--ink);
+}
+.stepDone {
+  color: var(--ink-2);
+}
+.stepFailed {
+  color: var(--ink);
+}
+.stepSkipped {
+  color: var(--ink-3);
+}
+.ck {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-2);
+  flex: 0 0 auto;
+  margin-top: 3px;
+  display: grid;
+  place-items: center;
+  transition: all var(--dur) var(--ease);
+  color: transparent;
+}
+.stepRunning .ck {
+  border-color: var(--run);
+  color: var(--run);
+}
+.stepActive .ck {
+  border-color: var(--run);
+  color: var(--run);
+}
+.stepDone .ck {
+  border-color: var(--ok);
+  color: var(--ok-ink);
+}
+.stepFailed .ck {
+  border-color: var(--fail);
+  color: var(--fail-ink);
+}
+.stepSkipped .ck {
+  border-color: var(--idle);
+  color: var(--ink-3);
+}
+.stepMain {
+  flex: 1;
+  min-width: 0;
+}
+.stepId {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-right: var(--s2);
+}
+.stepMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-3);
+  flex-wrap: wrap;
+}
+.stepError {
+  margin-top: var(--s1);
+  font-size: 12px;
+  color: var(--fail-ink);
+}
+.stepActions {
+  display: flex;
+  gap: var(--s1);
+  margin-top: var(--s2);
+  flex-wrap: wrap;
+}
+
+/* ---------- 过程块（思考 / 计划 / 工具） ---------- */
+.blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.thinkBody {
+  padding: 0 var(--s3) var(--s3) var(--s5);
+  color: var(--ink-3);
+  font-size: 12.8px;
+}
+.thinkLine {
+  position: relative;
+  padding-left: 14px;
+  margin-top: 7px;
+}
+.thinkLine::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--ink-2);
+  vertical-align: -2px;
+  margin-left: 2px;
+  animation: blink 1s infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+.planItem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.planActive {
+  color: var(--ink);
+}
+.planDone {
+  color: var(--ink-2);
+}
+.planCk {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-2);
+  flex: 0 0 auto;
+  margin-top: 3px;
+  display: grid;
+  place-items: center;
+}
+.planActive .planCk {
+  border-color: var(--run);
+  color: var(--run);
+}
+.planDone .planCk {
+  border-color: var(--ok);
+  color: var(--ok-ink);
+}
+.toolBody {
+  border-top: 1px solid var(--line);
+  padding: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.toolState {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+}
+.toolStateOk {
+  color: var(--ok-ink);
+}
+.toolStateWarn {
+  color: var(--warn-ink);
+}
+.toolStateFail {
+  color: var(--fail-ink);
+}
+.toolStateRun {
+  color: var(--run);
+}
+.toolName {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.toolLabel {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.toolMeta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.chev {
+  color: var(--ink-3);
+  transition: transform var(--dur) var(--ease);
+}
+.chevOpen {
+  transform: rotate(180deg);
+}
+.outList {
+  font-size: 12.3px;
+  color: var(--ink-2);
+  list-style: none;
+}
+.outList li {
+  padding-left: var(--s4);
+  position: relative;
+  margin: var(--s1) 0;
+}
+.outList li::before {
+  content: '';
+  position: absolute;
+  left: var(--s1);
+  top: 9px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+/* ---------- 当前活动 ---------- */
+.activityHead {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: 13.5px;
+  color: var(--ink);
+  font-weight: 600;
+}
+.activityList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-top: var(--s2);
+  max-height: 200px;
+  overflow-y: auto;
+}
+.activityItem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.activityTime {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* ---------- 降级横幅（橙色，绝不用红） ---------- */
+.banner {
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  border-radius: var(--r);
+  padding: var(--s3) var(--s4);
+}
+.bannerHead {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--warn-ink);
+  font-weight: 650;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.bannerIcon {
+  flex: 0 0 auto;
+}
+.bannerLead {
+  margin-top: var(--s2);
+  font-size: 12.8px;
+  color: var(--ink-2);
+}
+.bannerFields {
+  margin-top: var(--s2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  font-size: 12.3px;
+  color: var(--ink-2);
+}
+.bannerActions {
+  margin-top: var(--s3);
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+/* ---------- 断线提示 ---------- */
+.disconnect {
+  border: 1px solid color-mix(in srgb, var(--run) 30%, var(--line));
+  border-left: 3px solid var(--run);
+  background: var(--run-soft);
+  border-radius: var(--r);
+  padding: var(--s3) var(--s4);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+.disconnectText {
+  flex: 1;
+  min-width: 220px;
+  font-size: 12.8px;
+  color: var(--ink-2);
+}
+
+/* ---------- 报告就绪条 ---------- */
+.readyBar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  border: 1px solid color-mix(in srgb, var(--ok) 32%, var(--line));
+  background: var(--ok-soft);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--r);
+  padding: var(--s3) var(--s4);
+  font-size: 13px;
+  color: var(--ink-2);
+  flex-wrap: wrap;
+}
+.readyText {
+  flex: 1;
+  min-width: 180px;
+}
+
+/* ---------- 运行统计（机械摘要口径） ---------- */
+.statList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: var(--s3) 0 0;
+  padding: var(--s3) 0 0;
+  border-top: 1px solid var(--line);
+}
+.statRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  font-size: 12.5px;
+}
+.statRow dt {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+}
+.statRow dd {
+  margin: 0;
+  color: var(--ink-2);
+  text-align: right;
+}
+
+/* ---------- 产物梳理 ---------- */
+.artifactGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+.artifactGroup + .artifactGroup {
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--line);
+}
+.artifactGroupHead {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 0 var(--s1);
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+  color: var(--ink-3);
+}
+.artifactItem {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+  border: 1px solid transparent;
+}
+.artifactItem:hover {
+  background: var(--raised);
+  border-color: var(--line);
+}
+.artifactKind {
+  flex: 0 0 auto;
+}
+.artifactMain {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.artifactTitle {
+  font-size: 13px;
+  color: var(--ink);
+  /* 330px 栏宽下标题必然超一行：宁可换行也不能把文字裁掉且无处可看 */
+  overflow-wrap: anywhere;
+}
+.artifactRef {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.artifactChev {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+}

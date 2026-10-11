@@ -1,0 +1,133 @@
+/* 全局基础样式：重置、滚动条、排版、焦点可见、无障碍工具类 */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+ul,
+ol,
+table {
+  margin: 0;
+  padding: 0;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+svg {
+  display: block;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: var(--r-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 键盘可达：焦点必须可见（§10 可访问） */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-sm);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 键盘直达主内容（FE-13）：平时隐身，Tab 聚焦时出现 */
+.skip-link {
+  position: absolute;
+  left: var(--s4);
+  top: -48px;
+  z-index: 20;
+  padding: var(--s2) var(--s3);
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  transition: top var(--dur) var(--ease);
+}
+.skip-link:focus {
+  top: var(--s3);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

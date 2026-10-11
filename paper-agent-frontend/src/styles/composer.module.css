@@ -1,0 +1,210 @@
+/* 底部追问 / 修订输入区（FE-10 / Composer） */
+.wrap {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  padding: var(--s3) var(--s5) var(--s4);
+  /* 整块不透明 + 顶部分隔线 + 上投影。原先是 transparent→--bg 的渐变遮罩，
+     正文滚到一半时会从遮罩里露出被横切一半的字（截图实测），读起来像渲染坏了。 */
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -14px 22px -16px color-mix(in srgb, var(--ink) 30%, transparent);
+}
+.box {
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+.box:focus-within {
+  border-color: var(--accent);
+  /* 输入区是单一聚焦单元：环画在容器上，并按 accent 取色（全局灰环只用于离散控件） */
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent),
+    var(--shadow-md);
+}
+.ta:focus-visible {
+  /* 容器已有 :focus-within 环，内部再画一层会叠成双环并露出小圆角矩形 */
+  box-shadow: none;
+  border-radius: 0;
+}
+.ta {
+  width: 100%;
+  resize: none;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.6;
+  padding: var(--s3) var(--s4) var(--s1);
+  max-height: 200px;
+}
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3) var(--s3);
+  flex-wrap: wrap;
+}
+.modes {
+  display: inline-flex;
+  gap: var(--s1);
+  padding: 2px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.mode {
+  font-size: 12px;
+  padding: 3px var(--s3);
+  border-radius: var(--r-pill);
+  color: var(--ink-3);
+}
+.modeActive {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  border: 1px solid var(--line);
+}
+.spacer {
+  flex: 1;
+}
+.send {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r);
+  display: grid;
+  place-items: center;
+  background: var(--raised);
+  color: var(--ink-3);
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+.sendReady {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.sendReady:hover {
+  background: var(--accent-hover);
+  color: var(--accent-fg);
+}
+.hint {
+  text-align: center;
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: var(--s2);
+}
+.queue {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  padding: var(--s2) var(--s3);
+  margin-bottom: var(--s2);
+}
+.queueHead {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.queueItem {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.queueText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queueOrder {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+}
+.queueBtn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+.queueBtn:hover {
+  color: var(--accent);
+  background: var(--surface);
+}
+.queueHint {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+/* 对话消息 */
+.msgUser {
+  display: flex;
+  justify-content: flex-end;
+}
+.bubble {
+  max-width: 80%;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r) var(--r) var(--r-xs) var(--r);
+  padding: var(--s2) var(--s3);
+  font-size: 13.5px;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.who {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: var(--s2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.whoMark {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  background: var(--ink);
+  display: grid;
+  place-items: center;
+  color: var(--accent-fg);
+}
+.msgAgent {
+  margin-top: var(--s4);
+}
+.failed {
+  margin-top: var(--s2);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+.sending {
+  font-size: 11.5px;
+  color: var(--run);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+}
