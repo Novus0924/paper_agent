@@ -1,0 +1,39 @@
+{
+  "name": "paper-agent",
+  "private": true,
+  "type": "module",
+  "version": "2.0.0-mvp",
+  "description": "paper-agent 2.0 — 可审计、可复现、证据可溯源的科研智能体工作台（黑客松 U046 你说的都队）",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=24.10"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "scripts": {
+    "dev:bff": "tsx watch apps/bff/src/index.ts",
+    "start:bff": "tsx apps/bff/src/index.ts",
+    "doctor": "node scripts/doctor.mjs",
+    "start": "node scripts/start.mjs",
+    "typecheck": "tsc -p apps/bff/tsconfig.check.json",
+    "test": "vitest run --project fast",
+    "lint": "eslint apps/bff/src apps/bff/test apps/bff/scripts scripts",
+    "lint:fix": "eslint --fix apps/bff/src apps/bff/test apps/bff/scripts scripts",
+    "quality-gate": "bash scripts/quality-gate.sh",
+    "dod": "bash scripts/verify-dod.sh",
+    "dod:quick": "bash scripts/verify-dod.sh --quick",
+    "lint:strict": "eslint --max-warnings 0 apps/bff/src apps/bff/test apps/bff/scripts scripts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^24.10.0",
+    "eslint": "^9.39.5",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,133 @@
+/* ==========================================================================
+   设计令牌 —— 全站唯一真源（FE-02）
+   取值来自《前端Demo/index.html》，结构遵循《前端需求文档》§5.1。
+   组件里真正禁止写死的是"会被主题覆盖的东西"：颜色一律走 var(--*)，
+   圆角只许取下文的六档，块级间距走 --s1…--s8（tests/tokens.test.ts 有锁）。
+   两类字面量是刻意留下的，不是漏网：
+   - font-size：Demo 给每个面单独调过 10.5 / 11.5 / 12.3 / 12.8px 这类小数码，
+     收进等比档位会改掉全站的字距与信息密度，那已经不是"照 Demo 走"了；
+   - 图标与状态点的直径、控件高度、1px 描边：构件尺寸，不随主题变，也不属于间距刻度。
+   ========================================================================== */
+
+:root {
+  /* ---- 面与底 ---- */
+  --bg: #ffffff;
+  --side: #fbfbfa;
+  --surface: #ffffff;
+  --surface-2: #f7f7f5;
+  --raised: #f1f1ef;
+
+  /* ---- 描边 ---- */
+  --line: rgba(16, 16, 16, 0.09);
+  --line-2: rgba(16, 16, 16, 0.15);
+
+  /* ---- 文字 ---- */
+  --ink: #1a1a1a;
+  --ink-2: #555552;
+  --ink-3: #6b6b66; /* 需求文档 §10 WCAG AA：弱化文字在最深的浅底（--raised）上也需 ≥4.5:1 */
+
+  /* ---- 强调色（唯一主操作色） ---- */
+  --accent: #111111;
+  --accent-hover: #000000;
+  --accent-fg: #ffffff;
+  --link: #2563eb;
+  --link-soft: rgba(37, 99, 235, 0.08);
+
+  /* ---- 状态色语义（§2.2 / §5.3，低饱和，仅用于点/字/描边） ---- */
+  --ok: #179a6b; /* 🟢 已完成 */
+  --run: #2563eb; /* 🔵 运行中 */
+  --warn: #c2680a; /* 🟠 已降级：绝不用红色。Demo 原值 #d97706 在 --surface-2/--raised 上只有 2.97/2.82:1，作标记不达非文本 3:1 */
+  --fail: #dc2626; /* 🔴 失败 */
+  --idle: #888884; /* ⚪ 待执行。Demo 原值 #9b9b96 在最浅的面上也只有 2.79:1；这一档在实心浅底上最差 3.15:1，与 --ok 的最差值同级 */
+
+  --ok-soft: rgba(23, 154, 107, 0.1);
+  --run-soft: rgba(37, 99, 235, 0.08);
+  --warn-soft: rgba(194, 104, 10, 0.1);
+  --fail-soft: rgba(220, 38, 38, 0.08);
+
+  /* 状态色的文字档：点/描边/底用上面的语义色，正文用达 AA 的同色系深色 */
+  --ok-ink: #0f7a54;
+  --warn-ink: #ac4f07;
+  --fail-ink: #b91c1c;
+
+  /* ---- 间距：4 的倍数 ---- */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+
+  /* ---- 圆角：六档，组件里只许取档，不许写字面 px（tests/tokens.test.ts 有锁）
+     档位来自全站已存在的取值：5px 是细文标签/行内 code，7px 是小控件，
+     10px 是卡片与气泡，14px 是 Composer 输入框，20px 是胶囊。 ---- */
+  --r-2xs: 2px;
+  --r-xs: 5px;
+  --r-sm: 7px;
+  --r: 10px;
+  --r-lg: 14px;
+  --r-pill: 20px;
+
+  /* ---- 字体 ---- */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  --font-mono:
+    ui-monospace, 'Cascadia Code', 'Cascadia Mono', Consolas, 'SF Mono', monospace;
+  --fs-body: 14px;
+  --lh-body: 1.65;
+
+  /* ---- 动效 ---- */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur: 150ms;
+
+  /* ---- 布局骨架（§4.2） ---- */
+  --nav-w: 220px;
+  --nav-w-collapsed: 64px;
+  --topbar-h: 56px;
+  --content-max: 840px;
+
+  /* ---- 阴影 ---- */
+  --shadow-sm: 0 1px 2px rgba(16, 16, 16, 0.04);
+  --shadow-md: 0 6px 24px rgba(16, 16, 16, 0.08);
+  --focus-ring: 0 0 0 3px rgba(16, 16, 16, 0.1);
+
+  /* ---- 遮罩与滚动条（墨色半透明档：只能在这里定义，组件里写死会在深色主题失效） ---- */
+  --scrim: rgba(16, 16, 16, 0.28);
+  --scroll-thumb: rgba(16, 16, 16, 0.16);
+  --scroll-thumb-hover: rgba(16, 16, 16, 0.28);
+}
+
+/* 多主题预留：仅覆盖变量，不改组件（浅色为 MVP 默认，深色为迭代项） */
+:root[data-theme='dark'] {
+  --bg: #0b0b0c;
+  --side: #0e0e10;
+  --surface: #141416;
+  --surface-2: #1a1a1d;
+  --raised: #202024;
+  --line: rgba(232, 232, 230, 0.1);
+  --line-2: rgba(232, 232, 230, 0.18);
+  --ink: #e8e8e6;
+  --ink-2: #b6b6b1;
+  --ink-3: #8a8a85;
+  --accent: #d9a441;
+  --accent-hover: #e5b155;
+  --accent-fg: #141416;
+  --link: #7fa8d9;
+  --link-soft: rgba(127, 168, 217, 0.12);
+  --ok: #6bbf8a;
+  --run: #7fa8d9;
+  --warn: #d98a5a;
+  --fail: #e5646a;
+  --ok-ink: #6bbf8a;
+  --warn-ink: #d98a5a;
+  --fail-ink: #e5646a;
+  --shadow-md: 0 6px 24px rgba(0, 0, 0, 0.4);
+  --focus-ring: 0 0 0 3px rgba(217, 164, 65, 0.25);
+  /* 深色下滚动条滑块若继续用墨色就贴在深底上看不见，改成浅色墨；遮罩加深 */
+  --scrim: rgba(0, 0, 0, 0.55);
+  --scroll-thumb: rgba(232, 232, 230, 0.16);
+  --scroll-thumb-hover: rgba(232, 232, 230, 0.28);
+}

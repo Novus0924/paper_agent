@@ -1,0 +1,113 @@
+/* Markdown 正文排版（报告章节、回答）：取值全部来自 tokens */
+.md {
+  font-size: 13.3px;
+  color: var(--ink-2);
+}
+.md > * + * {
+  margin-top: var(--s3);
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--ink);
+  line-height: 1.45;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.md h2::before,
+.md h3::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--ink);
+  border-radius: var(--r-2xs);
+  flex: 0 0 auto;
+}
+.md p {
+  margin: var(--s2) 0;
+}
+.md ul,
+.md ol {
+  padding-left: var(--s5);
+}
+.md li {
+  margin: var(--s1) 0;
+}
+.md a {
+  color: var(--link);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--link) 35%, transparent);
+}
+.md a:hover {
+  border-bottom-color: var(--link);
+}
+.md strong {
+  color: var(--ink);
+  font-weight: 620;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 11.8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 1px 5px;
+}
+.md pre {
+  font-family: var(--font-mono);
+  font-size: 11.8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s3);
+  overflow-x: auto;
+}
+.md pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.md blockquote {
+  border-left: 2.5px solid var(--line-2);
+  padding: var(--s2) var(--s3);
+  color: var(--ink-3);
+  font-size: 12.5px;
+  background: var(--surface-2);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.md table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  display: table;
+}
+.md th {
+  background: var(--surface-2);
+  text-align: left;
+  padding: var(--s2) var(--s3);
+  font-weight: 620;
+  color: var(--ink);
+  font-size: 11.8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.md td {
+  padding: var(--s2) var(--s3);
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.md tr:last-child td {
+  border-bottom: none;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--line);
+}

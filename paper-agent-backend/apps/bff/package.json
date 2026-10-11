@@ -1,0 +1,16 @@
+{
+  "name": "@paper-agent/bff",
+  "private": true,
+  "type": "module",
+  "version": "2.0.0-mvp",
+  "description": "paper-agent BFF — REST + SSE，经 AGH 会话执行（唯一执行出口）",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@agnes/daemon": "link:D:/agnes-harness-main/packages/daemon",
+    "@agnes/sdk": "link:D:/agnes-harness-main/packages/sdk",
+    "fastify": "^5.2.0"
+  }
+}

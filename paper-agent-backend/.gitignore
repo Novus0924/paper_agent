@@ -1,0 +1,42 @@
+# ===== 密钥与敏感信息（绝不入库）=====
+agnes-api-key.txt
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+
+# ===== 运行时产物 =====
+runs/
+data/
+*.log
+logs/
+node_modules/
+dist/
+build/
+.venv/
+__pycache__/
+*.pyc
+.coverage
+coverage/
+
+# ===== 工具与缓存 =====
+.workbuddy/
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+
+# AGH 实例目录（本地实验/专用 home）
+.agh/
+.agh-probe/
+
+# ===== 在线检索的运行时快照（live-*）=====
+# 它们是 `lit_source=arxiv/auto` 运行时**真联网抓取**的产物，
+# 带 retrieved_at 时间戳 → 每次抓取都不同 → 入库必然变脏。
+# 离线冻结的语料（sse-interface.json）是仓库资产，要入库。
+kernel/sciret_kernel/corpus/live-*.json
+
+# ===== 契约探测的临时产物 =====
+# workflow-contract.test.ts /其它探针会在 kernel/ 下建目录，属测试残留不入库。
+kernel/.contract-probe*/
