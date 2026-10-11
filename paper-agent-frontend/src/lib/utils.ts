@@ -54,15 +54,20 @@ export function truncate(text: string, max: number): string {
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
 }
 
-export function download(filename: string, mime: string, text: string): void {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
+/** 让浏览器保存一个已经存在的对象 URL：二进制产物（ZIP/JSONL）只能走这条路 */
+export function downloadUrl(filename: string, url: string): void {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+export function download(filename: string, mime: string, text: string): void {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  downloadUrl(filename, url);
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
@@ -91,9 +96,13 @@ export async function copyText(value: string): Promise<boolean> {
   }
 }
 
-/** DOI 等可外链的来源标识；产物路径等返回 null，不伪造成链接 */
-export function externalRef(ref: string): string | null {
-  const value = ref.trim();
+/**
+ * DOI 等可外链的来源标识；产物路径等返回 null，不伪造成链接。
+ * 参数允许为空：来源标识由后端按证据类型可选给出（内联产物没有 DOI），缺字段不能把整页炸掉。
+ */
+export function externalRef(ref: string | null | undefined): string | null {
+  const value = (ref ?? '').trim();
+  if (value === '') return null;
   if (/^https?:\/\//i.test(value)) return value;
   if (/^10\.\d{4,9}\//.test(value)) return `https://doi.org/${value}`;
   return null;

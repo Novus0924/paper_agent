@@ -266,6 +266,8 @@ export interface ActivityEvent {
 export interface ToolEvent {
   step: string;
   tool: string;
+  /** 稳定幂等键（live 下为 AGH toolUseId；mock 帧不带，回落到 step+tool） */
+  id?: string;
   label?: string;
   status: 'running' | 'done' | 'warn' | 'failed';
   input?: string;

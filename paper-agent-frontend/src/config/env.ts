@@ -9,8 +9,19 @@ function modeFromUrl(): ApiMode | null {
   return raw === 'live' || raw === 'mock' ? raw : null;
 }
 
+/**
+ * 测试模式恒为 mock（URL 参数 ?mode= 仍可覆盖，个别用例需要时自己带）。
+ * 原因：Vite 在**所有** mode 下都会读 `.env.local`，且它的优先级高于 `.env.test`
+ * 与 vitest 的 `test.env`——本机为联调写的 `VITE_API_MODE=live` 会把整条测试套件
+ * 切到真实 BFF 上（实测：无后端时 73 例失败）。测试不该依赖开发者本地有没有偷偷放一个 .env.local。
+ */
+const forcedForTests = metaEnv.MODE === 'test' ? 'mock' : null;
+
 export const env = {
-  apiMode: modeFromUrl() ?? (metaEnv.VITE_API_MODE === 'live' ? 'live' : 'mock'),
+  apiMode:
+    modeFromUrl() ??
+    forcedForTests ??
+    (metaEnv.VITE_API_MODE === 'live' ? 'live' : 'mock'),
   apiBaseUrl: (metaEnv.VITE_API_BASE_URL ?? 'http://127.0.0.1:8787').replace(/\/$/, ''),
   aghSettingsUrl: metaEnv.VITE_AGH_SETTINGS_URL ?? '',
   /** Mock 运行时的本地持久化前缀：刷新/重开后同一份报告与轨迹仍可达（P-03/P-04） */

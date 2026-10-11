@@ -101,15 +101,22 @@ export function applyEnvelope(
     }
 
     case 'tool': {
-      const id = `tool-${evt.data.step}-${evt.data.tool}`;
+      // 幂等键优先用事件自带的稳定 id（live 下是 AGH 的 toolUseId）：
+      // tool/call 帧的 step 还是 '-'，tool/result 帧才带真实步骤，
+      // 只用 step+tool 当键会把一次调用裂成两张卡（入参卡永远停在 running）。
+      const id = evt.data.id
+        ? `tool-${evt.data.id}`
+        : `tool-${evt.data.step}-${evt.data.tool}`;
       const prev = base.tools.find((x) => x.id === id);
       const tool: ToolCall = {
         id,
         seq: evt.seq,
         step: evt.data.step,
         tool: evt.data.tool,
-        // 终态帧常常只带结果：名称与入参沿用先到的帧，避免过程细节被清空
-        label: evt.data.label ?? prev?.label ?? evt.data.tool,
+        // 终态帧常常只带结果：名称与入参沿用先到的帧，避免过程细节被清空。
+        // label 缺失就留空：live 的 tool 事件只有工具名（sciret_*），
+        // 拿名字兜底会让卡片显示成 "sciret_plansciret_plan" 这种重复。
+        label: evt.data.label ?? prev?.label ?? '',
         status: evt.data.status,
         input: evt.data.input ?? prev?.input,
         output: evt.data.output ?? prev?.output,

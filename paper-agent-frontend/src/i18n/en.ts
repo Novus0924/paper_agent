@@ -95,5 +95,10 @@ export const en: DeepPartial<typeof zhCN> = {
     auditPack: 'Audit pack (ZIP)',
     sessionTrace: 'AGH session trace',
   },
-  composer: { send: 'Send', inputLabel: 'Follow-up or revision' },
+  composer: {
+    send: 'Send',
+    inputLabel: 'Follow-up or revision',
+    placeholderTerminal: 'This task is final; the backend rejects new follow-ups (409 BAD_STATE).',
+    terminalHint: 'Final tasks keep an immutable ledger. Start a new task to continue.',
+  },
 };

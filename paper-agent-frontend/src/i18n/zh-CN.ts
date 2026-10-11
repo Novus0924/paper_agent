@@ -123,6 +123,7 @@ export const zhCN = {
     sourcesLead: '系统会从这些来源检索文献与数据；不可用的来源不会默认勾选。',
     preflight: {
       idle: '点击下方按钮检测各来源连通性。',
+      deferred: '后端不设独立预检接口：创建任务时会实测所选来源，结果随任务一并给出。',
       running: '正在检测连通性…',
       done: '连通性预检完成。',
       failed: '预检未完成：{reason}',
@@ -311,7 +312,9 @@ export const zhCN = {
   composer: {
     placeholderRunning: '任务执行中，现在发送会排队…',
     placeholderIdle: '对报告追问或请求修订，Enter 发送 · Shift+Enter 换行',
+    placeholderTerminal: '任务已进入终态，后端不再接受追问或修订（409 BAD_STATE）。',
     hint: '由 Agnes Harness 在同一会话执行并记录 · 全程可在会话轨迹中复核',
+    terminalHint: '终态任务的产物与账本不可变；要沿着新问题继续，请新建任务。',
     send: '发送',
     inputLabel: '追问或修订内容',
     attach: '添加资料',

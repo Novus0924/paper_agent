@@ -61,9 +61,11 @@ export function EvidenceCard({ taskId, item, bound, highlighted }: EvidenceCardP
       {item.summary && <p className={report.evSummary}>{item.summary}</p>}
 
       <div className={report.evMeta}>
-        <span>
-          {t('evidence.ref')}：<span className={ui.monoInline}>{item.ref}</span>
-        </span>
+        {item.ref && (
+          <span>
+            {t('evidence.ref')}：<span className={ui.monoInline}>{item.ref}</span>
+          </span>
+        )}
         {item.year && <span>{item.year}</span>}
         {item.authors && <span>{item.authors}</span>}
         <span>

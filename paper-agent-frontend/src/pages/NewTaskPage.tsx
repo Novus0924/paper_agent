@@ -4,6 +4,7 @@ import layout from '@/styles/layout.module.css';
 import ui from '@/styles/ui.module.css';
 import wf from '@/styles/newtask.module.css';
 import type { LitSource, SourceName, WorkflowName } from '@/api/types';
+import { isLive } from '@/config/env';
 import { EXAMPLE_QUESTIONS, SOURCES, WORKFLOW_ORDER, WORKFLOWS } from '@/config/registry';
 import { useI18n } from '@/i18n';
 import { useTaskStore } from '@/store/taskStore';
@@ -37,6 +38,12 @@ export function NewTaskPage() {
   const toast = useToastStore((s) => s.push);
 
   const def = WORKFLOWS[workflow];
+  /**
+   * 独立连通性预检只在 mock 提供：后端把 probeSources 放在 POST /tasks 内
+   * （routes/v1/tasks.ts），没有预检接口，live 的实测结果随创建任务返回。
+   * 因此 live 不渲染"检测连通性"按钮，避免把"没有测量"显示成"后端不可达"。
+   */
+  const canPreflight = !isLive;
 
   useEffect(() => {
     // 切换工作流时回到该工作流的默认来源集合，避免带着不匹配的来源提交
@@ -198,14 +205,16 @@ export function NewTaskPage() {
             title={<SectionTitle index={3} title={t('newTask.stepSources')} />}
             icon="evidence"
             actions={
-              <Button
-                size="sm"
-                icon="refresh"
-                loading={preflightLoading}
-                onClick={() => void onPreflight()}
-              >
-                {t('newTask.preflight.check')}
-              </Button>
+              canPreflight ? (
+                <Button
+                  size="sm"
+                  icon="refresh"
+                  loading={preflightLoading}
+                  onClick={() => void onPreflight()}
+                >
+                  {t('newTask.preflight.check')}
+                </Button>
+              ) : undefined
             }
           >
             <p className={ui.hint}>{t('newTask.sourcesLead')}</p>
@@ -214,7 +223,9 @@ export function NewTaskPage() {
                 ? t('newTask.preflight.running')
                 : preflight
                   ? t('newTask.preflight.done')
-                  : t('newTask.preflight.idle')}
+                  : canPreflight
+                    ? t('newTask.preflight.idle')
+                    : t('newTask.preflight.deferred')}
             </p>
             <div className={wf.sourceList}>
               {SOURCES.map((source) => {

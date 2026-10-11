@@ -4,7 +4,7 @@ import layout from '@/styles/layout.module.css';
 import ui from '@/styles/ui.module.css';
 import type { ExportKind, ExportManifestItem, ExportResult } from '@/api/types';
 import { useI18n, type MsgKey } from '@/i18n';
-import { download } from '@/lib/utils';
+import { download, downloadUrl } from '@/lib/utils';
 import { useTaskStore } from '@/store/taskStore';
 import { useToastStore } from '@/store/toastStore';
 import { Button } from '@/components/ui/Button';
@@ -61,7 +61,10 @@ export function ExportPanel({ taskId, taskDone }: ExportPanelProps) {
       return;
     }
     if (res.blobUrl) {
-      window.setTimeout(() => URL.revokeObjectURL(res.blobUrl as string), 4000);
+      // live 的三个导出都带 blobUrl（审计包是 ZIP，不能按文本下载）。
+      // 旧实现只 revoke 不触发保存，表现为"提示导出成功、磁盘上没有文件"。
+      downloadUrl(res.filename ?? `${taskId}-export`, res.blobUrl);
+      window.setTimeout(() => URL.revokeObjectURL(res.blobUrl as string), 1500);
     } else if (res.filename && res.content) {
       download(res.filename, res.mime ?? 'text/plain;charset=utf-8', res.content);
     }

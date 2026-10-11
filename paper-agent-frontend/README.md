@@ -29,9 +29,22 @@ node scripts/check-css-refs.mjs   # 校验 css-module 类名引用无悬空
 | 变量                    | 作用                                                                 |
 | ----------------------- | -------------------------------------------------------------------- |
 | `VITE_API_MODE`         | `mock`（默认）/ `live`；URL 上的 `?mode=` 优先级更高                 |
-| `VITE_API_BASE_URL`     | Live 模式 BFF 根地址，默认 `http://127.0.0.1:8765`                   |
+| `VITE_API_BASE_URL`     | Live 模式 BFF 根地址，默认 `http://127.0.0.1:8787`；**留空 = 同源**，走 dev server 的 `/api` 代理 |
 | `VITE_AGH_SETTINGS_URL` | AGH 原生设置入口；留空时设置页给出可读说明而不是禁用死按钮           |
 | `VITE_FLAG_DEMO_TOOLS`  | `off` 时隐藏监控页「模拟断线/重新演示/快进」验证控件（仅 mock 生效） |
+
+本机真后端联调（2026-10-11 走过，取证见 §4）：后端按 `paper-agent-backend/README.md` 起 AGH daemon 与 BFF（`127.0.0.1:8787`），
+前端只要一份 `.env.local`（gitignore，绝不提交）：
+
+```bash
+VITE_API_MODE=live
+VITE_API_BASE_URL=          # 留空：请求发同源，由 vite 的 server.proxy['/api'] 转给 8787
+```
+
+为什么留空而不是写 `http://127.0.0.1:8787`：SSE 路由 `reply.hijack()` 之后自己 `writeHead`，响应头里
+**没有 `Access-Control-Allow-Origin`**（`apps/bff/src/routes/v1/events.ts`），跨源的 `EventSource` 一律被浏览器拦死，
+`PAPER_AGENT_CORS_ORIGINS` 也救不了它。同源代理既避开这一条，也和生产形态（BFF 托管构建产物）一致。
+临时演示想切回假数据不用改文件，`?mode=mock` 即可。
 
 ---
 
@@ -796,13 +809,39 @@ E2E_BASE_URL=http://127.0.0.1:5175 npx playwright test e2e/perf.spec.ts
 - **本轮没有新截图**，理由不是偷懒：改动面是 一条 `aria-label`、一条 `title` 文案、5 条零引用规则与几处等价重构，
   没有任何影响渲染像素的选择器或属性（已 `grep` 确认 CSS 不按 `role=`/`aria-label` 选样）。画面级取证仍归上一节那 16 张图。
 
+**Live 真实链路联调（2026-10-11，本机 AGH + BFF；关掉 §5 那条"未联调"）**
+
+栈是真实的：AGH daemon（命名管道 `\\.\pipe\agnes-…`，`/api/health` 报 `status:ok / agh.connected:true / sessions_open:3`）
++ BFF 绑 `127.0.0.1:8787` + 浏览器里的前端（vite dev `127.0.0.1:5174`，`server.proxy['/api']` 做同源转发——
+SSE 路由 `reply.hijack()` 直写响应头、不含 `Access-Control-Allow-Origin`，跨源 `EventSource` 会被浏览器拦死）。
+新建任务 → run-all → 监控 → 报告 → 证据 → 三件套导出全程在同一任务 `run-20261011-132648-zdwd45` 上走通，6 步 DONE。
+
+- **抓出并修掉 6 处"前端形状 ≠ 后端契约"，全部只有真跑能发现**（mock 发现不了：mock 本来就是按前端类型写的）。
+  1) 证据页整页空白：后端把来源标识拆成 `doi`/`source`、`authors` 是数组、`year` 是数字，`externalRef(undefined)` 直接抛；
+  2) 监控页整棵 React 树被卸掉（`#root.children=0`）：`tool.input/output` 与 `activity.detail` 后端给的是对象，`<pre>{对象}</pre>` 崩；
+  3) 一次工具调用裂成两张卡、入参卡永远停在 running：`tool/call` 帧的 `step` 还是 `-`，`step+tool` 不是稳定幂等键，得用 AGH 的 `toolUseId`；
+  4) 卡片名重复成 `sciret_plansciret_plan`：`label` 缺失时不该拿 `tool` 名兜底；
+  5) 导出"提示成功、磁盘上没有文件"：live 走 `blobUrl`，旧实现只 revoke 不触发保存；
+  6) 终态任务追问必然 409 `BAD_STATE`：后端只在 PLANNED/RUNNING 收消息，前端却在 DONE 上留着可用的输入框。
+  回归锁是新增的 `tests/live-contract.test.ts`（22 条，fixtures 逐字取自实测响应：`ev_audit.json` / `cite.json` / SSE 帧原文）；
+  复跑结果 `typecheck` 干净、`lint` 0 error、`vitest` **178 passed / 11 files**。
+- **真实产物核对**：三件套各落一份真文件（audit ZIP 10,646 B、session 轨迹 47,744 B、report Markdown），
+  按磁盘存在性与魔术字节 `PK\x03\x04` 确认；界面清单直接取后端 `X-Export-Contents`，不另列一份想象的目录。
+  证据页 16 条真实证据（分页首屏 10 条各带可点 DOI 外链）、`?view=audit` 的单条 `chain_hash` 与卡片显示一致；
+  工具卡展开后是缩进 JSON 原文（`sciret_run_all` 的 `run_dir` 就是本机 runs 路径）；
+  终态任务的 Composer 输入框与 追问/修订/发送 全部 `disabled=true`，占位符与页脚说明 409 语义。
+- **过程中两次自我纠正，记下来以免后来人重踩**：
+  `.env.local` 里的 `VITE_API_MODE=live` 会被 vitest 一并读走，那 73 条"红"不是回归而是本地环境泄漏——
+  修法是把 test 模式固定在 `src/config/env.ts`（`metaEnv.MODE === 'test'`），给 vitest 塞 `test.env` 实测无效；
+  另一条是 Composer 终态闸门最初不分 mock/live 一起禁用，打掉了 4 条 FE-10 旅程用例——409 是后端行为，演示数据没有，闸门必须 `isLive` 限定。
+
 ## 5. 尚未验证 / 已知边界（诚实清单）
 
-- **Live 真实链路未联调**：本机没有运行中的 AGH + BFF，Live 模式只验证到「切换生效 + 诚实报错 + 给出修复指引」，
-  真实 SSE 补发、真实导出产物与真实降级路径需在后端起来后复跑（DoD §14 第 3 条仍未达成）。
-  同一条还覆盖 `HealthBanner` 的一处待复测：那里每根问题的红/橙点在区分「阻塞 / 不阻塞」，旁边只有 `issue.title`。
-  后端 doctor 的真实文案里到底有没有把"阻塞"讲出来，现在拿不到证据，所以**没有**给它补 `label`
-  （补了可能读屏念两遍）。Live 联调时按真实 issue 文案再定。
+- **Live 真实链路已联调**（原记「本机没有运行中的 AGH + BFF」的口径作废，取证见 §4「Live 真实链路联调」）。
+  这一条现在只保留两件没证据的事：`HealthBanner` 每根问题的红/橙点在区分「阻塞 / 不阻塞」，
+  但后端 `/api/health` 的真实响应里只有 `agh.connected` 与 `runs_dir_ok` 两个布尔，没有 doctor 文案可对照，
+  所以**没有**给点补 `label`（补了可能读屏念两遍）；以及**降级路径仍未在真实运行里触发过**——
+  两轮 live 运行都是 `degraded:false`、0 条 `degraded` 事件，L2 降级的界面表现只由 mock 剧本演示过。
 - **agent 右列的两栏渲染：几何与画面都看过，缺的是人眼与基线**。Playwright 四档视口已直接量到 ≥1280px 命中媒体查询并解析出
   `806px + 330px` 两轨、窄档单轨、四档 0 横向溢出、产物条目不再裁字（见 §4「断点实测」），
   所以"浏览器真的把栅格分成两轨"不再是推算。原记的"画面仍未看过"本轮已补掉一半：
@@ -826,7 +865,9 @@ E2E_BASE_URL=http://127.0.0.1:5175 npx playwright test e2e/perf.spec.ts
   而 `report`（Markdown）与 `audit`（ZIP：报告 + 账本 + 事件 + 结论 + 校验脚本）是 **BFF 聚合产物，AGH web 并不产出这两样**，
   AGH 侧最接近的是 `packages/web/src/diagnostics-bundle.ts` 的 `agh-diagnostics-*.zip` 诊断包，内容清单与审计包不同；
   `packages/web/src/session-actions.ts` 的动作集只有 rename/fork/archive，没有导出。
-  因此"两边导出一致"这一说法只在会话轨迹那一路成立、且**尚未联调证实**；Live 起来后需按同一任务比对两侧产物再更新本条。
+  因此"两边导出一致"这一说法只在会话轨迹那一路成立、且**仍未与 AGH web 侧产物逐字节比对过**：
+  本轮 live 联调证实的是**本工作台这一侧**（三种 kind 都落真文件、清单来自 `X-Export-Contents`），
+  AGH web 的 `agh-diagnostics-*.zip` 没有取来对照，所以这条仍算未证实。
 - **e2e 套件覆盖的是几何/文案/链路/语义/第三方规则，不是像素**：`npm run test:e2e` 现在会真跑（**96 passed / 2 skipped**，
   含 `a11y.spec.ts` 的 8 条无障碍取证、`axe.spec.ts` 的 axe 整页审计与 `pages.spec.ts` 的 4 条任务级页面取证，见 §4），
   但它断言的是 computed 样式、轨道宽度、溢出、文案存在性与标题语义；
