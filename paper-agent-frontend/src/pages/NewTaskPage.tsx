@@ -242,9 +242,13 @@ export function NewTaskPage() {
                               <span className={ui.badge}>
                                 <Icon name="check" size={12} />{' '}
                                 {t('newTask.preflight.ok')}
-                                <span className={ui.monoInline}>
-                                  {result.latency_ms}ms
-                                </span>
+                                {/* 后端预检只回状态串、不回延迟（services/preflight.ts），
+                                    没有实测值就不显示，避免光秃秃的 "ms" */}
+                                {result.latency_ms !== undefined && (
+                                  <span className={ui.monoInline}>
+                                    {result.latency_ms}ms
+                                  </span>
+                                )}
                               </span>
                             ) : (
                               <span className={cx(ui.badge, ui.warn)}>

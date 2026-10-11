@@ -4,6 +4,7 @@ import { useI18n } from '@/i18n';
 import { cx } from '@/lib/utils';
 import { useAutoGrow } from '@/lib/hooks';
 import { queuedMessages } from '@/api/normalize';
+import { api } from '@/api/client';
 import { useTaskStore } from '@/store/taskStore';
 import { Icon } from '@/components/ui/Icon';
 
@@ -28,6 +29,7 @@ export function Composer({ taskId, running }: ComposerProps) {
   const removeQueued = useTaskStore((s) => s.removeQueued);
   const queue = entry ? queuedMessages(entry) : [];
   const ready = text.trim().length > 0;
+  const canSendNow = Boolean(api.sendNow);
 
   function submit() {
     const value = text.trim();
@@ -59,13 +61,16 @@ export function Composer({ taskId, running }: ComposerProps) {
               <span className={composer.queueText} title={m.text}>
                 {m.text}
               </span>
-              <button
-                type="button"
-                className={composer.queueBtn}
-                onClick={() => void sendNow(taskId, m.turn_id)}
-              >
-                {t('composer.queueSendNow')}
-              </button>
+              {/* live 后端无强制投递口（消息按序自动放行），不渲染假的「立即发送」按钮 */}
+              {canSendNow && (
+                <button
+                  type="button"
+                  className={composer.queueBtn}
+                  onClick={() => void sendNow(taskId, m.turn_id)}
+                >
+                  {t('composer.queueSendNow')}
+                </button>
+              )}
               <button
                 type="button"
                 className={composer.queueBtn}

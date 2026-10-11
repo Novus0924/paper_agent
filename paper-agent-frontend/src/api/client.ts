@@ -45,7 +45,11 @@ export interface ApiClient {
     text: string,
     action: 'ask' | 'revise',
   ): Promise<SendResult>;
-  sendNow(taskId: string, turnId: string): Promise<void>;
+  /**
+   * 「立即发送」：仅 mock 提供。后端契约无强制投递口（运行中消息按序排队、
+   * 回合结束自动放行），live 不提供伪实现，界面据此不显示该按钮。
+   */
+  sendNow?(taskId: string, turnId: string): Promise<void>;
   removeQueued(taskId: string, turnId: string): Promise<void>;
   exportArtifact(taskId: string, kind: ExportKind): Promise<ExportResult>;
   /** 演示辅助（仅 mock 模式提供实现）：模拟断线 / 快进 / 重置 */

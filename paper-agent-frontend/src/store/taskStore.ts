@@ -9,6 +9,7 @@ import type {
   ExportKind,
   ExportResult,
   ReportResponse,
+  SourceName,
   SourcePreflight,
   SseEnvelope,
   TaskSnapshot,
@@ -38,6 +39,19 @@ const blankEntry = (snapshot: TaskSnapshot | null = null): TaskEntry => ({
   report: null,
   lastFetchedAt: null,
 });
+
+/**
+ * 后端预检值形如 'ok' | 'unavailable:HTTP 429'（services/preflight.ts probeSources）。
+ * 它只给状态串、不给延迟，所以 ok 项不编造 latency_ms。
+ */
+function toSourcePreflight(sources: Record<string, string> | undefined): SourcePreflight[] {
+  if (!sources) return [];
+  return Object.entries(sources).map(([source, detail]) => ({
+    source: source as SourceName,
+    ok: detail === 'ok',
+    ...(detail === 'ok' ? {} : { detail }),
+  }));
+}
 
 interface TaskStoreState {
   tasks: TaskSnapshot[];
@@ -96,7 +110,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     set({ preflightLoading: true });
     try {
       const preflight = await api.preflight(input);
-      set({ preflight, preflightLoading: false });
+      // live 模式后端无独立预检接口，返回空集：如实回到"未检测"，不显示伪造结果
+      set({ preflight: preflight.length > 0 ? preflight : null, preflightLoading: false });
       return preflight;
     } catch (err) {
       set({ preflightLoading: false, listError: toApiError(err).code });
@@ -109,9 +124,12 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const res = await api.createTask(input);
       // 创建即建立会话并开始执行（监控页自动订阅）
       await api.runAll(res.task_id);
+      // 真实预检结果随创建任务返回（后端 routes/v1/tasks.ts），回填后界面显示的是实测值
+      const probed = toSourcePreflight(res.preflight?.sources);
       set((s) => ({
         byId: { ...s.byId, [res.task_id]: blankEntry(res.state) },
         tasks: [res.state, ...s.tasks],
+        ...(probed.length > 0 ? { preflight: probed } : {}),
       }));
       return { ok: true, taskId: res.task_id };
     } catch (err) {
@@ -361,6 +379,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   },
 
   async sendNow(taskId, turnId) {
+    // live 模式不提供该能力（见 ApiClient.sendNow 注释）；界面此时也不会渲染此按钮
+    if (!api.sendNow) return;
     try {
       await api.sendNow(taskId, turnId);
     } catch (err) {

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { StepBar } from '@/components/business/StepBar';
 import { DegradedBanner } from '@/components/business/DegradedBanner';
 import { Composer } from '@/components/business/Composer';
-import { api } from '@/api/client';
+import { api, type ApiClient } from '@/api/client';
 import { useTaskStore } from '@/store/taskStore';
 import { renderAt, resetStores, seedTask } from './harness';
 import { step } from './helpers';
@@ -195,7 +195,9 @@ describe('FE-10 Composer 与消息排队（P-05）', () => {
   });
 
   it('排队消息按顺序展示，可立即发送或删除', async () => {
-    const sendNow = vi.spyOn(api, 'sendNow').mockResolvedValue(undefined);
+    // sendNow 是 mock 独有能力（live 后端无强制投递口），本用例跑在 mock 模式下故必然存在
+    const client = api as Required<ApiClient>;
+    const sendNow = vi.spyOn(client, 'sendNow').mockResolvedValue(undefined);
     const removeQueued = vi.spyOn(api, 'removeQueued').mockResolvedValue(undefined);
     seedTask(taskId, {
       messages: [queued('t2', 2, '第二条提问'), queued('t1', 1, '第一条提问')],
