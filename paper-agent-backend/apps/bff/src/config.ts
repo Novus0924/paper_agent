@@ -54,9 +54,6 @@ const DEFAULT_AGH_CANDIDATES = (root: string): string[] => [
   resolve(root, '..', '..', 'agnes-harness'),
   resolve(root, '..', 'agnes-harness-main'),
   resolve(root, '..', 'agnes-harness'),
-  'D:/agnes-harness-main',
-  'D:/agnes-harness',
-  'C:/agnes-harness-main',
 ]
 
 function detectAghRoot(root: string, envOverride: string | undefined): string {

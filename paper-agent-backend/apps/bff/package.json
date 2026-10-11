@@ -9,8 +9,8 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
-    "@agnes/daemon": "link:D:/agnes-harness-main/packages/daemon",
-    "@agnes/sdk": "link:D:/agnes-harness-main/packages/sdk",
+    "@agnes/daemon": "link:../../../agnes-harness/packages/daemon",
+    "@agnes/sdk": "link:../../../agnes-harness/packages/sdk",
     "fastify": "^5.2.0"
   }
 }

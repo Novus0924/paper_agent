@@ -39,6 +39,7 @@ export function MonitorPage() {
   const openTask = useTaskStore((s) => s.openTask);
   const closeTask = useTaskStore((s) => s.closeTask);
   const resumeTask = useTaskStore((s) => s.resumeTask);
+  const stopTask = useTaskStore((s) => s.stopTask);
   const reloadEvidence = useTaskStore((s) => s.reloadEvidence);
   const dropConnection = useTaskStore((s) => s.dropConnection);
   const restoreConnection = useTaskStore((s) => s.restoreConnection);
@@ -105,6 +106,11 @@ export function MonitorPage() {
     void openTask(taskId);
   }
 
+  /** 运行中主动停止：confirm 把后果讲清楚（剩余步骤保留、可断点续跑）再动手 */
+  function confirmStop() {
+    if (window.confirm(t('monitor.stopConfirm'))) void stopTask(taskId);
+  }
+
   return (
     <div className={`${layout.page} ${layout.pageAgent}`}>
       <header className={layout.pageHead}>
@@ -117,6 +123,11 @@ export function MonitorPage() {
         {/* 证据在运行中/失败时同样要看，所以这一入口不受"报告是否就绪"门禁；
             报告页的入口由下方"报告已生成"提示条给出，避免同一目标两个按钮 */}
         <div className={layout.headActions}>
+          {running && (
+            <Button size="sm" icon="stop" onClick={confirmStop}>
+              {t('monitor.stop')}
+            </Button>
+          )}
           <Button
             size="sm"
             icon="evidence"

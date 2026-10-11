@@ -1,7 +1,7 @@
 /**
  * Node 侧脚本（start.mjs / doctor.mjs）的机器无关路径发现。
  *
- * 为什么单独成模块：这两个脚本原先把 AGH 根写死成 `D:/agnes-harness-main`，
+ * 为什么单独成模块：这两个脚本原先把 AGH 根写死成某台开发机的盘符绝对路径，
  * 而 AGH 是**另一个仓库**，每台机器位置都不同；内核 Python 也写死过某个用户的
  * WorkBuddy 安装路径。BFF 自己有一份等价逻辑（apps/bff/src/config.ts 的
  * DEFAULT_AGH_CANDIDATES + detectAghRoot），但那是 TS，本模块是 .mjs，
@@ -21,9 +21,6 @@ export function aghRootCandidates(projectRoot) {
     resolve(projectRoot, '..', '..', 'agnes-harness'),
     resolve(projectRoot, '..', 'agnes-harness-main'),
     resolve(projectRoot, '..', 'agnes-harness'),
-    'D:/agnes-harness-main',
-    'D:/agnes-harness',
-    'C:/agnes-harness-main',
   ]
 }
 

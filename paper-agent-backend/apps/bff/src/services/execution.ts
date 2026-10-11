@@ -25,6 +25,11 @@ type KernelState = {
   steps?: Array<{ id: string; status: StepStatus; attempts?: number }>
 }
 
+/** 受控模型步骤（与内核 workflow.MODEL_STEPS 同源）：
+ *  由系统在整链完成后自动追加模型回合执行（sciret_synthesize），
+ *  不参与手动单步推进与断点续跑。 */
+const MODEL_STEP_IDS: ReadonlySet<string> = new Set(['S1'])
+
 export type ExecutionAction = 'run-all' | 'step' | 'resume' | 'stop'
 
 type Lock = { action: ExecutionAction; startedAt: string; sessionId: string }
@@ -65,6 +70,7 @@ export class ExecutionService {
   /** POST /tasks/{id}/run-all —— 经会话跑完整流程（202，立即返回） */
   runAll(taskId: string): { task_id: string; run_status: RunStatus } {
     const task = this.mustGet(taskId)
+    this.assertNotArchived(task)
     this.syncFromKernel(task)
     this.assertNotBusy(taskId)
     const instruction = this.buildInstruction(task, 'run-all')
@@ -75,6 +81,7 @@ export class ExecutionService {
   /** POST /tasks/{id}/step —— 经会话推进单步（body: step） */
   step(taskId: string, rawStep: unknown): { task_id: string; step: string; run_status: RunStatus } {
     const task = this.mustGet(taskId)
+    this.assertNotArchived(task)
     this.syncFromKernel(task)
     const stepId = this.validateStep(task, rawStep)
     this.assertNotBusy(taskId)
@@ -86,9 +93,12 @@ export class ExecutionService {
   /** POST /tasks/{id}/resume —— 断点续跑（仅 PENDING/FAILED 会执行） */
   resume(taskId: string): { task_id: string; from_step: string | null; run_status: RunStatus } {
     const task = this.mustGet(taskId)
+    this.assertNotArchived(task)
     this.syncFromKernel(task)
     this.assertNotBusy(taskId)
-    const fromStep = task.steps.find((s) => s.status === 'PENDING' || s.status === 'FAILED')?.id ?? null
+    // 受控模型步骤（S1）不参与续跑：由系统在整链完成后自动追加模型回合
+    const fromStep =
+      task.steps.find((s) => (s.status === 'PENDING' || s.status === 'FAILED') && !MODEL_STEP_IDS.has(s.id))?.id ?? null
     if (fromStep === null && task.run_status === 'DONE') {
       // 幂等：已是终态 DONE，无需再跑（返回 409 让调用方明确感知，而不是空跑）
       throw new ApiError('BAD_STATE', `任务 ${taskId} 已完成（无待续跑步骤）`, '如需重新执行，请新建任务。')
@@ -157,6 +167,17 @@ export class ExecutionService {
     return task
   }
 
+  /** 归档互锁（v2.1）：归档任务拒绝一切执行类操作（GET 类只读不受限） */
+  private assertNotArchived(task: TaskRecord): void {
+    if (task.archived === true) {
+      throw new ApiError(
+        'BAD_STATE',
+        `任务 ${task.task_id} 已归档，请先恢复`,
+        '通过 POST /api/v1/tasks/{id}/archive（body {"archived": false}）恢复后再执行。',
+      )
+    }
+  }
+
   private runDir(taskId: string): string {
     return resolve(this.runsDir, taskId)
   }
@@ -170,6 +191,13 @@ export class ExecutionService {
       throw ApiError.badBody('缺少 step 字段（字符串）。')
     }
     const stepId = raw.trim()
+    if (MODEL_STEP_IDS.has(stepId)) {
+      throw new ApiError(
+        'BAD_PARAM',
+        `步骤 ${stepId} 是受控模型步骤，不支持手动单步执行`,
+        '该步骤由系统在整链完成后自动执行（基于证据的综合回答），无需手动触发。',
+      )
+    }
     const known = task.steps.map((s) => s.id)
     if (!known.includes(stepId)) {
       throw new ApiError('BAD_PARAM', `未知步骤：${stepId}`, `该任务的步骤为：${known.join(' | ')}。`)
@@ -192,8 +220,15 @@ export class ExecutionService {
   /** 组装指令：要求模型真实调用内核工具（不得凭空回答） */
   private buildInstruction(task: TaskRecord, action: ExecutionAction, opts: { step?: string } = {}): string {
     const dir = this.runDir(task.task_id).replace(/\\/g, '/')
+    // T5 查询规划（模型参与点 1，受控）：要求模型先依据 goal 产出 1-3 个英文检索查询，
+    // 经 sciret_plan 的 queries 参数透传内核（写入 state.json 并用于 Crossref/OpenAlex 检索）。
+    // 模型拒绝/未传时内核回落 goal 原文（既有行为），不阻断。
     const plan = [
       `首先调用 sciret_plan 工具初始化任务，参数 run_dir="${dir}"、goal="${task.goal}"、workflow="${task.workflow}"、lit_source="${task.lit_source}"。`,
+      '调用 sciret_plan 前，请先依据研究目标产出 1-3 个面向 Crossref/OpenAlex 的**英文关键词式**检索查询'
+        + '（如 "solid-state electrolyte interface impedance characterization"；不要中文整句），'
+        + '把它们作为 sciret_plan 的 queries 参数（字符串数组）传入——中文目标对英文文献库直接检索相关性极差，'
+        + '英文查询能显著提升命中质量。若你判断无法产出合理查询，可以不传该参数，系统会回退使用目标原文。',
     ].join('')
 
     if (action === 'run-all') {
@@ -222,6 +257,34 @@ export class ExecutionService {
     ].join('\n')
   }
 
+  /**
+   * 受控模型综合回合（T4，模型参与点 2）：整链 DONE 且报告就绪后，在同一会话
+   * 追加一轮模型指令，要求模型基于 report.json 与 ledger.jsonl 的证据撰写
+   * 300-600 字对 goal 的直接回答（必须用 [EV-xxxx] 角标引用真实证据），
+   * 并调用 sciret_synthesize 落盘（内核校验角标、artifact 入账本、重装配报告）。
+   *
+   * 红线对齐：模型输出是 artifact（不进结论、不影响门禁）；执行仍经 AGH 会话；
+   * 失败只记日志、不回滚主链路产物（综合回答缺失 ≠ 任务失败）。
+   */
+  private buildSynthesisInstruction(task: TaskRecord): string {
+    const dir = this.runDir(task.task_id).replace(/\\/g, '/')
+    return [
+      `你正在为 paper-agent 任务 ${task.task_id} 生成「对研究问题的直接回答」（受控模型判断点，全额留痕）。`,
+      `请先读取 run 目录 ${dir} 中的 report.json 与 ledger.jsonl（只读，不得修改任何既有产物）。`,
+      `然后基于其中真实存在的证据，撰写 300-600 字对研究目标「${task.goal}」的直接回答：`,
+      '每个事实性表述必须用 [EV-xxxx] 角标标注所依据的证据编号；只能使用 ledger.jsonl 中真实存在的证据编号，严禁编造证据号；没有证据支撑的表述请明确标注为推断。',
+      `完成后调用 sciret_synthesize 工具，参数 run_dir="${dir}"、text=<你撰写的回答全文>。`,
+      '必须真实调用工具落盘；不要凭空声称已完成。',
+    ].join('\n')
+  }
+
+  /** 综合回合是否该跑：整链 DONE 且报告产物已就绪（缺一不可） */
+  private synthesisEligible(taskId: string): boolean {
+    const task = this.index.get(taskId)
+    if (!task || task.run_status !== 'DONE') return false
+    return existsSync(resolve(this.runDir(taskId), 'report.json'))
+  }
+
   /** 启动后台执行：立即返回（202 语义），锁持有到回合结束 */
   private spawn(task: TaskRecord, action: ExecutionAction, instruction: string): void {
     const taskId = task.task_id
@@ -236,25 +299,49 @@ export class ExecutionService {
     this.log.info('已下发执行指令', { taskId, action })
 
     void (async () => {
+      let firstTurnFailed = false
       try {
-        await this.gateway.prompt(taskId, task.session_id, this.runDir(taskId), instruction)
-        this.log.info('会话回合结束', { taskId, action })
-      } catch (e) {
-        this.log.error('执行回合失败', { taskId, action, reason: e instanceof Error ? e.message : String(e) })
-        const t = this.index.get(taskId)
-        if (t && t.run_status === 'RUNNING') {
-          t.run_status = 'FAILED'
-          const record: DegradationRecord = {
-            level: 'degraded',
-            source: 'session',
-            reason: `会话执行失败：${e instanceof Error ? e.message : String(e)}`,
-            impact: '任务未完成，可 resume 断点续跑',
-            resumable: true,
-            step: '-',
-            at: new Date().toISOString(),
+        try {
+          await this.gateway.prompt(taskId, task.session_id, this.runDir(taskId), instruction)
+          this.log.info('会话回合结束', { taskId, action })
+        } catch (e) {
+          firstTurnFailed = true
+          this.log.error('执行回合失败', { taskId, action, reason: e instanceof Error ? e.message : String(e) })
+          const t = this.index.get(taskId)
+          if (t && t.run_status === 'RUNNING') {
+            t.run_status = 'FAILED'
+            const record: DegradationRecord = {
+              level: 'degraded',
+              source: 'session',
+              reason: `会话执行失败：${e instanceof Error ? e.message : String(e)}`,
+              impact: '任务未完成，可 resume 断点续跑',
+              resumable: true,
+              step: '-',
+              at: new Date().toISOString(),
+            }
+            t.degraded_reasons.push(record)
+            this.index.put(t)
           }
-          t.degraded_reasons.push(record)
-          this.index.put(t)
+        }
+        // T4：run-all 主链路成功到达 DONE 且报告就绪 → 同一会话追加受控模型综合回合。
+        // 锁保持持有（消息队列不会在综合回答期间并发投递）；综合回合失败不回滚主链路。
+        if (!firstTurnFailed && action === 'run-all') {
+          // 先以内核产物为准同步状态：spawn 时索引里是 RUNNING，不同步就判断会漏
+          this.syncFromKernel(this.index.get(taskId))
+          if (this.synthesisEligible(taskId)) {
+            const after = this.index.get(taskId)
+            if (after) {
+              try {
+                await this.gateway.prompt(taskId, task.session_id, this.runDir(taskId), this.buildSynthesisInstruction(after))
+                this.log.info('综合回答回合结束', { taskId, action: 'synthesize' })
+              } catch (e) {
+                this.log.warn('综合回答回合失败（不影响主链路产物，报告保持确定性部分）', {
+                  taskId,
+                  reason: e instanceof Error ? e.message : String(e),
+                })
+              }
+            }
+          }
         }
       } finally {
         this.locks.delete(taskId)

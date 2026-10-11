@@ -5,7 +5,6 @@ import { cx } from '@/lib/utils';
 import { useAutoGrow } from '@/lib/hooks';
 import { queuedMessages } from '@/api/normalize';
 import { api } from '@/api/client';
-import { isLive } from '@/config/env';
 import { useTaskStore } from '@/store/taskStore';
 import { Icon } from '@/components/ui/Icon';
 
@@ -31,19 +30,10 @@ export function Composer({ taskId, running }: ComposerProps) {
   const queue = entry ? queuedMessages(entry) : [];
   const ready = text.trim().length > 0;
   const canSendNow = Boolean(api.sendNow);
-  /**
-   * 后端契约：终态任务不接受新消息，POST /messages 直接 409 BAD_STATE
-   * （services/message.ts：DONE/FAILED，并提示改为新建任务）。
-   * 只在 live 收紧——mock 是演示模式，终态任务上的追问由本地运行时回放并标注「演示数据回放」，
-   * 那是不连后端时的可玩性，不是对真实契约的承诺。
-   */
-  const terminal =
-    isLive &&
-    (entry?.snapshot?.run_status === 'DONE' || entry?.snapshot?.run_status === 'FAILED');
 
   function submit() {
     const value = text.trim();
-    if (!value || terminal) return;
+    if (!value) return;
     void sendMessage(taskId, value, mode);
     setText('');
   }
@@ -101,13 +91,10 @@ export function Composer({ taskId, running }: ComposerProps) {
           className={composer.ta}
           rows={1}
           value={text}
-          disabled={terminal}
           placeholder={
-            terminal
-              ? t('composer.placeholderTerminal')
-              : running
-                ? t('composer.placeholderRunning')
-                : t('composer.placeholderIdle')
+            running
+              ? t('composer.placeholderRunning')
+              : t('composer.placeholderIdle')
           }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
@@ -119,7 +106,6 @@ export function Composer({ taskId, running }: ComposerProps) {
               type="button"
               className={cx(composer.mode, mode === 'ask' && composer.modeActive)}
               aria-pressed={mode === 'ask'}
-              disabled={terminal}
               onClick={() => setMode('ask')}
             >
               {t('composer.modeAsk')}
@@ -128,7 +114,6 @@ export function Composer({ taskId, running }: ComposerProps) {
               type="button"
               className={cx(composer.mode, mode === 'revise' && composer.modeActive)}
               aria-pressed={mode === 'revise'}
-              disabled={terminal}
               onClick={() => setMode('revise')}
             >
               {t('composer.modeRevise')}
@@ -138,18 +123,16 @@ export function Composer({ taskId, running }: ComposerProps) {
           {running && <span className={composer.queueHint}>{t('composer.queued')}</span>}
           <button
             type="button"
-            className={cx(composer.send, ready && !terminal && composer.sendReady)}
+            className={cx(composer.send, ready && composer.sendReady)}
             onClick={submit}
-            disabled={!ready || terminal}
+            disabled={!ready}
             aria-label={t('composer.send')}
           >
             <Icon name="send" size={16} strokeWidth={2} />
           </button>
         </div>
       </div>
-      <p className={composer.hint}>
-        {terminal ? t('composer.terminalHint') : t('composer.hint')}
-      </p>
+      <p className={composer.hint}>{t('composer.hint')}</p>
     </div>
   );
 }

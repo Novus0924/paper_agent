@@ -1,25 +1,23 @@
 /* 报告中心 / 证据溯源 / 导出交付（FE-07 / FE-08 / FE-09）
    视觉语言取自《前端Demo/index.html》的报告区：标题 + 元信息 + 摘要 + 分节正文 + 结论带引用。 */
 
-/* ---------- 报告骨架 ---------- */
-.rtTitle {
-  font-size: 19px;
-  font-weight: 650;
-  color: var(--ink);
-  line-height: 1.4;
+/* 报告页头部：小字"研究报告"副标 + 任务 goal 作大标题 */
+.docKind {
+  font-size: 11.5px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: var(--s1);
 }
+
+/* ---------- 报告骨架 ---------- */
 .rtMeta {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--s2) var(--s4);
-  margin-top: var(--s3);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-3);
-}
-.rtMeta span b {
+  gap: var(--s2);
+  margin-top: var(--s2);
+  font-size: 11.5px;
   color: var(--ink-2);
-  font-weight: 600;
 }
 .abstract {
   border-left: 3px solid var(--line-2);
@@ -29,7 +27,38 @@
   color: var(--ink-2);
   line-height: 1.75;
 }
+/* 章节目录：锚点导航，样式克制（缩进 + 链接色） */
+.toc {
+  margin-top: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  padding: var(--s2) var(--s4) var(--s3);
+}
+.tocList {
+  padding-left: var(--s4);
+  list-style: decimal;
+  font-size: 12.5px;
+}
+.tocList li {
+  margin: var(--s1) 0;
+}
+.tocList a {
+  color: var(--link);
+}
+.tocList a:hover {
+  text-decoration: underline;
+}
+/* 章节正文：限宽居中，长文阅读不至于拉满整卡 */
+.prose {
+  max-width: 72ch;
+  margin-inline: auto;
+}
 .section {
+  margin-top: var(--s6);
+}
+/* 审计折叠与正文之间留出足够间距 */
+.auditBlock {
   margin-top: var(--s6);
 }
 .sectionTitle {

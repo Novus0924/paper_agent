@@ -5,7 +5,7 @@
     chain_hash_n = sha256(chain_hash_{n-1} + canonical_json(record_n 去掉 chain_hash 字段))
 
 记录类型（record_type）：
-    - evidence  证据条目（附录 A：tier ∈ {fact, artifact}；kind ∈ {literature,data,analysis,note,factcheck,draft,review}）
+    - evidence  证据条目（附录 A：tier ∈ {fact, artifact}；kind ∈ {literature,data,analysis,note,factcheck,draft,review,synthesis}）
     - judgment  模型/规则判断（受控判断点，全额留痕）
     - conclusion 结论（必须绑定 fact 级证据 id）
     - note      过程备注（人类可读活动）
@@ -29,7 +29,8 @@ LEDGER_FILE = "ledger.jsonl"
 
 RECORD_TYPES = ("evidence", "judgment", "conclusion", "note")
 EVIDENCE_TIERS = ("fact", "artifact")
-EVIDENCE_KINDS = ("literature", "data", "analysis", "note", "factcheck", "draft", "review")
+# synthesis = 受控模型综合回答（S1）：tier 恒为 artifact，不可进结论、不影响门禁
+EVIDENCE_KINDS = ("literature", "data", "analysis", "note", "factcheck", "draft", "review", "synthesis")
 DEGRADED_LEVELS = ("info", "degraded")
 
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .jsonio import atomic_write_json, read_json
+from .workflow import MODEL_STEPS
 
 STATE_FILE = "state.json"
 
@@ -58,6 +59,14 @@ class StepRecord:
     started_at: str | None = None
     ended_at: str | None = None
     error: str | None = None
+    optional: bool = False
+    """受控模型步骤标记（True = 不由确定性流水线执行，且**不阻塞任务收敛**）。
+
+    背景：S1（综合回答）是"受控模型判断点"——由模型在整链完成后经
+    sciret_synthesize 落盘，确定性流水线 run_all 不执行它。若让一个永远
+    PENDING 的 S1 阻塞收敛，所有任务都到不了 DONE 终态（报告永远不出），
+    故 optional 步骤不参与收敛判定；它完成后也不改变 run_status（终态不可逆）。
+    """
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -72,6 +81,9 @@ class StepRecord:
             d["ended_at"] = self.ended_at
         if self.error:
             d["error"] = self.error
+        if self.optional:
+            # 仅在为 True 时落盘：老 state.json（无此字段）反序列化默认 False，天然向后兼容
+            d["optional"] = True
         return d
 
     @staticmethod
@@ -84,6 +96,7 @@ class StepRecord:
             started_at=d.get("started_at"),
             ended_at=d.get("ended_at"),
             error=d.get("error"),
+            optional=bool(d.get("optional", False)),
         )
 
 
@@ -94,11 +107,20 @@ class RunState:
     workflow: str
     lit_source: str = "auto"
     sources: list[str] = field(default_factory=list)
+    queries: list[str] = field(default_factory=list)
+    """模型规划检索查询（T5 受控判断点产物，plan 时写入并持久化）。
+
+    为空表示"未提供规划查询"——检索回落使用 goal 原文（既有行为，不阻断）。
+    仅在非空时落盘：老 state.json 无此字段，反序列化默认空列表，向后兼容。
+    """
     run_status: RunStatus = RunStatus.PLANNED
     degraded: bool = False
     """降级声明（§2.2）：仅 L2 真降级置位；L1 仅记录 source_status。"""
     degraded_reasons: list[dict[str, Any]] = field(default_factory=list)
     source_status: dict[str, str] = field(default_factory=dict)
+    circuit: dict[str, str] = field(default_factory=dict)
+    """源熔断留痕（v2.2）：本 run 内抓取失败（source_status unavailable）的源不再二次尝试。
+    键=源名，值=open_until_run_end。仅非空时落盘（老 state.json 无此字段，向后兼容）。"""
     steps: list[StepRecord] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
@@ -119,6 +141,7 @@ class RunState:
         lit_source: str,
         sources: list[str],
         steps: list[tuple[str, str]],
+        queries: list[str] | None = None,
     ) -> "RunState":
         exist = read_json(cls.path(run_dir))
         if exist:
@@ -132,10 +155,15 @@ class RunState:
             lit_source=lit_source,
             sources=sources,
             run_status=RunStatus.PLANNED,
-            steps=[StepRecord(id=sid, label=label) for sid, label in steps],
+            # 受控模型步骤（workflow.MODEL_STEPS，如 S1）标记 optional：
+            # 不由确定性流水线执行、不阻塞收敛（见 StepRecord.optional 注释）
+            steps=[StepRecord(id=sid, label=label, optional=sid in MODEL_STEPS) for sid, label in steps],
             created_at=now,
             updated_at=now,
         )
+        # 规划查询在 create 之外统一赋值（保证幂等重建路径与新建路径共用同一份清洗逻辑）
+        if queries:
+            state.queries = [str(q).strip() for q in queries if str(q).strip()]
         state.save(run_dir)
         return state
 
@@ -144,7 +172,7 @@ class RunState:
         atomic_write_json(self.path(run_dir), self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "task_id": self.task_id,
             "goal": self.goal,
             "workflow": self.workflow,
@@ -158,6 +186,11 @@ class RunState:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        if self.queries:
+            d["queries"] = list(self.queries)
+        if self.circuit:
+            d["circuit"] = dict(self.circuit)
+        return d
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "RunState":
@@ -167,10 +200,12 @@ class RunState:
             workflow=str(d.get("workflow", "research")),
             lit_source=str(d.get("lit_source", "auto")),
             sources=list(d.get("sources", [])),
+            queries=[str(q) for q in d.get("queries", [])],
             run_status=RunStatus(str(d.get("run_status", "PLANNED"))),
             degraded=bool(d.get("degraded", False)),
             degraded_reasons=list(d.get("degraded_reasons", [])),
             source_status=dict(d.get("source_status", {})),
+            circuit=dict(d.get("circuit", {})),
             steps=[StepRecord.from_dict(s) for s in d.get("steps", [])],
             created_at=str(d.get("created_at", "")),
             updated_at=str(d.get("updated_at", "")),
@@ -252,10 +287,15 @@ class RunState:
         return s
 
     def converge(self) -> RunStatus:
-        """收敛：全部 DONE/SKIPPED → DONE；存在 FAILED → 保持 RUNNING 等调用方决策。"""
+        """收敛：全部步骤 DONE/SKIPPED → DONE；存在 FAILED → 保持 RUNNING 等调用方决策。
+
+        optional（受控模型）步骤**不阻塞收敛**：S1（综合回答）由模型在终态后
+        经 sciret_synthesize 补做；若让它参与收敛判定，一个永远 PENDING 的 S1
+        会让所有任务到不了 DONE（报告永远不出）。它完成后也不改变 run_status。
+        """
         if self.is_terminal:
             return self.run_status
-        if all(s.status in TERMINAL_STEP for s in self.steps):
+        if all(s.status in TERMINAL_STEP or s.optional for s in self.steps):
             self.run_status = RunStatus.DONE
         return self.run_status
 
@@ -268,14 +308,44 @@ class RunState:
         return self.run_status
 
     def remaining_steps(self) -> list[str]:
-        """断点续跑：仅 PENDING / FAILED 需要执行（DONE/SKIPPED 复用）。"""
-        return [s.id for s in self.steps if s.status in (StepStatus.PENDING, StepStatus.FAILED)]
+        """断点续跑：仅 PENDING / FAILED 需要执行（DONE/SKIPPED 复用）。
+
+        optional（受控模型）步骤不在此列：它们不走确定性流水线，
+        由 sciret_synthesize 在终态后补做，列入"待续跑"只会误导续跑方。
+        """
+        return [
+            s.id
+            for s in self.steps
+            if not s.optional and s.status in (StepStatus.PENDING, StepStatus.FAILED)
+        ]
 
     def next_pending(self) -> str | None:
         for s in self.steps:
-            if s.status in (StepStatus.PENDING, StepStatus.FAILED):
+            if not s.optional and s.status in (StepStatus.PENDING, StepStatus.FAILED):
                 return s.id
         return None
+
+    def complete_optional_step(self, run_dir: Path, step_id: str) -> StepRecord:
+        """受控模型步骤专用：PENDING → DONE 直接完成（不改 run_status）。
+
+        为什么不走 start/finish 两段式：synthesize 发生在任务已收敛 DONE **之后**
+        （终态不可逆，start_step 会拒绝终态任务），而 S1 恰恰设计为"终态后补做"。
+        本方法只允许 optional 步骤、只允许 PENDING → DONE 单向迁移、不触碰
+        run_status——终态不可逆红线不受影响；attempts/时间戳照常留痕。
+        """
+        s = self.step(step_id)
+        if not s.optional:
+            raise StateError(f"步骤 {step_id} 不是受控模型步骤（optional），不允许直接置 DONE")
+        if s.status == StepStatus.DONE:
+            return s  # 幂等：重复 synthesize 不重复改状态
+        if s.status != StepStatus.PENDING:
+            raise StateError(f"步骤 {step_id} 当前状态 {s.status.value}，仅 PENDING 可直接完成")
+        s.status = StepStatus.DONE
+        s.attempts += 1
+        s.started_at = s.started_at or _now()
+        s.ended_at = _now()
+        self.save(run_dir)
+        return s
 
     def add_degradation(self, run_dir: Path, *, level: str, source: str, reason: str, impact: str, resumable: bool, step: str) -> None:
         """降级记录（§2.2）：level ∈ {info, degraded}；仅 degraded 置 degraded=True。"""

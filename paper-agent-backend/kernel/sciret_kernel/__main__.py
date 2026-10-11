@@ -5,7 +5,8 @@
 
 - stdout 输出**单个 JSON 对象**（结构化结果）；非 0 退出码 = 工具失败；
 - `--run-dir` 为权威值：覆盖 args-json 中的 run_dir，并做路径白名单校验（防目录穿越）；
-- 工具集与 AGH 插件 sciret_* 一一对应（ping/workflows/plan/run_step/run_all/status/verify/report/cite/resume）。
+- 工具集与 AGH 插件 sciret_* 一一对应
+  （ping/workflows/plan/run_step/run_all/status/verify/report/cite/resume/synthesize）。
 
 退出码：0 成功 / 1 工具执行失败 / 2 参数非法 / 3 路径越权。
 """
@@ -15,13 +16,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, corpus, report as report_mod, workflow
+from . import __version__, corpus, injection, report as report_mod, workflow
+from .jsonio import sha256_text
 from .ledger import Ledger, LedgerError
 from .pipeline import CoveragePolicy, DEFAULT_COVERAGE, PipelineError, execute_step, run_all
+from .pipeline import _ev_id, _next_evidence_index  # noqa: SLF001 - 同包复用证据编号规则（保持全局唯一）
 from .state import RunState, StateError
 from .verify_cli import cite_lookup, verify_run
 
@@ -73,6 +77,26 @@ def tool_workflows(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     }
 
 
+def _sanitize_queries(raw: Any) -> list[str]:
+    """清洗规划查询：接受字符串数组或逗号分隔字符串；去空/去重/截断（≤3 条、每条 ≤200 字符）。
+
+    T5 查询规划：模型产出的 1-3 个英文检索查询；清洗是确定性的，
+    同输入恒得同列表（写入 state.json，参与后续检索与审计）。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError(f"queries 必须是字符串数组或逗号分隔字符串，收到 {type(raw).__name__}")
+    out: list[str] = []
+    for q in raw:
+        s = str(q).strip()[:200]
+        if s and s not in out:
+            out.append(s)
+    return out[:3]
+
+
 def tool_plan(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     task_id = str(args.get("task_id") or run_dir.name)
     goal = str(args.get("goal") or "").strip()
@@ -100,6 +124,7 @@ def tool_plan(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     wf = wf_raw
     lit_source = str(args.get("lit_source") or "auto")
     sources = [str(s) for s in (args.get("sources") or [])]
+    queries = _sanitize_queries(args.get("queries"))
     state = RunState.create(
         run_dir,
         task_id=task_id,
@@ -108,16 +133,39 @@ def tool_plan(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
         lit_source=lit_source,
         sources=sources,
         steps=workflow.steps_for(wf),
+        queries=queries,
     )
+    # 幂等 plan 场景（state 已存在）也要吸收本次传入的 queries：
+    # T5 中模型在 plan 时给出查询，若 state 已存在而静默丢弃，检索质量就静默回落。
+    if queries and not state.queries:
+        state.queries = queries
+        state.save(run_dir)
     ledger = Ledger(run_dir)
-    return {
+    # 提示注入检测（v2.2）：goal 是不可信外部输入。命中只附 warning **不阻断**——
+    # 科研目标可能合法包含模式词（如引用攻击样本做研究），如实标记即可。
+    goal_findings = injection.scan_text(goal)
+    result = {
         "ok": True,
         "tool": "plan",
         "state": state.to_dict(),
         "ledger_records": len(ledger),
+        "queries": list(state.queries),
         "workflow_fallback": None if wf_raw == wf else f"workflow 非法（{wf_raw}），已回退 {wf}",
-        "human_summary": f"已初始化 {wf} 工作流（{len(state.steps)} 步），目标：{goal[:40]}",
+        "human_summary": f"已初始化 {wf} 工作流（{len(state.steps)} 步），目标：{goal[:40]}"
+        + (f"；规划查询 {len(state.queries)} 条" if state.queries else ""),
     }
+    if goal_findings:
+        warn_ids = sorted({f.pattern_id for f in goal_findings})
+        result["injection_warning"] = {
+            "count": len(goal_findings),
+            "pattern_ids": warn_ids,
+            "message": (
+                f"目标文本命中疑似提示注入 {len(goal_findings)} 处（模式：{', '.join(warn_ids)}）；"
+                "已如实标记、不阻断，请人工确认目标语义"
+            ),
+        }
+        result["human_summary"] += f"；⚠️ 检测到疑似提示注入 {len(goal_findings)} 处（不阻断）"
+    return result
 
 
 def _load(run_dir: Path) -> tuple[RunState, Ledger]:
@@ -203,6 +251,121 @@ def tool_cite(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     return cite_lookup(run_dir, ev)
 
 
+_EV_REF_RE = re.compile(r"EV-\d{4}")
+_MAX_SYNTHESIS_CHARS = 20000
+
+
+def tool_synthesize(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    """受控模型综合回答（S1，需求 §3.1"受控判断点 + 全额留痕"）。
+
+    职责：把**模型撰写的**对研究问题的直接回答作为 artifact 落入账本，
+    并重装配报告（新增"对研究问题的回答"章节）。
+
+    红线落实：
+    - 模型文本是 artifact（tier=artifact, kind=synthesis, producer_step=S1），
+      **不进 conclusions、不影响门禁的 fact 绑定校验**；
+    - 文本中的 [EV-xxxx] 角标逐一校验：引用不存在的证据 → 角标剔除并留痕
+      （invalid_refs_removed），绝不保留虚构引用；
+    - 全额留痕：同时落 judgment 记录（judge=model:llm-synthesis@v1）。
+    """
+    state, ledger = _load(run_dir)
+    if state.run_status.value != "DONE":
+        raise PipelineError(
+            f"synthesize 仅在任务终态 DONE 后可用（当前 {state.run_status.value}）——"
+            f"综合回答必须基于已通过门禁的完整证据链"
+        )
+    raw_path = str(args.get("text_file") or "").strip()
+    if not raw_path:
+        raise ValueError("synthesize 需要 text_file（模型综合回答文本文件路径，须位于 run_dir 内）")
+    tf = Path(raw_path)
+    if ".." in tf.parts:
+        raise PathGuardError(f"text_file 不允许包含 '..'：{raw_path}")
+    if not tf.is_absolute():
+        raise PathGuardError(f"text_file 必须是绝对路径：{raw_path}")
+    # 归一化后再比对：run_dir 已被 guard resolve，text_file 不同 resolve 形式
+    # （如 Windows 临时目录短名/长名）会让 parents 判断误报越界
+    tf = tf.resolve()
+    # 越权防护：文本文件必须落在 run_dir 内（防止借 synthesize 读任意文件入账本）
+    if run_dir != tf and run_dir not in tf.parents:
+        raise PathGuardError(f"text_file 越界：{tf} 不在 run_dir {run_dir} 之内")
+    if not tf.exists():
+        raise ValueError(f"综合回答文本文件不存在：{tf}")
+    text = tf.read_text(encoding="utf-8").strip()
+    if not text:
+        raise ValueError("综合回答文本为空")
+    if len(text) > _MAX_SYNTHESIS_CHARS:
+        raise ValueError(f"综合回答文本过长：{len(text)} 字符（上限 {_MAX_SYNTHESIS_CHARS}）")
+
+    # ---- [EV-xxxx] 角标校验：存在的保留，不存在的剔除并留痕 ----
+    seen: list[str] = []
+    for ref in _EV_REF_RE.findall(text):
+        if ref not in seen:
+            seen.append(ref)
+    valid_refs = [r for r in seen if ledger.evidence_by_id(r) is not None]
+    invalid_refs = [r for r in seen if r not in valid_refs]
+    cleaned = text
+    for bad in invalid_refs:
+        cleaned = cleaned.replace(f"[{bad}]", "").replace(bad, "")
+
+    idx = _next_evidence_index(ledger)
+    ev_id = _ev_id(idx)
+    ledger.append(
+        "evidence",
+        {
+            "ev_id": ev_id,
+            # artifact：模型输出不可进结论（红线），仅供报告"对研究问题的回答"章节引用
+            "tier": "artifact",
+            "kind": "synthesis",
+            "title": "对研究问题的综合回答（模型生成，artifact）",
+            "text": cleaned,
+            "detail": {
+                "raw_chars": len(text),
+                "invalid_refs_removed": invalid_refs,
+                "note": "模型综合生成，非确定性内容；不进入确定性结论，不影响门禁",
+            },
+            "ref": {"file": tf.name, "sha256": sha256_text(text), "bytes": len(text.encode("utf-8"))},
+            "cited_evidence": valid_refs,
+            "producer_step": "S1",
+        },
+    )
+    ledger.append(
+        "judgment",
+        {
+            "judge": "model:llm-synthesis@v1",
+            "verdict": True,
+            "rationale": (
+                f"模型综合回答已落盘为 artifact（{ev_id}，{len(cleaned)} 字符，"
+                f"引用有效证据 {len(valid_refs)} 条）；非确定性内容，不进入确定性结论，不影响门禁 fact 绑定。"
+                + (f"剔除无效证据角标 {len(invalid_refs)} 个：{'、'.join(invalid_refs)}。" if invalid_refs else "")
+            ),
+            "evidence_ids": [ev_id],
+            "producer_step": "S1",
+        },
+    )
+
+    # S1 步骤收尾（受控模型步骤：不改 run_status，终态不可逆不受影响）
+    if any(s.id == "S1" for s in state.steps):
+        state.complete_optional_step(run_dir, "S1")
+
+    # 重装配报告：账本已变化 → assemble 的幂等短路必然失效 → report.json 增补 answer 章节
+    built = report_mod.assemble(run_dir)
+    return {
+        "ok": True,
+        "tool": "synthesize",
+        "evidence_id": ev_id,
+        "cited_evidence": valid_refs,
+        "invalid_refs_removed": invalid_refs,
+        "report_status": "ready" if built.get("reused") is not None else "unknown",
+        "path": str(run_dir / report_mod.REPORT_JSON),
+        "markdown": str(run_dir / report_mod.REPORT_MD),
+        "human_summary": (
+            f"综合回答已入账本（{ev_id}）：引用有效证据 {len(valid_refs)} 条"
+            + (f"，剔除无效角标 {len(invalid_refs)} 个" if invalid_refs else "")
+            + "；报告已重装配并包含「对研究问题的回答」章节"
+        ),
+    }
+
+
 def tool_resume(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     state, ledger = _load(run_dir)
     remaining = state.remaining_steps()
@@ -229,6 +392,7 @@ TOOLS: dict[str, Callable[[dict[str, Any], Path], dict[str, Any]]] = {
     "report": tool_report,
     "cite": tool_cite,
     "resume": tool_resume,
+    "synthesize": tool_synthesize,
 }
 
 

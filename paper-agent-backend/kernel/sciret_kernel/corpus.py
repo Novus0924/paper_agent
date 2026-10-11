@@ -22,6 +22,20 @@ _STOPWORDS = {
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
 _ASCII_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]{2,}")
 
+_DOI_PREFIX_RE = re.compile(r"^https?://(dx\.)?doi\.org/", re.IGNORECASE)
+_TITLE_PUNCT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
+
+
+def _norm_doi(doi: str) -> str:
+    """DOI 规范化（判重键）：小写、剥 https://doi.org/ 与 http://dx.doi.org/ 前缀。"""
+    return _DOI_PREFIX_RE.sub("", (doi or "").strip().lower())
+
+
+def _norm_title(title: str) -> str:
+    """标题规范化（无 DOI 时的判重键）：小写、去标点、压空白。"""
+    lowered = _TITLE_PUNCT_RE.sub(" ", (title or "").lower())
+    return " ".join(lowered.split())
+
 
 def _tokens(text: str) -> set[str]:
     """确定性分词：英文取词（≥3 字符），中文取 2-gram 滑窗（无需第三方分词库）。
@@ -58,17 +72,108 @@ def load_snapshot(name: str) -> dict[str, Any]:
         return json.load(fh)
 
 
-def rank_records(snapshot: dict[str, Any], goal: str, limit: int = 6) -> list[dict[str, Any]]:
-    """按与目标的关键词覆盖度打分排序（确定性：分数降序 → DOI 升序）。"""
-    goal_tokens = _tokens(goal)
-    scored: list[tuple[int, str, dict[str, Any]]] = []
+def rank_records_with_stats(
+    snapshot: dict[str, Any], goal: str, limit: int = 6, queries: list[str] | None = None
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """rank_records 的带统计版本：额外返回 ``{"deduped": n}``（被剔除的重复记录数）。
+
+    去重（v2.1，排序截断**前**执行）：crossref/openalex 对同题文献常各返回一条，
+    不去重会让 EV-0001/EV-0002 这样"同题重复"的证据挤占 limit 名额。
+    判重键：规范化 DOI 相同（小写、剥 doi.org / dx.doi.org 前缀）；无 DOI 时按
+    规范化标题（小写、去标点、压空白）。重复组保留打分最高者；分数相同按 DOI
+    字典序取最小（维持确定性）。零相关过滤（score==0）与既有行为一致，先于去重。
+    """
+    goal_tokens = _tokens(goal) | _tokens(" ".join(queries or []))
+    scored: list[tuple[int, str, str, dict[str, Any]]] = []
     for rec in snapshot.get("records", []):
         rec_tokens = _tokens(str(rec.get("title", ""))) | _tokens(" ".join(rec.get("authors", []) or []))
         score = len(goal_tokens & rec_tokens)
-        # 年份可作为次级可复现排序键（不参与内容哈希）
-        scored.append((score, str(rec.get("doi", "")).lower(), rec))
-    scored.sort(key=lambda x: (-x[0], x[1]))
-    return [rec for _, _, rec in scored[:limit]]
+        if score <= 0:
+            continue  # 零相关：不得进入证据（宁少选、不凑数）
+        doi_key = _norm_doi(str(rec.get("doi", "")))
+        title_key = _norm_title(str(rec.get("title", "")))
+        scored.append((score, doi_key, title_key, rec))
+
+    kept: dict[tuple[str, str], tuple[int, str, dict[str, Any]]] = {}
+    deduped = 0
+    for score, doi_key, title_key, rec in scored:
+        if doi_key:
+            key: tuple[str, str] = ("doi", doi_key)
+        elif title_key:
+            key = ("title", title_key)
+        else:
+            # 无 DOI 且无标题：无从判重，各自独立（不进去重统计）
+            key = ("solo", f"#{len(kept)}")
+            kept[key] = (score, doi_key, rec)
+            continue
+        if key not in kept:
+            kept[key] = (score, doi_key, rec)
+            continue
+        cur = kept[key]
+        if (-score, doi_key) < (-cur[0], cur[1]):
+            kept[key] = (score, doi_key, rec)
+        deduped += 1
+
+    ranked = sorted(kept.values(), key=lambda x: (-x[0], x[1]))
+    return [rec for _, _, rec in ranked[:limit]], {"deduped": deduped}
+
+
+def rank_records(
+    snapshot: dict[str, Any], goal: str, limit: int = 6, queries: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """按与目标的关键词覆盖度打分排序（确定性：分数降序 → DOI 升序）。
+
+    相关性堵漏（改造前病灶）：score==0 的记录也会入选——当快照内没有任何
+    与目标相关的文献时，排序退化为 DOI 字典序取前 limit 条，"零相关文献"
+    由此混进证据链，报告结论与用户问题彻底脱节。
+
+    现行为：**零相关记录一律过滤**（score==0 不得进证据）；过滤后不足 limit
+    就少选，如实反映——覆盖不足由上游 CoveragePolicy 按 §2.2 判定降级，
+    本函数不重复实现降级逻辑，只保证"选出的每一条都至少与问题共享一个关键词"。
+
+    v2.1：在排序截断前做同题去重（详见 rank_records_with_stats）；
+    需要知道剔除数时请改用 rank_records_with_stats。
+
+    queries（T5 规划查询）：与 goal 一起参与相关性度量。动机：中文 goal 的
+    CJK bigram 与英文文献标题天然零交集，若只按 goal 打分，"用英文查询抓到了
+    高相关文献、却因 goal 打分为 0 而全军覆没"——检索与排序自相矛盾。
+    相关性口径必须是"问题 + 规划查询"的整体（与检索 query 口径一致）。
+    """
+    records, _ = rank_records_with_stats(snapshot, goal, limit, queries=queries)
+    return records
+
+
+def phrase_for(text: str, token: str, max_len: int = 30) -> str:
+    """在原文 ``text`` 中还原包含 ``token`` 的可读片段（确定性，无第三方依赖）。
+
+    背景：中文分词采用 2-gram 滑窗，直接把 bigram 当结论主语会产生"固态""电解"
+    这类碎片。本函数按 CJK 连续段还原"原文中包含该 bigram 的完整片段"，
+    使结论主语回到用户可读的词组层面。
+
+    规则（确定性，同输入同输出）：
+    - token 本身不含 CJK（英文词）→ 已是完整词，原样返回；
+    - token 命中某个 CJK 连续段 → 段长 ≤ max_len 时返回整段；
+      超长句以 token 为中心取 max_len 窗口（中心对齐偏左，保证可复现）；
+    - token 未命中原文（理论上不该发生）→ 回落返回 token 本身。
+    """
+    text = text or ""
+    token = token or ""
+    if not token:
+        return text[:max_len]
+    if not _CJK_RE.search(token):
+        return token  # 英文 token 已是完整词
+    for run in _CJK_RE.findall(text):
+        pos = run.find(token)
+        if pos < 0:
+            continue
+        if len(run) <= max_len:
+            return run
+        half = (max_len - len(token)) // 2
+        start = max(0, pos - half)
+        end = min(len(run), start + max_len)
+        start = max(0, end - max_len)
+        return run[start:end]
+    return token
 
 
 def select_snapshot(goal: str, lit_source: str) -> tuple[str, dict[str, Any]]:

@@ -33,11 +33,11 @@ importers:
   apps/bff:
     dependencies:
       '@agnes/daemon':
-        specifier: link:D:/agnes-harness-main/packages/daemon
-        version: link:../../../../agnes-harness-main/packages/daemon
+        specifier: link:../../../agnes-harness/packages/daemon
+        version: link:../../../agnes-harness/packages/daemon
       '@agnes/sdk':
-        specifier: link:D:/agnes-harness-main/packages/sdk
-        version: link:../../../../agnes-harness-main/packages/sdk
+        specifier: link:../../../agnes-harness/packages/sdk
+        version: link:../../../agnes-harness/packages/sdk
       fastify:
         specifier: ^5.2.0
         version: 5.12.5

@@ -11,3 +11,15 @@ Thumbs.db
 test-results/
 playwright-report/
 coverage/
+
+# 独立仓库（AGH 底座，README 声明不纳入本仓库）
+agnes-harness/
+
+# 工作区数据（本地记忆/任务索引）
+.workbuddy/
+
+# QA/调试工具产物
+.playwright-cli/
+.qa-pcli/
+j*.yaml
+overview.yaml

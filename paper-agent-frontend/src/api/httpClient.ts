@@ -1,6 +1,7 @@
 import { parseErrorBody, toApiError } from './errors';
-import type { ApiClient, SubscribeHandlers } from './client';
+import type { ApiClient, ListTasksParams, SubscribeHandlers } from './client';
 import type {
+  ArchiveResult,
   Conclusion,
   CreateTaskInput,
   CreateTaskResponse,
@@ -12,11 +13,13 @@ import type {
   ExportManifestItem,
   ExportResult,
   HealthInfo,
+  MessageQueueResponse,
   ReportResponse,
   SseEnvelope,
   SseEventName,
   SendResult,
   SourcePreflight,
+  StopResult,
   TaskSnapshot,
   TraceEntry,
 } from './types';
@@ -124,9 +127,22 @@ export class LiveApiClient implements ApiClient {
   }
 
   /** 后端返回信封 `{ tasks, total }`（routes/v1/tasks.ts），不是裸数组 */
-  async listTasks(): Promise<TaskSnapshot[]> {
-    const res = await this.request<{ tasks?: TaskSnapshot[] }>('/tasks');
+  async listTasks(params?: ListTasksParams): Promise<TaskSnapshot[]> {
+    const query = new URLSearchParams();
+    if (params?.status) query.set('status', params.status);
+    if (params?.archived) query.set('archived', params.archived);
+    const qs = query.toString();
+    const res = await this.request<{ tasks?: TaskSnapshot[] }>(
+      `/tasks${qs ? `?${qs}` : ''}`,
+    );
     return res.tasks ?? [];
+  }
+
+  archiveTask(taskId: string, archived: boolean): Promise<ArchiveResult> {
+    return this.request<ArchiveResult>(
+      `/tasks/${encodeURIComponent(taskId)}/archive`,
+      { method: 'POST', body: JSON.stringify({ archived }) },
+    );
   }
 
   getTask(taskId: string): Promise<TaskSnapshot> {
@@ -169,6 +185,12 @@ export class LiveApiClient implements ApiClient {
       return;
     }
     await this.request<void>(`/tasks/${encodeURIComponent(taskId)}/resume`, {
+      method: 'POST',
+    });
+  }
+
+  stopTask(taskId: string): Promise<StopResult> {
+    return this.request<StopResult>(`/tasks/${encodeURIComponent(taskId)}/stop`, {
       method: 'POST',
     });
   }
@@ -281,6 +303,12 @@ export class LiveApiClient implements ApiClient {
    * 把"提前发一条消息"做成了"停掉任务"，故删除。接口里 sendNow 为可选，live 不提供。
    */
 
+  listMessages(taskId: string): Promise<MessageQueueResponse> {
+    return this.request<MessageQueueResponse>(
+      `/tasks/${encodeURIComponent(taskId)}/messages`,
+    );
+  }
+
   async removeQueued(taskId: string, turnId: string): Promise<void> {
     await this.request<void>(
       `/tasks/${encodeURIComponent(taskId)}/messages/${encodeURIComponent(turnId)}`,
@@ -288,6 +316,29 @@ export class LiveApiClient implements ApiClient {
         method: 'DELETE',
       },
     );
+  }
+
+  /** 报告 Markdown 直下：与 exportArtifact 同样走文件流，文件名固定 {task_id}.md */
+  async downloadReportMd(taskId: string): Promise<ExportResult> {
+    const path = `/tasks/${encodeURIComponent(taskId)}/report.md`;
+    let res: Response;
+    try {
+      res = await fetch(this.url(path));
+    } catch (err) {
+      throw toApiError(err);
+    }
+    if (!res.ok) {
+      const err = await parseErrorBody(res);
+      return { ok: false, kind: 'report', code: err.code, error: err.message };
+    }
+    const blob = await res.blob();
+    return {
+      ok: true,
+      kind: 'report',
+      filename: `${taskId}.md`,
+      mime: blob.type || 'text/markdown;charset=utf-8',
+      blobUrl: URL.createObjectURL(blob),
+    };
   }
 
   async exportArtifact(taskId: string, kind: ExportKind): Promise<ExportResult> {

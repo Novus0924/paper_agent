@@ -27,6 +27,7 @@ function makeRelay(initial: RelayEvent[]) {
   const bySeq = new Map<number, RelayEvent>()
   for (const e of initial) bySeq.set(e.seq, e)
   let handler: Handler | null = null
+  let ensureCalls = 0
   return {
     /** 本连接打开时"直写"的帧 */
     snapshot: () => [...bySeq.values()].sort((a, b) => a.seq - b.seq),
@@ -64,7 +65,12 @@ function makeRelay(initial: RelayEvent[]) {
         },
       }
     },
-    ensure: () => undefined,
+    ensure: () => {
+      ensureCalls += 1
+    },
+    get ensureCalls() {
+      return ensureCalls
+    },
     /** 供测试推送实时事件 */
     push(e: RelayEvent) {
       handler?.(e)
@@ -85,7 +91,7 @@ function parseFrames(raw: string): Array<{ id: number; event: string; data: Rela
   return out
 }
 
-async function makeApp(relay: ReturnType<typeof makeRelay>, withTask = true) {
+async function makeApp(relay: ReturnType<typeof makeRelay>, withTask = true, runStatus?: string) {
   const app = Fastify({ logger: false })
   app.setErrorHandler((err, _req, reply) => {
     const e = err as { code?: string; status?: number }
@@ -96,12 +102,60 @@ async function makeApp(relay: ReturnType<typeof makeRelay>, withTask = true) {
     reply.code(500).send({ error: String(err), code: 'INTERNAL' })
   })
   const ctx = {
-    index: { get: (id: string) => (withTask && id === TASK_ID ? { task_id: id } : undefined) },
+    index: {
+      get: (id: string) =>
+        withTask && id === TASK_ID ? { task_id: id, ...(runStatus ? { run_status: runStatus } : {}) } : undefined,
+    },
     relay,
   } as unknown as AppContext
   await app.register(async (v1) => registerEventsRoute(v1 as never, ctx), { prefix: '/api/v1' })
   await app.ready()
   return app
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * 真实 HTTP 流采样（inject 会等响应结束，无法验证"连接是否保持"）：
+ * 监听临时端口 → fetch 建连 → 边读边攒 → afterConnect 钩子可在连接打开期间
+ * 推送实时事件 → 等待「服务端主动断流」或 waitMs 超时（超时 = 连接仍保持）。
+ */
+async function collectSse(
+  app: FastifyInstance,
+  url: string,
+  opts: { afterConnect?: () => Promise<void>; waitMs?: number } = {},
+): Promise<{ raw: string; serverClosed: boolean }> {
+  await app.listen({ port: 0, host: '127.0.0.1' })
+  const port = (app.server.address() as { port: number }).port
+  const ac = new AbortController()
+  const res = await fetch(`http://127.0.0.1:${port}${url}`, { signal: ac.signal })
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let raw = ''
+  const finished = (async () => {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      raw += decoder.decode(value, { stream: true })
+    }
+  })().then(
+    () => true,
+    () => false,
+  )
+  if (opts.afterConnect) await opts.afterConnect()
+  const serverClosed = await Promise.race([
+    finished,
+    new Promise<false>((r) => setTimeout(() => r(false), opts.waitMs ?? 600)),
+  ])
+  // 超时路径：主动断开触发服务端 cleanup，避免悬挂连接
+  ac.abort()
+  await sleep(30)
+  try {
+    await app.close()
+  } catch {
+    /* 已随断连关闭 */
+  }
+  return { raw, serverClosed }
 }
 
 /**
@@ -254,6 +308,69 @@ describe('SSE · 终态必达（§5.2「done 先写 socket 再结束」）', () 
     // 关键：done 帧必须在流里（而不是 end 掉就没了）
     expect(frames.some((f) => f.event === 'done'), `流中未见 done 帧：${body.slice(0, 200)}`).toBe(true)
     await app.close()
+  })
+})
+
+describe('SSE · 终态追问（v2.2：终态连接保持，message 事件可达）', () => {
+  // 终态 ≠ 无实时事件：DONE/FAILED 任务建连时快照必含 done 帧，但追问回合
+  // （messages）会产生实时 message 事件（user running/done、assistant 回复）。
+  // 旧实现遇 done 帧立即 end → 报告页 SSE 一连上就被关闭，追问回复永远收不到。
+  const ts = (n: number) => `2026-10-11T10:00:0${n}Z`
+  const URL = `/api/v1/tasks/${TASK_ID}/events`
+  const messageAt = (seq: number, turnId: string, text: string): RelayEvent => ({
+    seq,
+    ts: ts(seq),
+    type: 'message',
+    turn_id: turnId,
+    role: 'assistant',
+    text,
+    status: 'done',
+  })
+
+  it('终态任务建连：done 帧照发，但连接不关闭，随后的 message 事件经连接可达', async () => {
+    const relay = makeRelay([{ seq: 1, ts: ts(1), type: 'done', run_status: 'DONE', report_ready: true }])
+    const app = await makeApp(relay, true, 'DONE')
+    const { raw, serverClosed } = await collectSse(app, URL, {
+      afterConnect: async () => {
+        await sleep(80) // 快照（含 done）已直写
+        relay.push(messageAt(2, 'turn-1', '追问回复'))
+        await sleep(80) // 事件经连接写出
+      },
+    })
+    const frames = parseFrames(raw)
+    expect(frames.some((f) => f.event === 'done'), 'done 帧必须照发（前端需要终态语义）').toBe(true)
+    const msg = frames.find((f) => f.event === 'message')
+    expect(
+      msg?.data,
+      `终态连接被服务端提前关闭，message 事件不可达。实际收到：${raw.slice(0, 300)}`,
+    ).toMatchObject({ text: '追问回复', role: 'assistant' })
+    expect(serverClosed, '终态任务 done 帧后连接不应被服务端关闭').toBe(false)
+  })
+
+  it('非终态回归：done 帧后服务端仍主动断开（前端重连拿新快照）', async () => {
+    const relay = makeRelay([
+      { seq: 1, ts: ts(1), type: 'step', step: 'R6', status: 'DONE' },
+      { seq: 2, ts: ts(2), type: 'done', run_status: 'DONE', report_ready: true },
+    ])
+    const app = await makeApp(relay, true, 'RUNNING')
+    const { raw, serverClosed } = await collectSse(app, URL, {
+      afterConnect: async () => {
+        await sleep(80)
+        relay.push(messageAt(3, 'turn-9', '不该收到'))
+        await sleep(80)
+      },
+    })
+    const frames = parseFrames(raw)
+    expect(frames.some((f) => f.event === 'done')).toBe(true)
+    expect(serverClosed, '非终态任务 done 帧后应服务端断开（原语义不变）').toBe(true)
+    expect(raw).not.toContain('turn-9')
+  })
+
+  it('终态建连时 relay.ensure 被调用（事件泵启动，assistant 事件可达）', async () => {
+    const relay = makeRelay([{ seq: 1, ts: ts(1), type: 'done', run_status: 'DONE', report_ready: true }])
+    const app = await makeApp(relay, true, 'DONE')
+    await collectSse(app, URL, { waitMs: 300 })
+    expect(relay.ensureCalls).toBeGreaterThanOrEqual(1)
   })
 })
 

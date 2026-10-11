@@ -9,7 +9,7 @@ type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]>
 export const en: DeepPartial<typeof zhCN> = {
   app: {
     name: 'paper-agent',
-    subtitle: 'Research Workbench · on AGH',
+    subtitle: 'Research Workbench',
     heroTitle: 'Ask a research question, get a traceable report',
     loading: 'Loading…',
   },
@@ -98,7 +98,5 @@ export const en: DeepPartial<typeof zhCN> = {
   composer: {
     send: 'Send',
     inputLabel: 'Follow-up or revision',
-    placeholderTerminal: 'This task is final; the backend rejects new follow-ups (409 BAD_STATE).',
-    terminalHint: 'Final tasks keep an immutable ledger. Start a new task to continue.',
   },
 };

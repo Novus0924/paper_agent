@@ -1,7 +1,7 @@
 # 机器无关的环境发现（仓库内 shell 脚本共用；由 agh.sh 与 scripts/*.sh source）
 #
 # 为什么要抽出来：这些脚本原先把**某一台开发机**的绝对路径写死在正文里
-#   AGH_ENTRY="D:/agnes-harness-main/..."   PROJ_ROOT="D:/workBubbyStore/paper-agent-2"
+#   AGH_ENTRY="<某台开发机的盘符绝对路径>/..."   PROJ_ROOT="<同样写死的绝对路径>"
 #   PY_BIN="C:/Users/lenovo/.workbuddy/.../python.exe"
 # 后果不是"不够优雅"，而是 README 第 2 步（`bash agh.sh daemon start`）在第二台机器上
 # 直接 `cd: No such file or directory` 退出 —— 换机的人只能靠口口相传绕开脚本。
@@ -90,8 +90,7 @@ pa_agh_root() {
   root="$(pa_proj_root)"
   for r in \
     "$root/../../agnes-harness-main" "$root/../../agnes-harness" \
-    "$root/../agnes-harness-main" "$root/../agnes-harness" \
-    "D:/agnes-harness-main" "D:/agnes-harness" "C:/agnes-harness-main"; do
+    "$root/../agnes-harness-main" "$root/../agnes-harness"; do
     for d in "$r" "$(pa_win "$r")"; do
       if [ -f "$d/packages/cli/dist/local/agnes.mjs" ]; then
         echo "$d"

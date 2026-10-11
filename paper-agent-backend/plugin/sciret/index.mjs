@@ -7,7 +7,7 @@
 //     PAPER_AGENT_KERNEL_ROOT（内核根，默认按约定探测）；
 //   - 子进程环境白名单（§11：不整包透传宿主 env）。
 //
-// 工具集（与内核 TOOLS 一一对应）：plan / run_step / run_all / status / verify / report / cite / resume / ping
+// 工具集（与内核 TOOLS 一一对应）：plan / run_step / run_all / status / verify / report / cite / resume / synthesize / ping
 // 注意：本机可能存在 v1.0 遗留包 paper-agent-tools（同名工具），启用本插件前请先停用旧包。
 
 const Kind = Symbol.for('TypeBox.Kind')
@@ -54,6 +54,11 @@ const READ_META = {
 }
 
 const RUN_DIR_PROP = str(1024)
+
+/** 规划检索查询（T5）：1-3 条英文关键词式查询，每条 ≤200 字符 */
+function queryArray() {
+  return { [Kind]: 'Array', type: 'array', items: str(200), maxItems: 3 }
+}
 
 const ENV_HINT = [
   '需在【启动 AGH daemon 的那个终端】先设好环境变量再启动 daemon：',
@@ -159,8 +164,9 @@ export const sciret = {
 
     register(
       'sciret_plan',
-      '初始化科研任务：创建运行状态（状态机）与证据账本。支持 workflow=research|materials，lit_source=local|arxiv|auto。',
-      { run_dir: RUN_DIR_PROP, goal: str(), workflow: str(32), lit_source: str(16), sources: strArray(), task_id: str(128) },
+      '初始化科研任务：创建运行状态（状态机）与证据账本。支持 workflow=research|materials，lit_source=local|arxiv|auto。'
+        + '可选 queries：依据研究目标产出的 1-3 个面向 Crossref/OpenAlex 的英文关键词式检索查询（显著提升中文目标对英文文献库的检索质量；不传则回退用目标原文检索）。',
+      { run_dir: RUN_DIR_PROP, goal: str(), workflow: str(32), lit_source: str(16), sources: strArray(), queries: queryArray(), task_id: str(128) },
       ['run_dir', 'goal'],
       WRITE_META,
       async ({ run_dir, ...rest }) => toolResult(await call('plan', run_dir, rest)),
@@ -230,6 +236,26 @@ export const sciret = {
       ['run_dir'],
       WRITE_META,
       async ({ run_dir, execute }) => toolResult(await call('resume', run_dir, execute ? { execute: true } : {})),
+    )
+
+    register(
+      'sciret_synthesize',
+      '受控模型综合回答落盘（S1 步骤）：把模型撰写的"对研究问题的直接回答"作为 artifact 写入证据账本并重装配报告。'
+        + '约束：text 中事实性表述必须用 [EV-xxxx] 角标标注证据编号（只能使用账本中真实存在的编号，内核会校验并剔除无效角标）；'
+        + '该内容为 artifact 级产物，不进入确定性结论、不影响门禁。仅在任务终态 DONE 后可用。',
+      { run_dir: RUN_DIR_PROP, text: str(16384) },
+      ['run_dir', 'text'],
+      WRITE_META,
+      async ({ run_dir, text }) => {
+        // 内核 synthesize 以 --text-file 读取（契约：防超长文本走 argv/args-json）。
+        // 文本文件必须落在 run_dir 内（内核有 text_file ⊆ run_dir 的越权校验）。
+        const { writeFile } = await import('node:fs/promises')
+        const { join } = await import('node:path')
+        const textFile = join(run_dir, 'synthesis_input.txt')
+        await writeFile(textFile, text, 'utf8')
+        const r = await call('synthesize', run_dir, { text_file: textFile })
+        return toolResult(r, `综合回答已入账本（${r.evidence_id ?? ''}），报告已重装配：${r.path ?? ''}`)
+      },
     )
 
     agnes.on('session_start', () => {

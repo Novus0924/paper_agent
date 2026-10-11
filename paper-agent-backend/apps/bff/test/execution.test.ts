@@ -248,3 +248,90 @@ describe('ExecutionService · resume / stop 终态语义', () => {
     expect(out.run_status).toBe('DONE')
   })
 })
+
+describe('ExecutionService · 受控模型综合回合（T4）与规划查询（T5）', () => {
+  /** 在 runs 目录伪造"整链 DONE + 报告就绪"的内核产物 */
+  function seedDoneRun(id: string, withReport = true): void {
+    const dir = join(runsDir, id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'state.json'),
+      JSON.stringify({
+        run_status: 'DONE',
+        degraded: false,
+        degraded_reasons: [],
+        source_status: { crossref: 'ok:8' },
+        steps: STEPS.map((s) => ({ ...s, status: 'DONE', attempts: 1 })),
+      }),
+      'utf8',
+    )
+    if (withReport) {
+      writeFileSync(join(dir, 'report.json'), JSON.stringify({ title: 'r', sections: [], conclusions: [] }), 'utf8')
+    }
+  }
+
+  it('run-all 到达 DONE 且报告就绪 → 同一会话追加 sciret_synthesize 指令回合', async () => {
+    const id = 'run-syn'
+    makeTask(id)
+    seedDoneRun(id)
+    exec.runAll(id)
+    await exec.whenIdle(id, 5000)
+    expect(gateway.prompts.length).toBe(2)
+    const synth = gateway.prompts[1]!.text
+    expect(synth).toContain('sciret_synthesize')
+    expect(synth).toContain('[EV-')
+    expect(synth).toContain('report.json')
+    expect(synth).toContain(join(runsDir, id).replace(/\\/g, '/'))
+  })
+
+  it('报告未就绪（无 report.json）→ 不追加综合回合', async () => {
+    const id = 'run-syn-nr'
+    makeTask(id)
+    seedDoneRun(id, false)
+    exec.runAll(id)
+    await exec.whenIdle(id, 5000)
+    expect(gateway.prompts.length).toBe(1)
+  })
+
+  it('主链路未到 DONE → 不追加综合回合', async () => {
+    const id = 'run-syn-partial'
+    makeTask(id)
+    exec.runAll(id)
+    await exec.whenIdle(id, 5000)
+    expect(gateway.prompts.length).toBe(1)
+  })
+
+  it('run-all 指令要求模型先产出英文检索查询并经 queries 传入 sciret_plan（T5）', () => {
+    makeTask('run-q1')
+    exec.runAll('run-q1')
+    const text = gateway.prompts[0]!.text
+    expect(text).toContain('queries')
+    expect(text).toContain('英文关键词式')
+    expect(text).toContain('Crossref/OpenAlex')
+  })
+
+  it('S1（受控模型步骤）手动单步 → BAD_PARAM', () => {
+    makeTask('run-s5', {
+      steps: [...STEPS.map((s) => ({ ...s, status: 'PENDING' as const, attempts: 0 })), { id: 'S1', label: '综合回答', status: 'PENDING', attempts: 0 }],
+    })
+    try {
+      exec.step('run-s5', 'S1')
+      throw new Error('应当抛出')
+    } catch (e) {
+      expect((e as ApiError).code).toBe('BAD_PARAM')
+    }
+  })
+
+  it('resume 的续跑起点跳过 S1：仅剩 S1 待办时视为无可续跑（BAD_STATE，不空跑）', () => {
+    makeTask('run-s6', {
+      run_status: 'DONE',
+      steps: [...STEPS.map((s) => ({ ...s, status: 'DONE' as const, attempts: 1 })), { id: 'S1', label: '综合回答', status: 'PENDING', attempts: 0 }],
+    })
+    try {
+      exec.resume('run-s6')
+      throw new Error('应当抛出')
+    } catch (e) {
+      expect((e as ApiError).code).toBe('BAD_STATE')
+    }
+  })
+})

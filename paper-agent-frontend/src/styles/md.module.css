@@ -111,3 +111,24 @@
   border: none;
   border-top: 1px solid var(--line);
 }
+
+/* ---------- 证据角标（正文 [EV-xxxx] 的上标小徽章，点击跳证据页） ---------- */
+.evSup {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  vertical-align: super;
+  line-height: 1;
+  padding: 0 4px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  white-space: nowrap;
+  transition:
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+.evSup:hover {
+  border-color: var(--run);
+  color: var(--run);
+}

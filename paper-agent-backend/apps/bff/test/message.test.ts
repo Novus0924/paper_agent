@@ -17,7 +17,7 @@ import { registerMessageRoutes } from '../src/routes/v1/messages.js'
  * - 运行中 → 200 {queued:true, order:N, status:"queued"}（**入队而非拒绝**，这是 P-05 病灶的核心）
  * - 回合结束后按序执行；删除仅限未发送；全程同一 AGH 会话（不新建会话）
  * - 双向互斥：消息投递中触发执行 → 409 BUSY（同一会话不能并发两个 turn）
- * - 终态任务不接受新消息 → 409 BAD_STATE（不静默丢弃）
+ * - 终态任务允许 ask/revise（v2.2：追问不落产物，回复经 SSE 呈现）
  * - 校验：非法 action → 400；空/超长 text → 400；非法 turn_id → 400
  */
 
@@ -227,7 +227,7 @@ describe('运行中排队与按序执行（§9.7「结束后按序执行」）',
     expect(task.degraded_reasons.some((d) => d.reason.includes('追问发送失败'))).toBe(true)
   })
 
-  it('终态任务不再放行队列（避免对已完成会话发消息）', async () => {
+  it('运行中排队，终态后仍按序放行（v2.2：排队消息不因任务跑完被丢弃）', async () => {
     seedTask({ run_status: 'PLANNED' })
     exec['locks'].set(TASK_ID, { action: 'run-all', startedAt: new Date().toISOString(), sessionId: 'x' })
     await post({ text: '排队消息' })
@@ -236,7 +236,8 @@ describe('运行中排队与按序执行（§9.7「结束后按序执行」）',
     exec['locks'].delete(TASK_ID)
     messages.onTaskIdle(TASK_ID)
     await new Promise((r) => setTimeout(r, 10))
-    expect(prompts).toHaveLength(0)
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]!.text).toContain('排队消息')
   })
 })
 
@@ -255,6 +256,69 @@ describe('双向互斥（同一 AGH 会话不能并发两个 turn）', () => {
     messages.send(TASK_ID, '正在投递', 'ask')
     const res = await app.inject({ method: 'GET', url: `/api/v1/tasks/${TASK_ID}/messages` })
     expect(res.json().busy).toBe(true)
+  })
+})
+
+// ------------------------------------------------------------------ 终态追问
+
+describe('终态任务追问（v2.2：DONE/FAILED 允许 ask/revise，产物不可变）', () => {
+  it('DONE 任务 ask → 200 立即投递（拿到报告后的第一动作就是追问）', async () => {
+    seedTask({ run_status: 'DONE' })
+    const res = await post({ text: '结论的依据是什么？', action: 'ask' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ queued: false, status: 'running' })
+  })
+
+  it('FAILED 任务 ask → 200 立即投递', async () => {
+    seedTask({ run_status: 'FAILED' })
+    const res = await post({ text: '失败原因是什么？' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ queued: false })
+  })
+
+  it('DONE 任务 ask 指令：基于既有证据回答，且不改写终态产物', async () => {
+    seedTask({ run_status: 'DONE' })
+    await post({ text: '再解释下证据链', action: 'ask' })
+    for (const r of gate) r()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(prompts[0]!.text).toContain('不可变')
+    expect(prompts[0]!.text).toContain('[EV-xxxx]')
+    expect(prompts[0]!.text).toContain('再解释下证据链')
+  })
+
+  it('DONE 任务 revise → 修订建议语义：只给建议文本，不重建报告（重建属后续里程碑）', async () => {
+    seedTask({ run_status: 'DONE' })
+    await post({ text: '结论表述太绝对', action: 'revise' })
+    for (const r of gate) r()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(prompts[0]!.text).toContain('修订建议')
+    expect(prompts[0]!.text).not.toContain('重跑受影响步骤')
+    expect(prompts[0]!.text).toContain('结论表述太绝对')
+  })
+
+  it('终态投递经 SSE message 事件呈现（user running）', async () => {
+    seedTask({ run_status: 'DONE' })
+    const events: Array<Record<string, unknown>> = []
+    messages.onMessageEvent = (taskId, ev) => events.push({ task_id: taskId, ...ev })
+    await post({ text: '追问', action: 'ask' })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(events.length).toBeGreaterThanOrEqual(1)
+    expect(events[0]).toMatchObject({ role: 'user', status: 'running', text: '追问' })
+  })
+
+  it('归档互锁优先于终态放行：DONE 且已归档 → 409 BAD_STATE', async () => {
+    seedTask({ run_status: 'DONE', archived: true })
+    const res = await post({ text: '还能问吗' })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('BAD_STATE')
+    expect(res.json().error).toContain('归档')
+  })
+
+  it('锁与互斥规则不变：终态任务消息投递中触发执行 → 409 BUSY', () => {
+    seedTask({ run_status: 'DONE' })
+    messages.send(TASK_ID, '正在投递', 'ask')
+    expect(messages.isActive(TASK_ID)).toBe(true)
+    expect(() => exec.runAll(TASK_ID)).toThrow(/追问消息/)
   })
 })
 
@@ -298,15 +362,7 @@ describe('DELETE /api/v1/tasks/{id}/messages/{turnId}（§9.7「支持立即发�
 
 // ------------------------------------------------------------------ 校验
 
-describe('参数校验与终态保护', () => {
-  it('终态任务发送 → 409 BAD_STATE（不静默丢弃，附新建任务指引）', async () => {
-    seedTask({ run_status: 'DONE' })
-    const res = await post({ text: '还能问吗' })
-    expect(res.statusCode).toBe(409)
-    expect(res.json().code).toBe('BAD_STATE')
-    expect(res.json().error).toContain('请新建任务')
-  })
-
+describe('参数校验', () => {
   it('text 缺失/空/非字符串 → 400 BAD_PARAM', async () => {
     seedTask()
     for (const body of [{}, { text: '' }, { text: '   ' }, { text: 123 }]) {

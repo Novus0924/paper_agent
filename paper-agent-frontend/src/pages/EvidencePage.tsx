@@ -145,17 +145,24 @@ export function EvidencePage() {
 
       <Card className={layout.block} title={t('evidence.listTitle')} icon="evidence">
         <div className={report.filterBar}>
-          <Field label={t('evidence.filterTier')} className={report.filterItem}>
-            <SelectInput
-              aria-label={t('evidence.filterTier')}
-              value={tier}
-              onChange={(e) => setTier(e.target.value as EvidenceTier | 'all')}
-              options={[
-                { value: 'all', label: t('common.all') },
-                ...TIER_ORDER.map((v) => ({ value: v, label: t(TIER_LABEL[v]) })),
-              ]}
-            />
-          </Field>
+          {/* 层级只有两档且高频切换：chips 比 Select 少一次点开 */}
+          <div
+            className={ui.srcRow}
+            role="group"
+            aria-label={t('evidence.filterTier')}
+          >
+            {(['all', ...TIER_ORDER] as const).map((v) => (
+              <Button
+                key={v}
+                variant="chip"
+                aria-pressed={tier === v}
+                onClick={() => setTier(v)}
+              >
+                {v === 'all' ? t('common.all') : t(TIER_LABEL[v])}
+              </Button>
+            ))}
+          </div>
+          {/* 类型下拉按实际数据去重生成：数据里没出现过的类型不摆空选项 */}
           <Field label={t('evidence.filterKind')} className={report.filterItem}>
             <SelectInput
               aria-label={t('evidence.filterKind')}
@@ -163,7 +170,9 @@ export function EvidencePage() {
               onChange={(e) => setKind(e.target.value as EvidenceKind | 'all')}
               options={[
                 { value: 'all', label: t('common.all') },
-                ...KIND_ORDER.map((v) => ({ value: v, label: t(KIND_LABEL[v]) })),
+                ...KIND_ORDER.filter((v) => (bundle?.evidence ?? []).some((e) => e.kind === v)).map(
+                  (v) => ({ value: v, label: t(KIND_LABEL[v]) }),
+                ),
               ]}
             />
           </Field>
@@ -176,6 +185,12 @@ export function EvidencePage() {
             />
           </Field>
         </div>
+        {/* 结果计数只在筛选激活时出现，避免与分页条的"共 N 条"重复 */}
+        {(tier !== 'all' || kind !== 'all' || query.trim() !== '') && (
+          <p className={ui.muted} aria-live="polite">
+            {t('evidence.resultCount', { n: filtered.length })}
+          </p>
+        )}
 
         <div className={layout.block}>
           {filtered.length === 0 ? (

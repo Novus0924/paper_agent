@@ -13,6 +13,11 @@
     R4 事实验证 → factcheck 证据 + judgment + conclusion（交叉印证）
     R5 综述写作 → draft 产物（artifact，**不可进结论**）+ draft.md
     R6 自评审 → review 产物（artifact）+ review.json
+
+受控模型步骤（不在本模块执行）：
+    S1 综合回答 → synthesis 产物（artifact）——由模型经 sciret_synthesize 在
+    终态 DONE 后补做（需求 §3.1 受控判断点：模型输出作为 artifact 入账本，
+    不进 fact 结论、不影响门禁）；run_all 跳过，状态机豁免其收敛。
 """
 
 from __future__ import annotations
@@ -20,11 +25,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from . import chaos, corpus, online
+from . import chaos, corpus, injection, online
 from .jsonio import atomic_write_json, atomic_write_text, canonical_json, sha256_text
 from .ledger import Ledger
 from .state import RunState
-from .workflow import steps_for
+from .workflow import MODEL_STEPS, steps_for
 
 # ---------------------------------------------------------------- 覆盖策略（§2.2 配套策略 1）
 
@@ -112,10 +117,24 @@ def step_R1(
     cov = policy or DEFAULT_COVERAGE
     # 检索源解析：local → 只读既有快照（绝不联网，保可复现）；
     # arxiv/auto → 先尝试联网刷新，失败则回落既有快照（online.py）。
-    snap_name, snapshot, online_note = online.resolve_online(
-        state.goal, state.lit_source, list(state.sources)
+    # 检索 query：优先 state.queries（模型规划查询，T5），无则回落 goal 原文。
+    # 源熔断（v2.2）：上一轮已标记 unavailable 的源本 run 内不再二次尝试（resume 重跑跳过）。
+    circuit_open = sorted(
+        s for s in state.sources if str(state.source_status.get(s, "")).startswith("unavailable")
     )
-    records = corpus.rank_records(snapshot, state.goal, cov.retrieval_limit)
+    snap_name, snapshot, online_note = online.resolve_online(
+        state.goal, state.lit_source, list(state.sources),
+        queries=list(state.queries), skip_sources=circuit_open,
+    )
+    if circuit_open:
+        state.circuit = {**state.circuit, **{s: "open_until_run_end" for s in circuit_open}}
+    records, dedup_stats = corpus.rank_records_with_stats(
+        snapshot, state.goal, cov.retrieval_limit, queries=list(state.queries)
+    )
+    deduped = dedup_stats["deduped"]
+    # 提示注入过滤（v2.2）：元数据 title/venue 是不可信外部输入，入账本前清洗，
+    # 命中字段替换为安全占位，原值截断留痕于 note（恶意文本全文不入产物）。
+    clean_records, injection_findings = injection.sanitize_records(records)
 
     source_status_raw: dict[str, str] = dict(snapshot.get("source_status", {}))
     # ⚠️ 在线抓取失败的原因**不能被快照里的 ok:N 覆盖掉**：
@@ -192,7 +211,7 @@ def step_R1(
 
     ev_ids: list[str] = []
     idx = _next_evidence_index(ledger)
-    for rec in records:
+    for rec in clean_records:
         plain = _to_plain(rec)
         ev_id = _ev_id(idx)
         idx += 1
@@ -210,14 +229,33 @@ def step_R1(
         )
         ev_ids.append(ev_id)
 
+    if injection_findings:
+        pattern_ids = sorted({f["pattern_id"] for f in injection_findings})
+        ledger.append(
+            "note",
+            {
+                "text": (
+                    f"R1 提示注入过滤：命中 {len(injection_findings)} 处，命中字段已替换为 {injection.PLACEHOLDER}；"
+                    f"模式：{', '.join(pattern_ids)}（原值截断留痕于 findings，恶意文本全文不入产物）"
+                ),
+                "detail": {"pattern_ids": pattern_ids, "findings": injection_findings},
+                "producer_step": "R1",
+            },
+        )
+
     return {
         "step": "R1",
         "human_summary": f"已检索 {len(ev_ids)} 篇文献（语料快照 {snap_name}；来源：{', '.join(f'{k}={v}' for k, v in source_status_raw.items())}）"
         + (f"；⚠️ 在线抓取失败已回落本地快照（{online_note['online_fallback_reason']}），元数据为历史版本"
-           if online_note.get("online_fallback_reason") else ""),
+           if online_note.get("online_fallback_reason") else "")
+        + (f"；去重 {deduped} 条重复记录" if deduped > 0 else "")
+        + (f"；源熔断 {len(circuit_open)} 个（本 run 内不再重试）" if circuit_open else "")
+        + (f"；过滤提示注入 {len(injection_findings)} 处" if injection_findings else ""),
         "evidence_ids": ev_ids,
         "source_status": state.source_status,
         "degraded": state.degraded,
+        "deduped": deduped,
+        "injection_filtered": len(injection_findings),
     }
 
 
@@ -226,8 +264,16 @@ def step_R1(
 
 def step_R2(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
     lit = [r for r in ledger.evidence() if r.data.get("producer_step") == "R1"]
+    # ⚠️ 不再对"0 篇文献"抛错（改造后 rank_records 会过滤零相关记录，0 命中是
+    # 合法的 R1 结果——纯中文目标对英文语料即如此）。此时如实跳过精读，
+    # 后续 R3/R4 会产出覆盖缺口结论，整链以"诚实降级 + 缺口结论"收尾，
+    # 而不是让任务半途崩掉（崩掉 = 用户什么都拿不到，比缺口更糟）。
     if not lit:
-        raise PipelineError("R2 需要 R1 的文献证据，但账本中没有（请先执行 R1）")
+        return {
+            "step": "R2",
+            "human_summary": "检索覆盖不足（0 篇相关文献），无文献可精读；后续将按覆盖缺口口径产出结论",
+            "evidence_ids": [],
+        }
     idx = _next_evidence_index(ledger)
     ev_ids: list[str] = []
     for rec in lit:
@@ -261,9 +307,9 @@ def step_R2(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
 
 
 def step_R3(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
+    # 0 篇文献时覆盖=∅、缺口=全部目标要素——恰恰是缺口拆解最有价值的情形，
+    # 不抛错（与 R2 的"诚实降级"口径一致，R4 的覆盖缺口结论要绑定本步证据）
     lit = [r for r in ledger.evidence() if r.data.get("producer_step") == "R1"]
-    if not lit:
-        raise PipelineError("R3 需要 R1 的文献证据（请先执行 R1）")
     goal_tokens = corpus._tokens(state.goal)  # noqa: SLF001
     covered: set[str] = set()
     for rec in lit:
@@ -297,11 +343,17 @@ def step_R3(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
 def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
     """交叉印证：同一主题词被 ≥2 个独立来源（source 字段不同）支撑即判 corroborated。
 
+    结论主语约束（改造 G2 病灶）：
+    - 结论主语**必须**来自 ``goal_tokens ∩ corroborated_terms``——即"与用户问题
+      相关"且"获多源印证"的要素；并用 ``corpus.phrase_for`` 还原原文片段，
+      避免"固态""电解"这类 2-gram 碎片裸奔进结论。
+    - 交集为空时**不得用任意主题词凑结论**：改为产出 1 条"覆盖缺口"结论，
+      如实说明现有语料未能覆盖问题关键要素，并绑定 R3 的 fact 级 analysis
+      证据（R3 证据是确定性拆解产物，tier=fact，满足门禁绑定校验）。
+
     判定为规则型判断器（Judge SPI 雏形），判断全额留痕（judgment 记录）。
     """
     lit = [r for r in ledger.evidence() if r.data.get("producer_step") == "R1"]
-    if not lit:
-        raise PipelineError("R4 需要 R1 的文献证据（请先执行 R1）")
 
     topic_sources: dict[str, set[str]] = {}
     for rec in lit:
@@ -313,6 +365,9 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
     corroborated = sorted(t for t, srcs in topic_sources.items() if len(srcs) >= MIN_CORROBORATING_SOURCES)
     single = sorted(t for t, srcs in topic_sources.items() if len(srcs) < MIN_CORROBORATING_SOURCES)
 
+    goal_tokens = corpus._tokens(state.goal)  # noqa: SLF001
+    relevant_terms = [t for t in corroborated if t in goal_tokens]
+
     idx = _next_evidence_index(ledger)
     fact_ev = _ev_id(idx)
     idx += 1
@@ -323,39 +378,99 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
             "tier": "fact",
             "kind": "factcheck",
             "title": "交叉印证结果（多源支撑主题词）",
-            "detail": {"corroborated_terms": corroborated[:20], "single_source_terms": single[:20]},
+            "detail": {
+                "corroborated_terms": corroborated[:20],
+                "single_source_terms": single[:20],
+                "goal_relevant_terms": relevant_terms[:20],
+            },
             "ref": {"derived_from": [r.data["ev_id"] for r in lit]},
             "producer_step": "R4",
         },
     )
+
+    if relevant_terms:
+        judgment_rationale = (
+            f"{len(corroborated)} 个主题词获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑，"
+            f"其中 {len(relevant_terms)} 个与研究目标关键要素直接相关（goal∩corroborated）；"
+            f"{len(single)} 个仅单源（标记为待核）"
+        )
+    else:
+        judgment_rationale = (
+            f"{len(corroborated)} 个主题词获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑，"
+            f"但与研究目标关键要素无交集（goal∩corroborated=∅），"
+            f"按覆盖缺口口径产出结论，不用无关主题词凑数；{len(single)} 个仅单源（标记为待核）"
+        )
     ledger.append(
         "judgment",
         {
-            "judge": "rule:cross-source-corroboration@v1",
-            "verdict": bool(corroborated),
-            "rationale": f"{len(corroborated)} 个主题词获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑；{len(single)} 个仅单源（标记为待核）",
+            "judge": "rule:cross-source-corroboration@v2",
+            "verdict": bool(relevant_terms),
+            "rationale": judgment_rationale,
             "evidence_ids": [fact_ev],
             "producer_step": "R4",
         },
     )
 
     conclusions: list[str] = []
-    top = corroborated[:3]
-    for i, term in enumerate(top, start=1):
-        cid = f"C-{i:03d}"
-        text = f"多源文献一致指向“{term}”是本主题的关键要素（获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑）"
+    if relevant_terms:
+        for i, term in enumerate(relevant_terms[:3], start=1):
+            cid = f"C-{i:03d}"
+            # 用原文中包含该 token 的完整片段作主语（避免 2-gram 碎片裸奔）
+            phrase = corpus.phrase_for(state.goal, term)
+            text = (
+                f"研究目标中的“{phrase}”获多源文献交叉印证"
+                f"（印证要素“{term}”获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑）"
+            )
+            ledger.append(
+                "conclusion",
+                {"cid": cid, "text": text, "evidence_ids": [fact_ev], "producer_step": "R4", "confidence": "medium"},
+            )
+            conclusions.append(cid)
+    else:
+        # 覆盖缺口结论：绑定 R3 的 fact 级 analysis 证据（缺口是确定性拆解事实）
+        r3_evs = [
+            r
+            for r in ledger.evidence()
+            if r.data.get("producer_step") == "R3" and r.data.get("kind") == "analysis"
+        ]
+        if r3_evs:
+            gap_ev = str(r3_evs[-1].data["ev_id"])
+            gap_terms = [str(x) for x in r3_evs[-1].data.get("detail", {}).get("gap_terms", [])]
+        else:
+            # 防御性兜底（R3 缺席属异常路径）：不得伪造 R3 证据存在，
+            # 缺口改为现场计算并绑定 R4 自己的 factcheck 证据（fact 级）
+            covered: set[str] = set()
+            for rec in lit:
+                covered |= corpus._tokens(str(rec.data.get("ref", {}).get("title", "")))  # noqa: SLF001
+            gap_terms = sorted(goal_tokens - covered)
+            gap_ev = fact_ev
+        if gap_terms:
+            text = (
+                f"现有语料未能覆盖研究问题的关键要素（缺口要素：{'、'.join(gap_terms[:10])}），"
+                f"不足以对研究目标形成直接结论；建议扩充检索范围（提供英文检索查询）或人工补充语料后重试。"
+            )
+        else:
+            text = (
+                f"现有语料覆盖了目标关键词，但未形成与研究目标直接相关的多源印证"
+                f"（goal∩corroborated=∅），不足以对研究目标形成直接结论；建议人工复核语料相关性。"
+            )
         ledger.append(
             "conclusion",
-            {"cid": cid, "text": text, "evidence_ids": [fact_ev], "producer_step": "R4", "confidence": "medium"},
+            {"cid": "C-001", "text": text, "evidence_ids": [gap_ev], "producer_step": "R4", "confidence": "low"},
         )
-        conclusions.append(cid)
+        conclusions.append("C-001")
 
     return {
         "step": "R4",
-        "human_summary": f"交叉印证完成：{len(corroborated)} 个主题词获多源支撑，形成 {len(conclusions)} 条结论",
+        "human_summary": (
+            f"交叉印证完成：{len(relevant_terms)} 个印证要素与目标直接相关，形成 {len(conclusions)} 条结论"
+            if relevant_terms
+            else f"交叉印证完成：印证要素与目标无交集，产出 {len(conclusions)} 条覆盖缺口结论"
+        ),
         "evidence_ids": [fact_ev],
         "conclusion_ids": conclusions,
         "corroborated_terms": corroborated[:20],
+        "goal_relevant_terms": relevant_terms[:20],
         "single_source_terms": single[:20],
     }
 
@@ -363,14 +478,62 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
 # ---------------------------------------------------------------- R5 综述写作
 
 
-def step_R5(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
+def _methodology_observations(ledger: Ledger) -> list[str]:
+    """方法学观察（改造 G3 病灶）：全部由账本数据统计生成，**禁止任何领域词硬编码**。
+
+    统计口径（确定性）：
+    - 文献年份分布：R1 文献证据 ref.year 计数（缺失计"未知年份"）；
+    - 文献来源分布：R1 文献证据 ref.source 计数；
+    - 多源印证主题词：R4 factcheck 证据 detail.corroborated_terms；
+    - 覆盖缺口：R3 analysis 证据 detail.gap_terms。
+    """
     lit = [r for r in ledger.evidence() if r.data.get("producer_step") == "R1"]
-    if not lit:
-        raise PipelineError("R5 需要 R1 的文献证据（请先执行 R1）")
+    years: dict[str, int] = {}
+    sources_dist: dict[str, int] = {}
+    for rec in lit:
+        ref = rec.data.get("ref", {})
+        year = ref.get("year")
+        ykey = str(year) if year not in (None, "") else "未知年份"
+        years[ykey] = years.get(ykey, 0) + 1
+        src = str(ref.get("source") or "unknown")
+        sources_dist[src] = sources_dist.get(src, 0) + 1
+
+    corroborated: list[str] = []
+    for rec in ledger.evidence():
+        if rec.data.get("kind") == "factcheck":
+            terms = rec.data.get("detail", {}).get("corroborated_terms", [])
+            if len(terms) > len(corroborated):
+                corroborated = [str(t) for t in terms]
+
+    gaps: list[str] = []
+    for rec in ledger.evidence():
+        if rec.data.get("producer_step") == "R3" and rec.data.get("kind") == "analysis":
+            g = rec.data.get("detail", {}).get("gap_terms", [])
+            if len(g) > len(gaps):
+                gaps = [str(t) for t in g]
+
+    year_str = "；".join(f"{k}×{v}" for k, v in sorted(years.items())) or "（无年份信息）"
+    source_str = "、".join(f"{k}×{v}" for k, v in sorted(sources_dist.items())) or "（无来源信息）"
+    return [
+        f"- 文献年份分布：{year_str}。",
+        f"- 文献来源分布：{source_str}（共 {len(lit)} 篇，由账本证据统计得出）。",
+        f"- 多源印证主题词：{'、'.join(corroborated[:10]) if corroborated else '（无）'}"
+        f"——共 {len(corroborated)} 个主题词获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑。",
+        f"- 目标关键词覆盖缺口：{'、'.join(gaps[:10]) if gaps else '（无）'}（见 R3 创新点拆解证据）。",
+        "- 多源元数据在主题层面相互支撑，但具体数值结论需回查原文核验（本报告不作数值断言）。",
+    ]
+
+
+def step_R5(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
+    # 0 篇文献时草稿如实呈现"无相关文献"，方法学观察由账本统计生成（空分布可见），
+    # 不抛错——与 R2/R3/R4 的"诚实降级"口径一致
+    lit = [r for r in ledger.evidence() if r.data.get("producer_step") == "R1"]
     conclusions = ledger.conclusion_records()
 
     lines: list[str] = [f"# 研究综述草稿：{state.goal}", ""]
     lines.append("## 一、检索到的关键文献")
+    if not lit:
+        lines.append("-（无相关文献：检索覆盖不足，未将任何零相关记录纳入证据。）")
     for rec in lit:
         ref = rec.data.get("ref", {})
         authors = ", ".join(list(ref.get("authors") or [])[:3]) or "（作者信息缺失）"
@@ -385,8 +548,7 @@ def step_R5(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
         lines.append(f"- {rec.data.get('text', '')} {ids}")
     lines.append("")
     lines.append("## 三、方法学观察")
-    lines.append("- 界面阻抗表征以电化学阻抗谱（EIS）为主，辅以界面形貌与成分表征；")
-    lines.append("- 多源元数据在主题层面相互支撑，但具体数值结论需回查原文核验（本报告不作数值断言）。")
+    lines.extend(_methodology_observations(ledger))
     lines.append("")
     lines.append("## 四、局限与降级声明")
     if state.degraded:
@@ -436,7 +598,10 @@ def step_R6(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
             for r in ledger.conclusion_records()
             for e in r.data.get("evidence_ids", [])
         ), "detail": "结论仅绑定 fact 级证据（不含 artifact）"},
-        {"id": "SOURCES", "ok": len({str(r.data.get("ref", {}).get("source", "")) for r in ledger.evidence() if r.data.get("producer_step") == "R1"}) >= 1, "detail": "文献来源已标注"},
+        {"id": "SOURCES", "ok": (
+            # 无文献（覆盖不足诚实降级）时不判失败：无文献则无来源可标注，属合法状态
+            not [r for r in ledger.evidence() if r.data.get("producer_step") == "R1"]
+        ) or len({str(r.data.get("ref", {}).get("source", "")) for r in ledger.evidence() if r.data.get("producer_step") == "R1"}) >= 1, "detail": "文献来源已标注"},
         {"id": "DEGRADED_STATEMENT", "ok": (not state.degraded) or any(d.get("level") == "degraded" for d in state.degraded_reasons), "detail": "降级时必有降级声明"},
     ]
     review = {
@@ -538,6 +703,10 @@ def run_all(
     for step_id, _label in steps_for(state.workflow):
         if state.is_terminal:
             break
+        # 受控模型步骤（S1 综合回答）不由确定性流水线执行：
+        # 它由模型在终态后经 sciret_synthesize 落盘，这里跳过（状态机会豁免其收敛）
+        if step_id in MODEL_STEPS:
+            continue
         record = state.step(step_id)
         if record.status.value in ("DONE", "SKIPPED"):
             continue

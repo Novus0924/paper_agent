@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import corpus
 from .jsonio import atomic_write_json, atomic_write_text, read_json, sha256_text
 from .ledger import Ledger
 from .pipeline import ledger_digest
@@ -118,31 +119,76 @@ def assemble(run_dir: Path, *, allow_gate_bypass: bool = False) -> dict[str, Any
     conclusions = ledger.conclusion_records()
     factchecks = [r for r in ledger.evidence() if r.data.get("kind") == "factcheck"]
 
-    sections = [
+    # ---- 章节数据（全部由账本/状态计算，禁止领域词硬编码）----
+    goal_tokens = sorted(corpus._tokens(state.goal))
+    corroborated: list[str] = []
+    gaps: list[str] = []
+    for r in ledger.evidence():
+        detail = r.data.get("detail", {}) or {}
+        if r.data.get("kind") == "factcheck" and len(detail.get("corroborated_terms", [])) > len(corroborated):
+            corroborated = [str(t) for t in detail.get("corroborated_terms", [])]
+        if r.data.get("producer_step") == "R3" and r.data.get("kind") == "analysis" and len(detail.get("gap_terms", [])) > len(gaps):
+            gaps = [str(t) for t in detail.get("gap_terms", [])]
+
+    # 受控模型综合回答（S1）：artifact 级 synthesis 证据；取最后一条（重复 synthesize 以最新为准）
+    synth_records = [r for r in ledger.evidence() if r.data.get("kind") == "synthesis"]
+
+    retrieval_queries = (
+        "、".join(state.queries) if state.queries else "未提供模型规划查询（检索使用目标原文）"
+    )
+    research_question_body = (
+        f"研究目标：{state.goal}\n\n"
+        f"目标关键要素（确定性分词，英文取词、中文取 2-gram）："
+        f"{'、'.join(goal_tokens) if goal_tokens else '（未能分词）'}\n\n"
+        f"检索使用查询：{retrieval_queries}"
+    )
+    findings_body = (
+        f"共形成 {len(conclusions)} 条结论，每条均绑定 fact 级证据（详见结论列表与证据角标）；"
+        f"多源印证主题词 {len(corroborated)} 个（每个获 ≥2 个独立来源支撑）。"
+        + (f"另有 {len(gaps)} 个目标关键要素未被现有语料覆盖（覆盖缺口详见局限章节与 R3 证据）。" if gaps else "")
+    )
+
+    sections: list[dict[str, str]] = []
+    sections.append(
         {
             "id": "background",
-            "title": "一、研究背景",
+            "title": "研究背景",
             "body": f"围绕研究目标「{state.goal}」，本流程以多源公开文献元数据为基础，"
             f"经检索、精读解构、要素交叉印证后形成结论。工作流：{state.workflow}；"
             f"检索模式：{state.lit_source}。",
-        },
+        }
+    )
+    # 新增章节：研究问题（改造 G4 病灶——报告与用户问题脱节的可见性修复：
+    # 把 goal、目标关键要素拆解、检索使用的关键要素直接呈现给读者）
+    sections.append({"id": "research_question", "title": "研究问题", "body": research_question_body})
+    sections.append(
         {
             "id": "method",
-            "title": "二、方法与过程",
+            "title": "方法与过程",
             "body": "流水线由确定性状态机驱动（R1 检索 → R2 精读 → R3 拆解 → R4 印证 → R5 写作 → R6 自评审），"
             "每步产出以证据形式写入追加式哈希链账本；结论强制绑定 fact 级证据，报告生成前执行门禁校验。",
-        },
-        {
-            "id": "findings",
-            "title": "三、核心发现",
-            "body": "多源元数据在主题层面相互支撑，形成下列可溯源结论（每条结论附证据角标）。",
-        },
-        {
-            "id": "limits",
-            "title": "四、局限与降级声明",
-            "body": _degraded_statement(state),
-        },
-    ]
+        }
+    )
+    # 核心发现 body 由结论动态生成（改造 G4 病灶：不再固定文案）
+    sections.append({"id": "findings", "title": "核心发现", "body": findings_body})
+    if synth_records:
+        s = synth_records[-1]
+        cited = [str(x) for x in s.data.get("cited_evidence", [])]
+        invalid = [str(x) for x in (s.data.get("detail", {}) or {}).get("invalid_refs_removed", [])]
+        answer_body = str(s.data.get("text", ""))
+        answer_body += (
+            "\n\n> ⚠️ 本节为**模型综合生成**（非确定性内容），已绑定证据清单："
+            + ("、".join(cited) if cited else "（无有效证据引用）")
+            + "。该内容为 artifact 级产物，不进入确定性结论，也不参与门禁的 fact 绑定校验。"
+            + (f"已剔除无效证据角标：{'、'.join(invalid)}。" if invalid else "")
+        )
+        sections.append({"id": "answer", "title": "对研究问题的回答（模型综合生成）", "body": answer_body})
+    sections.append({"id": "limits", "title": "局限与降级声明", "body": _degraded_statement(state)})
+
+    # 章节编号动态生成（章节数随"是否已有综合回答"可变，固定"一/二/三/四"会错位）
+    cn_numerals = ("一", "二", "三", "四", "五", "六", "七")
+    for i, sec in enumerate(sections):
+        sec["title"] = f"{cn_numerals[i]}、{sec['title']}"
 
     evidence_index = [
         {

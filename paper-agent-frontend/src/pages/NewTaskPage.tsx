@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import layout from '@/styles/layout.module.css';
 import ui from '@/styles/ui.module.css';
 import wf from '@/styles/newtask.module.css';
@@ -19,13 +19,38 @@ import { ErrorState } from '@/components/ui/Feedback';
 
 const GOAL_MAX = 400;
 
+/** 一键重跑预填（报告页/总览"再次研究"经 navigate state 传入） */
+export interface RerunPrefill {
+  goal: string;
+  workflow: WorkflowName;
+  lit_source: LitSource;
+  sources: SourceName[];
+}
+
+function readRerunPrefill(state: unknown): RerunPrefill | null {
+  const rerun = (state as { rerun?: RerunPrefill } | null)?.rerun;
+  if (!rerun || typeof rerun.goal !== 'string' || !rerun.goal.trim()) return null;
+  if (!(rerun.workflow in WORKFLOWS)) return null;
+  const sources = Array.isArray(rerun.sources)
+    ? rerun.sources.filter((s) => SOURCES.some((x) => x.name === s))
+    : [];
+  return { ...rerun, sources };
+}
+
 /** FE-04 新建任务向导：目标 → 工作流 → 数据源（含连通性预检）→ 提交即建会话并运行 */
 export function NewTaskPage() {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const [goal, setGoal] = useState('');
-  const [workflow, setWorkflow] = useState<WorkflowName>('research');
-  const [sources, setSources] = useState<SourceName[]>(WORKFLOWS.research.defaultSources);
+  const location = useLocation();
+  // 预填只在挂载时消费一次（后退回到本页重新预填是合理行为）
+  const prefill = useMemo(() => readRerunPrefill(location.state), [location.state]);
+  const [goal, setGoal] = useState(prefill?.goal ?? '');
+  const [workflow, setWorkflow] = useState<WorkflowName>(prefill?.workflow ?? 'research');
+  const [sources, setSources] = useState<SourceName[]>(
+    prefill?.sources && prefill.sources.length > 0
+      ? prefill.sources
+      : WORKFLOWS[prefill?.workflow ?? 'research'].defaultSources,
+  );
   const [goalError, setGoalError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -38,6 +63,7 @@ export function NewTaskPage() {
   const toast = useToastStore((s) => s.push);
 
   const def = WORKFLOWS[workflow];
+  const firstRun = useRef(true);
   /**
    * 独立连通性预检只在 mock 提供：后端把 probeSources 放在 POST /tasks 内
    * （routes/v1/tasks.ts），没有预检接口，live 的实测结果随创建任务返回。
@@ -47,6 +73,11 @@ export function NewTaskPage() {
 
   useEffect(() => {
     // 切换工作流时回到该工作流的默认来源集合，避免带着不匹配的来源提交
+    // 挂载那次不重置：重跑预填带来的来源集合要保留
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
     setSources(WORKFLOWS[workflow].defaultSources);
   }, [workflow]);
 

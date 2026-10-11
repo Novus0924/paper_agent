@@ -47,6 +47,9 @@ export interface TaskSnapshot {
   /** AGH 会话是否已记录（P-04） */
   agh_recorded?: boolean;
   report_ready?: boolean;
+  /** 已归档（v2.1）：旧快照无此字段视作未归档 */
+  archived?: boolean;
+  archived_at?: string | null;
 }
 
 export interface Activity {
@@ -233,6 +236,44 @@ export interface SendResult {
   turn_id?: string;
   order?: number;
   status?: 'running' | 'queued';
+}
+
+/** GET /tasks/{id}/messages 里的单条消息（后端 services/message.ts QueuedMessage） */
+export interface MessageQueueEntry {
+  turn_id: string;
+  task_id: string;
+  action: 'ask' | 'revise';
+  text: string;
+  /** 入队序号（从 1 起，"第 N 条待发"） */
+  order: number;
+  queued_at: string;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'deleted';
+  error?: string;
+}
+
+/** GET /tasks/{id}/messages 响应：队列与历史（前端恢复"待发 N 条"用） */
+export interface MessageQueueResponse {
+  task_id: string;
+  busy: boolean;
+  pending: MessageQueueEntry[];
+  active?: MessageQueueEntry | null;
+  history: MessageQueueEntry[];
+}
+
+/** POST /tasks/{id}/archive 响应：恢复时 archived_at 置 null */
+export interface ArchiveResult {
+  task_id: string;
+  archived: boolean;
+  archived_at: string | null;
+}
+
+/** POST /tasks/{id}/stop 响应（后端 services/execution.ts stop）：终态以实际为准 */
+export interface StopResult {
+  task_id: string;
+  run_status: RunStatus;
+  stopped_at: string;
+  /** 运行中被用户中止 → CANCELLED（RunStatus 落为 FAILED）；已终态时与 run_status 一致 */
+  final_state: 'DONE' | 'FAILED' | 'CANCELLED';
 }
 
 export interface HealthIssue {

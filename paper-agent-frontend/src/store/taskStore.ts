@@ -1,13 +1,15 @@
 import { create } from 'zustand';
-import { api, type ConnectionState } from '@/api/client';
+import { api, type ConnectionState, type ListTasksParams } from '@/api/client';
 import { toApiError } from '@/api/errors';
 import type { ApiError } from '@/api/errors';
 import { applyEnvelope, emptyRuntime, type TaskRuntimeState } from '@/api/normalize';
+import { isRunning } from '@/lib/status';
 import type {
   CreateTaskInput,
   EvidenceBundle,
   ExportKind,
   ExportResult,
+  MessageStatus,
   ReportResponse,
   SourceName,
   SourcePreflight,
@@ -53,15 +55,28 @@ function toSourcePreflight(sources: Record<string, string> | undefined): SourceP
   }));
 }
 
+/** 状态过滤 chips 的计数徽章数据源：只在"全量活跃"响应时更新 */
+export interface TaskListCounts {
+  all: number;
+  running: number;
+  done: number;
+  failed: number;
+  degraded: number;
+}
+
 interface TaskStoreState {
   tasks: TaskSnapshot[];
   listLoading: boolean;
   listError: string | null;
+  /** 当前列表视图参数（状态 chips + 归档视图），由 OverviewPage 的 URL query 驱动 */
+  listParams: ListTasksParams & { degraded?: boolean };
+  listCounts: TaskListCounts | null;
   byId: Record<string, TaskEntry>;
   preflight: SourcePreflight[] | null;
   preflightLoading: boolean;
 
-  loadTasks: () => Promise<void>;
+  loadTasks: (params?: ListTasksParams & { degraded?: boolean }) => Promise<void>;
+  archiveTask: (taskId: string, archived: boolean) => Promise<boolean>;
   checkPreflight: (
     input: Pick<CreateTaskInput, 'sources' | 'lit_source'>,
   ) => Promise<SourcePreflight[]>;
@@ -74,12 +89,16 @@ interface TaskStoreState {
   setConnection: (taskId: string, state: ConnectionState) => void;
   startRun: (taskId: string) => Promise<void>;
   resumeTask: (taskId: string, fromStep?: string) => Promise<void>;
+  stopTask: (taskId: string) => Promise<void>;
   reloadReport: (taskId: string) => Promise<void>;
   reloadEvidence: (taskId: string) => Promise<void>;
   sendMessage: (taskId: string, text: string, action: 'ask' | 'revise') => Promise<void>;
   sendNow: (taskId: string, turnId: string) => Promise<void>;
   removeQueued: (taskId: string, turnId: string) => Promise<void>;
+  /** 从后端消息队列恢复排队/历史消息（刷新、重连后调用） */
+  restoreMessages: (taskId: string) => Promise<void>;
   exportArtifact: (taskId: string, kind: ExportKind) => Promise<ExportResult>;
+  downloadReportMd: (taskId: string) => Promise<ExportResult>;
   dropConnection: (taskId: string) => void;
   restoreConnection: (taskId: string) => void;
 }
@@ -92,17 +111,57 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   tasks: [],
   listLoading: false,
   listError: null,
+  listParams: {},
+  listCounts: null,
   byId: {},
   preflight: null,
   preflightLoading: false,
 
-  async loadTasks() {
-    set({ listLoading: true, listError: null });
+  async loadTasks(params) {
+    // "已降级"是前端特有视图（后端 ?status= 不支持 degraded）：全量拉取后客户端过滤
+    const next = params ?? get().listParams;
+    const wired: ListTasksParams = { status: next.status, archived: next.archived };
+    set({
+      listLoading: true,
+      listError: null,
+      ...(params ? { listParams: next } : {}),
+    });
     try {
-      const tasks = await api.listTasks();
-      set({ tasks, listLoading: false });
+      const res = await api.listTasks(wired);
+      const tasks = next.degraded ? res.filter((t) => t.degraded) : res;
+      const isFullActiveScan = !next.status && !next.degraded && next.archived !== 'true';
+      const counts: TaskListCounts = isFullActiveScan
+        ? {
+            all: res.length,
+            running: res.filter((t) => isRunning(t.run_status)).length,
+            done: res.filter((t) => t.run_status === 'DONE').length,
+            failed: res.filter((t) => t.run_status === 'FAILED').length,
+            degraded: res.filter((t) => t.degraded).length,
+          }
+        : (get().listCounts ?? {
+            all: res.length,
+            running: res.filter((t) => isRunning(t.run_status)).length,
+            done: res.filter((t) => t.run_status === 'DONE').length,
+            failed: res.filter((t) => t.run_status === 'FAILED').length,
+            degraded: res.filter((t) => t.degraded).length,
+          });
+      set({ tasks, listLoading: false, listCounts: counts });
     } catch (err) {
       set({ listLoading: false, listError: toApiError(err).code });
+    }
+  },
+
+  async archiveTask(taskId, archived) {
+    try {
+      await api.archiveTask(taskId, archived);
+      useToastStore
+        .getState()
+        .push(archived ? 'overview.archivedDone' : 'overview.restoredDone', 'ok');
+      await get().loadTasks();
+      return true;
+    } catch (err) {
+      useToastStore.getState().pushError(toApiError(err));
+      return false;
     }
   },
 
@@ -193,6 +252,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
 
     // 打开时一次性取报告与证据：终态任务即使没收到 SSE 也能看到同一份报告
     await Promise.all([get().reloadReport(taskId), get().reloadEvidence(taskId)]);
+    // 排队/历史消息从后端队列恢复（刷新后 Composer 的"待发 N 条"与后端对齐）
+    await get().restoreMessages(taskId);
 
     // 运行中的任务需要持续刷新证据（新条目陆续登记）
     const timer = window.setInterval(() => {
@@ -274,6 +335,18 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     }
   },
 
+  async stopTask(taskId) {
+    try {
+      const res = await api.stopTask(taskId);
+      // 主动中止用警示色区分自然失败：剩余步骤保留，可断点续跑
+      if (res.final_state === 'CANCELLED')
+        useToastStore.getState().push('monitor.stopped', 'warn');
+      await get().openTask(taskId);
+    } catch (err) {
+      useToastStore.getState().pushError(toApiError(err));
+    }
+  },
+
   async reloadReport(taskId) {
     try {
       const report = await api.getReport(taskId);
@@ -338,23 +411,29 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       }
       set((s) => {
         const cur = s.byId[taskId] ?? blankEntry();
+        // SSE user 帧可能先于 HTTP 回包到达（服务端投递开始即广播），
+        // 此时权威 id（turn-user）已存在于列表；若仍把乐观条目改写成该 id
+        // 会出现重复 → React duplicate key。已存在则丢弃乐观条目即可。
+        const canonicalId = `${res.turn_id ?? turnId}-user`;
+        const nextStatus: MessageStatus = res.queued ? 'queued' : 'done';
+        const withoutOptimistic = cur.messages.filter((m) => m.id !== optimistic.id);
+        const messages = withoutOptimistic.some((m) => m.id === canonicalId)
+          ? withoutOptimistic
+          : cur.messages.map((m) =>
+              m.id === optimistic.id
+                ? {
+                    ...m,
+                    status: nextStatus,
+                    turn_id: res.turn_id ?? m.turn_id,
+                    id: canonicalId,
+                    queued_order: res.order,
+                  }
+                : m,
+            );
         return {
           byId: {
             ...s.byId,
-            [taskId]: {
-              ...cur,
-              messages: cur.messages.map((m) =>
-                m.id === optimistic.id
-                  ? {
-                      ...m,
-                      status: res.queued ? 'queued' : 'done',
-                      turn_id: res.turn_id ?? m.turn_id,
-                      id: `${res.turn_id ?? turnId}-user`,
-                      queued_order: res.order,
-                    }
-                  : m,
-              ),
-            },
+            [taskId]: { ...cur, messages },
           },
         };
       });
@@ -410,12 +489,61 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     }
   },
 
+  async restoreMessages(taskId) {
+    try {
+      const res = await api.listMessages(taskId);
+      set((s) => {
+        const cur = s.byId[taskId];
+        if (!cur) return {};
+        const restored: TaskRuntimeState['messages'][number][] = [];
+        for (const m of [...(res.active ? [res.active] : []), ...res.pending, ...res.history]) {
+          restored.push({
+            // 与 SSE message 帧同键（turn_id-role），幂等合并靠它去重
+            id: `${m.turn_id}-user`,
+            turn_id: m.turn_id,
+            role: 'user',
+            text: m.text,
+            status:
+              m.status === 'queued'
+                ? 'queued'
+                : m.status === 'running'
+                  ? 'sending'
+                  : m.status === 'failed'
+                    ? 'failed'
+                    : 'done',
+            queued_order: m.status === 'queued' ? m.order : undefined,
+            ts: m.queued_at,
+            seq: m.order,
+            ...(m.error ? { error: m.error } : {}),
+          });
+        }
+        // 只补缺不覆盖：实时路径已落库的消息（含乐观发送）优先，历史不重复显示
+        const seen = new Set(cur.messages.map((m) => m.id));
+        const messages = [...cur.messages, ...restored.filter((m) => !seen.has(m.id))].sort(
+          (a, b) => (a.seq ?? 0) - (b.seq ?? 0),
+        );
+        return { byId: { ...s.byId, [taskId]: { ...cur, messages } } };
+      });
+    } catch {
+      // 队列恢复失败不打断任务页：后续 SSE / 重连仍会补齐
+    }
+  },
+
   async exportArtifact(taskId, kind) {
     try {
       return await api.exportArtifact(taskId, kind);
     } catch (err) {
       const e = toApiError(err);
       return { ok: false, kind, code: e.code, error: e.message };
+    }
+  },
+
+  async downloadReportMd(taskId) {
+    try {
+      return await api.downloadReportMd(taskId);
+    } catch (err) {
+      const e = toApiError(err);
+      return { ok: false, kind: 'report', code: e.code, error: e.message };
     }
   },
 

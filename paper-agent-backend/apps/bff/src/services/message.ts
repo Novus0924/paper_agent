@@ -103,6 +103,14 @@ export class MessageService {
    */
   send(taskId: string, rawText: unknown, rawAction: unknown): SendResult {
     const task = this.mustGet(taskId)
+    // 归档互锁（v2.1）：归档任务不接受追问/修订（先恢复归档再发）
+    if (task.archived === true) {
+      throw new ApiError(
+        'BAD_STATE',
+        `任务 ${taskId} 已归档，请先恢复`,
+        '通过 POST /api/v1/tasks/{id}/archive（body {"archived": false}）恢复后再发送消息。',
+      )
+    }
     const text = this.validateText(rawText)
     const action = this.validateAction(rawAction)
     const q = this.queue(taskId)
@@ -129,14 +137,10 @@ export class MessageService {
       status: 'queued',
     }
 
-    // 终态任务不接受新消息：模型回合会立刻结束，回复无意义 → 如实报错而非静默丢弃
-    if (task.run_status === 'DONE' || task.run_status === 'FAILED') {
-      throw new ApiError(
-        'BAD_STATE',
-        `任务 ${taskId} 已处于终态（${task.run_status}），不接受新的追问/修订`,
-        '如需基于新问题继续，请新建任务（POST /api/v1/tasks）；终态任务的产物与账本不可变。',
-      )
-    }
+    // 终态任务（v2.2）允许 ask/revise：在同一 AGH 会话发起新回合，模型基于
+    // 会话上下文与既有证据回答；回复经既有 message SSE 事件流呈现。
+    // 红线：**不**改写 report.json/state.json（终态产物不可变），消息轮次经会话留痕。
+    // 锁与互斥规则不变：执行中入队排队、消息投递中执行侧 409 BUSY。
 
     q.pending.push(msg)
 
@@ -205,12 +209,7 @@ export class MessageService {
     if (!q) return
     if (q.active) return // 还有消息在投递，等它自己结束
     if (q.pending.length === 0) return
-    // 任务已终态则不再放行（避免对终态会话发消息）
-    const task = this.index.get(taskId)
-    if (!task || task.run_status === 'DONE' || task.run_status === 'FAILED') {
-      q.pending.length = 0
-      return
-    }
+    // v2.2：终态任务同样放行（允许追问）；投递指令会要求模型不改写终态产物
     void this.drain(taskId)
   }
 
@@ -264,9 +263,34 @@ export class MessageService {
     }
   }
 
-  /** 组装指令：要求模型基于**既有证据**回答，不得凭空断言（§11 审计真实性） */
+  /**
+   * 组装指令：要求模型基于**既有证据**回答，不得凭空断言（§11 审计真实性）。
+   * 终态任务（v2.2）：ask = 基于会话上下文与既有证据回答，不改写产物；
+   * revise = 只给修订建议文本（不重建报告——重建属后续里程碑）。
+   */
   private buildInstruction(task: TaskRecord, msg: QueuedMessage): string {
     const dir = this.runDir(task.task_id)
+    if (task.run_status === 'DONE' || task.run_status === 'FAILED') {
+      if (msg.action === 'revise') {
+        return [
+          '用户对已完成的研究提出了修订请求。请在同一会话内处理，并严格遵守：',
+          `1) 先调用 sciret_status 工具（run_dir="${dir}"）确认当前 run_status；`,
+          '2) 任务已终态，产物（report.json/state.json/账本）不可变：**不要**调用会改写产物或重建报告的工具，只输出修订建议文本；',
+          '3) 修订建议必须落到具体条目（哪条结论、建议如何改、依据哪些证据 EV-*），供后续里程碑据此重建报告；',
+          '4) **禁止凭空断言**：所有事实性表述必须来自账本中的证据（EV-*）。',
+          `用户修订要求：${msg.text}`,
+        ].join('\n')
+      }
+      return [
+        '用户在已完成的任务基础上追加一个追问。请在同一会话内回答，并严格遵守：',
+        `1) 先调用 sciret_status 工具（run_dir="${dir}"）确认当前状态；`,
+        '2) 任务已终态，产物（report.json/state.json/账本）不可变：**不要**改写它们，基于会话上下文与既有证据回答；',
+        '3) 需要证据支撑时调用 sciret_evidence 或 sciret_cite 工具回查，引用格式为 [EV-xxxx]；',
+        '4) **禁止凭空断言**：若现有证据不足以回答，请明确说明"现有证据无法支持"，不要编造文献或数据；',
+        '5) 回答末尾用一句话说明本次回答用到了哪些证据编号。',
+        `用户追问：${msg.text}`,
+      ].join('\n')
+    }
     if (msg.action === 'revise') {
       return [
         '用户对本次研究提出了修订请求。请在同一会话内处理，并严格遵守：',

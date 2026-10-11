@@ -6,7 +6,8 @@ import { api } from '@/api/client';
 import type { Conclusion, EvidenceItem } from '@/api/types';
 import { useI18n } from '@/i18n';
 import { KIND_LABEL, TIER_LABEL } from '@/lib/labels';
-import { cx, externalRef } from '@/lib/utils';
+import { formatApa, formatBibtex } from '@/lib/citation';
+import { copyText, cx, externalRef } from '@/lib/utils';
 import { useToastStore } from '@/store/toastStore';
 import { toApiError } from '@/api/errors';
 import { Button, LinkButton } from '@/components/ui/Button';
@@ -22,7 +23,7 @@ export interface EvidenceCardProps {
 }
 
 /**
- * FE-08 证据溯源卡片：来源、产生步骤、支撑结论可读展示；
+ * FE-08 证据溯源卡片：来源、产生步骤、支撑结论可读展示，APA/BibTeX 引用一键复制；
  * SHA-256 与账本哈希链收在「审计细节」里（P-02：不在主视图贴哈希）。
  */
 export function EvidenceCard({ taskId, item, bound, highlighted }: EvidenceCardProps) {
@@ -43,6 +44,19 @@ export function EvidenceCard({ taskId, item, bound, highlighted }: EvidenceCardP
     } catch (err) {
       useToastStore.getState().pushError(toApiError(err));
     }
+  }
+
+  async function copyCitation(style: 'apa' | 'bibtex') {
+    const text = style === 'apa' ? formatApa(item) : formatBibtex(item);
+    const ok = await copyText(text);
+    useToastStore.getState().push(
+      ok
+        ? style === 'apa'
+          ? 'report.copiedApa'
+          : 'report.copiedBibtex'
+        : 'topbar.copyFailed',
+      ok ? 'ok' : 'warn',
+    );
   }
 
   return (
@@ -77,6 +91,26 @@ export function EvidenceCard({ taskId, item, bound, highlighted }: EvidenceCardP
             DOI
           </LinkButton>
         )}
+        <span className={report.evRow}>
+          <Button
+            size="sm"
+            variant="chip"
+            icon="copy"
+            title={t('report.copyCiteApa')}
+            onClick={() => void copyCitation('apa')}
+          >
+            APA
+          </Button>
+          <Button
+            size="sm"
+            variant="chip"
+            icon="copy"
+            title={t('report.copyCiteBibtex')}
+            onClick={() => void copyCitation('bibtex')}
+          >
+            BibTeX
+          </Button>
+        </span>
       </div>
 
       {bound.length > 0 && (

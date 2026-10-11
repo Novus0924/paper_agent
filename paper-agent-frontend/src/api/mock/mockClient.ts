@@ -1,14 +1,17 @@
-import type { ApiClient, SubscribeHandlers } from '../client';
+import type { ApiClient, ListTasksParams, SubscribeHandlers } from '../client';
 import type {
+  ArchiveResult,
   CreateTaskInput,
   CreateTaskResponse,
   EvidenceBundle,
   ExportKind,
   ExportResult,
   HealthInfo,
+  MessageQueueResponse,
   ReportResponse,
   SendResult,
   SourcePreflight,
+  StopResult,
   TaskSnapshot,
 } from '../types';
 import { mockPreflight, SOURCES } from './fixtures';
@@ -41,8 +44,12 @@ export class MockApiClient implements ApiClient {
     return this.runtime.health();
   }
 
-  async listTasks(): Promise<TaskSnapshot[]> {
-    return this.runtime.list();
+  async listTasks(params?: ListTasksParams): Promise<TaskSnapshot[]> {
+    return this.runtime.list(params);
+  }
+
+  async archiveTask(taskId: string, archived: boolean): Promise<ArchiveResult> {
+    return this.runtime.archive(taskId, archived);
   }
 
   async getTask(taskId: string): Promise<TaskSnapshot> {
@@ -88,6 +95,10 @@ export class MockApiClient implements ApiClient {
     this.runtime.resume(taskId, fromStep);
   }
 
+  async stopTask(taskId: string): Promise<StopResult> {
+    return this.runtime.stop(taskId);
+  }
+
   subscribe(taskId: string, handlers: SubscribeHandlers) {
     return this.runtime.subscribe(taskId, handlers.onEvent, handlers.onConnection);
   }
@@ -122,6 +133,15 @@ export class MockApiClient implements ApiClient {
 
   async sendNow(taskId: string, turnId: string): Promise<void> {
     this.runtime.sendNow(taskId, turnId);
+  }
+
+  async listMessages(taskId: string): Promise<MessageQueueResponse> {
+    return this.runtime.listMessages(taskId);
+  }
+
+  async downloadReportMd(taskId: string): Promise<ExportResult> {
+    await new Promise((r) => setTimeout(r, 150));
+    return this.runtime.downloadReportMd(taskId);
   }
 
   async removeQueued(taskId: string, turnId: string): Promise<void> {

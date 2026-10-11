@@ -590,6 +590,155 @@ describe('Live：SSE 事件形状翻译', () => {
   });
 });
 
+/* ------------------------------------------------------- 停止执行（v2.1） */
+
+describe('Live：停止执行', () => {
+  it('POST /tasks/{id}/stop，空体不带 Content-Type，返回 StopResult 契约形状', async () => {
+    const calls = stubFetch(() => ({
+      json: {
+        task_id: TASK,
+        run_status: 'FAILED',
+        stopped_at: '2026-10-11T05:00:00.000Z',
+        final_state: 'CANCELLED',
+      },
+    }));
+
+    const res = await new LiveApiClient(BASE).stopTask(TASK);
+
+    const call = calls[0];
+    expect(call?.url).toBe(`${BASE}/api/v1/tasks/${TASK}/stop`);
+    expect(call?.init?.method).toBe('POST');
+    expect(headerOf(call?.init, 'Content-Type')).toBeUndefined();
+    expect(res).toEqual({
+      task_id: TASK,
+      run_status: 'FAILED',
+      stopped_at: '2026-10-11T05:00:00.000Z',
+      final_state: 'CANCELLED',
+    });
+  });
+});
+
+/* ---------------------------------------------- 归档与列表过滤（v2.1） */
+
+describe('Live：归档与列表过滤', () => {
+  it('POST /tasks/{id}/archive：布尔体 {archived}，返回 {task_id, archived, archived_at}', async () => {
+    const calls = stubFetch(() => ({
+      json: { task_id: TASK, archived: true, archived_at: '2026-10-11T05:00:00.000Z' },
+    }));
+
+    const res = await new LiveApiClient(BASE).archiveTask(TASK, true);
+
+    const call = calls[0];
+    expect(call?.url).toBe(`${BASE}/api/v1/tasks/${TASK}/archive`);
+    expect(call?.init?.method).toBe('POST');
+    expect(headerOf(call?.init, 'Content-Type')).toBe('application/json');
+    expect(JSON.parse(String(call?.init?.body))).toEqual({ archived: true });
+    expect(res).toEqual({
+      task_id: TASK,
+      archived: true,
+      archived_at: '2026-10-11T05:00:00.000Z',
+    });
+  });
+
+  it('恢复归档时 archived=false，archived_at 置 null', async () => {
+    const calls = stubFetch(() => ({
+      json: { task_id: TASK, archived: false, archived_at: null },
+    }));
+
+    const res = await new LiveApiClient(BASE).archiveTask(TASK, false);
+
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ archived: false });
+    expect(res.archived_at).toBeNull();
+  });
+
+  it('listTasks 把 status/archived 编码进查询串；不带参数时不加查询串', async () => {
+    const calls = stubFetch(() => ({ json: { tasks: [], total: 0 } }));
+    const client = new LiveApiClient(BASE);
+
+    await client.listTasks();
+    await client.listTasks({ status: 'RUNNING', archived: 'all' });
+    await client.listTasks({ archived: 'true' });
+    await client.listTasks({ status: 'DONE' });
+
+    expect(calls.map((c) => c.url)).toEqual([
+      `${BASE}/api/v1/tasks`,
+      `${BASE}/api/v1/tasks?status=RUNNING&archived=all`,
+      `${BASE}/api/v1/tasks?archived=true`,
+      `${BASE}/api/v1/tasks?status=DONE`,
+    ]);
+  });
+});
+
+/* ------------------------------------------ 消息队列查询（v2.1，BE-11） */
+
+describe('Live：消息队列查询', () => {
+  it('GET /tasks/{id}/messages 返回 {task_id, busy, pending, active, history} 信封，原样转发', async () => {
+    const envelope = {
+      task_id: TASK,
+      busy: true,
+      pending: [
+        {
+          turn_id: 'turn-1',
+          task_id: TASK,
+          action: 'ask',
+          text: '请补充近两年的进展',
+          order: 1,
+          queued_at: '2026-10-11T05:00:00.000Z',
+          status: 'queued',
+        },
+      ],
+      active: null,
+      history: [
+        {
+          turn_id: 'turn-0',
+          task_id: TASK,
+          action: 'revise',
+          text: '把结论 3 拆成两段',
+          order: 1,
+          queued_at: '2026-10-11T04:55:00.000Z',
+          status: 'done',
+        },
+      ],
+    };
+    const calls = stubFetch(() => ({ json: envelope }));
+
+    const res = await new LiveApiClient(BASE).listMessages(TASK);
+
+    expect(calls[0]?.url).toBe(`${BASE}/api/v1/tasks/${TASK}/messages`);
+    expect(res).toEqual(envelope);
+  });
+});
+
+/* ------------------------------------------ 报告 Markdown 直下（v2.1） */
+
+describe('Live：报告 Markdown 直下', () => {
+  it('GET /tasks/{id}/report.md：blob 下载，文件名为 {task_id}.md', async () => {
+    const calls = stubFetch(() => ({
+      body: '# 报告正文',
+      mime: 'text/markdown',
+    }));
+
+    const res = await new LiveApiClient(BASE).downloadReportMd(TASK);
+
+    expect(calls[0]?.url).toBe(`${BASE}/api/v1/tasks/${TASK}/report.md`);
+    expect(res.ok).toBe(true);
+    expect(res.filename).toBe(`${TASK}.md`);
+    expect(res.mime).toBe('text/markdown');
+    expect(typeof res.blobUrl).toBe('string');
+  });
+
+  it('报告未生成（404）转成 ok=false + 错误码，不抛给界面', async () => {
+    stubFetch(() => ({
+      status: 404,
+      json: { error: '没有报告', code: 'NOT_FOUND' },
+    }));
+
+    const res = await new LiveApiClient(BASE).downloadReportMd(TASK);
+
+    expect(res).toMatchObject({ ok: false, kind: 'report', code: 'NOT_FOUND' });
+  });
+});
+
 /* ---------------------------------------------------------------- 导出流 */
 
 describe('Live：导出文件流', () => {

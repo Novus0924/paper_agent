@@ -43,6 +43,10 @@ export type TaskRecord = {
   created_at: string
   updated_at: string
   steps: TaskStepRecord[]
+  /** 归档态（v2.1）：旧索引记录缺省视作未归档（false） */
+  archived?: boolean
+  /** 归档时间（ISO8601）；未归档/恢复后为 null */
+  archived_at?: string | null
 }
 
 export type TaskIndexFile = {

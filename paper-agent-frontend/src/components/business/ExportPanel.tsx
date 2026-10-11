@@ -47,8 +47,19 @@ export interface ExportPanelProps {
 export function ExportPanel({ taskId, taskDone }: ExportPanelProps) {
   const { t } = useI18n();
   const exportArtifact = useTaskStore((s) => s.exportArtifact);
-  const [pending, setPending] = useState<ExportKind | null>(null);
+  const downloadReportMd = useTaskStore((s) => s.downloadReportMd);
+  const [pending, setPending] = useState<string | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
+
+  /** 保存结果：live 走 blobUrl（ZIP 等二进制），mock 直接给文本内容 */
+  function save(res: ExportResult) {
+    if (res.blobUrl) {
+      downloadUrl(res.filename ?? `${taskId}-export`, res.blobUrl);
+      window.setTimeout(() => URL.revokeObjectURL(res.blobUrl as string), 1500);
+    } else if (res.filename && res.content) {
+      download(res.filename, res.mime ?? 'text/plain;charset=utf-8', res.content);
+    }
+  }
 
   async function run(kind: ExportKind, okKey: MsgKey) {
     setPending(kind);
@@ -60,15 +71,21 @@ export function ExportPanel({ taskId, taskDone }: ExportPanelProps) {
       useToastStore.getState().push('export.failed', 'fail', { reason: res.error ?? '' });
       return;
     }
-    if (res.blobUrl) {
-      // live 的三个导出都带 blobUrl（审计包是 ZIP，不能按文本下载）。
-      // 旧实现只 revoke 不触发保存，表现为"提示导出成功、磁盘上没有文件"。
-      downloadUrl(res.filename ?? `${taskId}-export`, res.blobUrl);
-      window.setTimeout(() => URL.revokeObjectURL(res.blobUrl as string), 1500);
-    } else if (res.filename && res.content) {
-      download(res.filename, res.mime ?? 'text/plain;charset=utf-8', res.content);
-    }
+    save(res);
     useToastStore.getState().push(okKey, 'ok');
+  }
+
+  /** 报告 Markdown 原始文件直下：GET /tasks/{id}/report.md，文件名 {task_id}.md */
+  async function runMd() {
+    setPending('md');
+    const res = await downloadReportMd(taskId);
+    setPending(null);
+    if (!res.ok) {
+      useToastStore.getState().push('export.failed', 'fail', { reason: res.error ?? '' });
+      return;
+    }
+    save(res);
+    useToastStore.getState().push('export.doneReport', 'ok');
   }
 
   return (
@@ -83,6 +100,22 @@ export function ExportPanel({ taskId, taskDone }: ExportPanelProps) {
       )}
 
       <div className={report.expList}>
+        <div className={report.expRow}>
+          <div className={report.expMain}>
+            <p className={report.expName}>{t('export.reportMdDirect')}</p>
+            <p className={report.expLead}>{t('export.reportMdDirectLead')}</p>
+          </div>
+          <Button
+            size="sm"
+            icon="download"
+            aria-label={t('export.reportMdDirect')}
+            loading={pending === 'md'}
+            disabled={pending !== null}
+            onClick={() => void runMd()}
+          >
+            {pending === 'md' ? t('export.running') : t('export.start')}
+          </Button>
+        </div>
         {ITEMS.map((item) => {
           const locked = item.kind !== 'session' && !taskDone;
           return (

@@ -31,7 +31,6 @@ let degradedTask: TaskSnapshot;
 let failedTask: TaskSnapshot;
 let runningTask: TaskSnapshot;
 
-const reportTitle = '固态电解质界面阻抗表征方法研究综述（2021–2026）';
 
 /** 任务行用 data-task-id 定位：标识不再默认铺进文案，标题也会互相包含 */
 function rowOf(taskId: string): HTMLElement {
@@ -103,32 +102,33 @@ describe('FE-03 总览（P-04 历史任务可重开）', () => {
     expect(statusCell).toContainElement(within(deg).getByText('已降级'));
   });
 
-  it('机器标识收进复制徽章：默认视图无 run-/sess- 噪声，但仍可取到', async () => {
+  it('机器标识不再铺在任务行：会话留痕是中性徽章，不是操作按钮', async () => {
     renderApp('/');
     const table = await screen.findByRole('table');
     expect(table.textContent).not.toMatch(/run-\d/);
     expect(table.textContent).not.toMatch(/sess-/);
+    expect(table.textContent).not.toMatch(/AGH/);
 
     const row = rowOf(doneTask.task_id);
-    const chip = within(row).getByRole('button', {
-      name: `复制 AGH 会话标识 ${doneTask.session_id}`,
-    });
-    expect(chip).toHaveTextContent('AGH 已记录');
-    // P-04 留痕：hover 说明给出任务与会话标识
-    expect(chip).toHaveAttribute(
-      'title',
-      `任务 ${doneTask.task_id} · AGH 会话 ${doneTask.session_id}`,
-    );
+    // v2.2：原"AGH 已记录"按钮改为中性状态徽章（非操作），说明留痕语义
+    const badge = within(row).getByText('已留痕');
+    expect(badge.closest('button')).toBeNull();
+    expect(badge).toHaveAttribute('aria-label', '该任务全程留痕，可导出审计');
   });
 
-  it('已完成任务点击后进报告页', async () => {
+  it('已完成任务点击后进报告页：研究目标作主标题', async () => {
     renderApp('/');
     await screen.findByRole('heading', { level: 1, name: '总览' });
     await userEvent.click(rowOf(doneTask.task_id));
     expect(
       await screen.findByRole('heading', { level: 1, name: '报告' }),
     ).toBeInTheDocument();
-    expect(await screen.findByRole('heading', { name: reportTitle })).toBeInTheDocument();
+    // v2.2：页面主标题是任务 goal（不再重复渲染报告内部标题）
+    expect(
+      await screen.findByRole('heading', {
+        name: /固态电解质界面阻抗的主要表征方法有哪些/,
+      }),
+    ).toBeInTheDocument();
   });
 
   it('失败任务点击后进监控页拿重跑入口，而不是空报告页', async () => {
@@ -301,22 +301,56 @@ describe('FE-05/06 运行监控（P-01/P-03）', () => {
 describe('FE-07 报告中心（P-02/P-03 报告必达）', () => {
   it('打开报告页即可看到正文、结论、参考文献与诚实声明', async () => {
     renderApp(`/report/${doneTask.task_id}`);
-    expect(await screen.findByRole('heading', { name: reportTitle })).toBeInTheDocument();
+    // v2.2：goal 作主标题；"研究报告"是小字副标
+    expect(
+      await screen.findByRole('heading', {
+        name: /固态电解质界面阻抗的主要表征方法有哪些/,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('研究报告')).toBeInTheDocument();
     expect(screen.getByText('摘要')).toBeInTheDocument();
-    expect(screen.getByText('三、核心发现：表征方法对比')).toBeInTheDocument();
+    // 章节动态化改造后：研究问题章节与模型综合回答章节必须可见（与 live 模式同形）
+    expect(screen.getAllByText('二、研究问题').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('五、核心发现：表征方法对比').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('六、对研究问题的回答（模型综合生成）').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('结论')).toBeInTheDocument();
     expect(screen.getByText('参考文献')).toBeInTheDocument();
     expect(screen.getByText(/系统不会伪造引用/)).toBeInTheDocument();
+    // v2.2：不再有冗余的"正文"节标题；会话标识收进折叠，视觉上不铺在页面
+    expect(screen.queryByText('正文')).not.toBeInTheDocument();
+    for (const el of screen.queryAllByText(/sess-/)) {
+      expect(el).not.toBeVisible();
+    }
+  });
+
+  it('章节目录可导航：列出各章节锚点并指向对应 id', async () => {
+    renderApp(`/report/${doneTask.task_id}`);
+    const toc = await screen.findByRole('navigation', { name: '目录' });
+    const links = within(toc).getAllByRole('link');
+    expect(links.length).toBeGreaterThanOrEqual(5);
+    expect(links.map((a) => a.getAttribute('href'))).toContain('#research_question');
+    expect(within(toc).getByText('二、研究问题')).toBeInTheDocument();
+  });
+
+  it('审计信息折叠收着会话标识与账本链：默认收起，展开可见', async () => {
+    renderApp(`/report/${doneTask.task_id}`);
+    await screen.findByRole('heading', { name: /固态电解质界面阻抗的主要表征方法有哪些/ });
+    const audit = screen.getByRole('button', { name: /审计信息/ });
+    expect(audit).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(audit);
+    expect(screen.getByText('会话标识')).toBeInTheDocument();
+    expect(screen.getAllByText(doneTask.session_id).length).toBeGreaterThan(0);
+    expect(screen.getByText('证据账本链')).toBeInTheDocument();
   });
 
   it('每条结论都带证据锚点，点击跳到溯源页并定位', async () => {
     renderApp(`/report/${doneTask.task_id}`);
-    await screen.findByRole('heading', { name: reportTitle });
-    // 徽章的可读名称是 EV 编号，说明性文字放在 title 里
+    await screen.findByRole('heading', { name: /固态电解质界面阻抗的主要表征方法有哪些/ });
+    // 徽章的可读名称是 EV 编号，hover 提示给出证据标题（v2.2）
     const badge = screen.getAllByRole('link', {
       name: /^EV-\d{4}$/,
     })[0] as HTMLAnchorElement;
-    expect(badge.getAttribute('title')).toMatch(/^查看支撑证据 EV-\d{4}$/);
+    expect(badge.getAttribute('title')).toMatch(/^EV-\d{4} · /);
     expect(badge.getAttribute('href')).toMatch(/^\/evidence\/.+ev=EV-\d{4}$/);
     await userEvent.click(badge);
     expect(
@@ -339,16 +373,32 @@ describe('FE-07 报告中心（P-02/P-03 报告必达）', () => {
 });
 
 describe('FE-08 证据溯源（P-02 渐进披露）', () => {
-  it('证据可搜索、可按层级与类型筛选，空结果给清空动作', async () => {
+  it('证据可搜索、可按层级 chips 与类型筛选，空结果给清空动作', async () => {
     renderApp(`/evidence/${doneTask.task_id}`);
     await screen.findByRole('heading', { level: 1, name: '证据溯源' });
     await waitFor(() => expect(screen.queryAllByText('EV-0001')).toHaveLength(1));
     expect(screen.queryByText('EV-0012')).not.toBeInTheDocument();
+    // v2.2：结果计数只在筛选激活时出现（不与分页条"共 N 条"重复）
+    expect(screen.queryByText(/^共 \d+ 条$/)).not.toBeInTheDocument();
+    const kindOptions = within(
+      screen.getByRole('combobox', { name: '按类型' }),
+    ).getAllByRole('option');
+    // 下拉选项按实际数据去重生成（演示数据 7 类齐全，按 KIND_ORDER 排列）
+    expect(kindOptions.map((o) => o.textContent)).toEqual([
+      '全部',
+      '文献',
+      '数据',
+      '分析',
+      '笔记',
+      '核验',
+      '草稿',
+      '评审',
+    ]);
 
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: '按层级' }),
-      'artifact',
+    await userEvent.click(
+      screen.getByRole('button', { name: '产物（artifact）' }),
     );
+    expect(screen.getByText(/^共 \d+ 条$/)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('EV-0001')).not.toBeInTheDocument());
     expect(screen.getByText('EV-0007')).toBeInTheDocument();
 
@@ -382,12 +432,12 @@ describe('FE-08 证据溯源（P-02 渐进披露）', () => {
     expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled();
 
     // 翻页后改筛选条件要回到第 1 页，否则可能停在空白页
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: '按层级' }),
-      'artifact',
+    await userEvent.click(
+      screen.getByRole('button', { name: '产物（artifact）' }),
     );
     expect(await screen.findByText('EV-0007')).toBeInTheDocument();
-    expect(screen.queryByText(/共 \d+ 条/)).not.toBeInTheDocument();
+    // 筛选激活后 Pager 消失（单页），结果计数仍如实显示条数
+    expect(screen.getByText(/^共 \d+ 条$/)).toBeInTheDocument();
   });
 
   it('深链的证据在后一页时自动跳到那一页', async () => {
@@ -461,7 +511,7 @@ describe('FE-09 导出交付（P-04）', () => {
 
   it('完成后可导出报告，并给出内容清单与校验状态', async () => {
     renderApp(`/report/${doneTask.task_id}`);
-    await screen.findByRole('heading', { name: reportTitle });
+    await screen.findByRole('heading', { name: /固态电解质界面阻抗的主要表征方法有哪些/ });
     const panel = screen.getByText('导出与交付').closest('section') as HTMLElement;
     const buttons = within(panel).getAllByRole('button', { name: '导出' });
     expect(buttons).toHaveLength(3);
@@ -475,7 +525,7 @@ describe('FE-09 导出交付（P-04）', () => {
   it('导出失败给出原因和重试，不静默', async () => {
     vi.spyOn(api, 'exportArtifact').mockRejectedValue(new Error('EXPORT_ERROR'));
     renderApp(`/report/${doneTask.task_id}`);
-    await screen.findByRole('heading', { name: reportTitle });
+    await screen.findByRole('heading', { name: /固态电解质界面阻抗的主要表征方法有哪些/ });
     const panel = screen.getByText('导出与交付').closest('section') as HTMLElement;
     await userEvent.click(
       within(panel).getAllByRole('button', { name: '导出' })[0] as HTMLElement,
@@ -534,7 +584,11 @@ describe('FE-14 环境自检（P-07）', () => {
       'href',
       '/settings',
     );
-    expect(await screen.findByRole('heading', { name: reportTitle })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', {
+        name: /固态电解质界面阻抗的主要表征方法有哪些/,
+      }),
+    ).toBeInTheDocument();
   });
 
   it('自检连不上也不空白页：说明原因并提供刷新', async () => {

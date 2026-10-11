@@ -14,7 +14,9 @@ import type { RelayEvent } from '../../events/model.js'
  *   ③ drain() 续接缓冲与实时事件
  *
  * 响应头（§8.2）：`text/event-stream`、`no-cache, no-transform`、`keep-alive`、`X-Accel-Buffering: no`；
- * 首帧 `retry: 2000`；30s 心跳 `: ping`；终态 `done` **先写 socket 再结束**（终态帧必达）。
+ * 首帧 `retry: 2000`；30s 心跳 `: ping`；终态 `done` **先写 socket 再结束**（终态帧必达）——
+ * 但仅对**非终态建连**的任务生效：v2.2 终态追问语义下，DONE/FAILED 任务建连时
+ * 快照必含 done 帧，连接却必须保持（追问回合的实时 message 事件仍需推送）。
  */
 
 const HEARTBEAT_MS = 30_000
@@ -31,6 +33,12 @@ export function registerEventsRoute(app: FastifyInstance, ctx: AppContext): void
     if (!task) throw ApiError.notFound(`任务 ${taskId}`)
 
     const lastEventId = Number(req.headers['last-event-id'] ?? '0') || 0
+
+    // v2.2 终态追问语义：终态 ≠ 无实时事件。DONE/FAILED 任务建连时快照必含 done 帧，
+    // 但追问回合（messages）会产生实时 message 事件（user running/done、assistant 回复，
+    // 经 publishMessage 直发 bus）——连接必须保持，否则前端永远收不到追问回复。
+    // 非终态任务保持原语义：执行 settle 的 done 帧后断开，前端重连拿新快照。
+    const terminalAtConnect = task.run_status === 'DONE' || task.run_status === 'FAILED'
 
     //⚠️ 必须 hijack：声明"这个响应由我完全接管"。
     //
@@ -65,7 +73,9 @@ export function registerEventsRoute(app: FastifyInstance, ctx: AppContext): void
     const backlog = lastEventId > 0 ? ctx.relay.events.since(taskId, lastEventId) : ctx.relay.snapshot(taskId)
     for (const e of backlog) {
       reply.raw.write(frame(e))
-      if (e.type === 'done') {
+      // done 帧照发（前端需要终态语义）；仅非终态建连才随后断开。
+      // 终态任务的 done 是历史快照的一部分，连接保持以接收追问回合的实时事件。
+      if (e.type === 'done' && !terminalAtConnect) {
         reply.raw.end()
         sub.close()
         return reply
@@ -98,13 +108,18 @@ export function registerEventsRoute(app: FastifyInstance, ctx: AppContext): void
     //    客户端断连对 SSE 是**常态**（切页面、关标签、网络抖动），
     //    所以这不是边缘情况，必须按"正常关闭"处理。
     try {
+      // ⚠️ 防僵死评估（v2.2）：终态连接沿用同一套保护——30s 定时心跳 + 客户端断连
+      // cleanup（req.raw close/error）。下面的 POLL_GRACE_MS 只是"60s 无事件时补一发
+      // 心跳"，**从不主动关闭**：对终态等待追问事件的连接这正是想要的（EventSource
+      // 客户端切页会自动断开 → req close → cleanup 兜底），故终态连接无需独立超时。
       const deadline = Date.now() + POLL_GRACE_MS
       for (;;) {
         if (closed || reply.raw.writableEnded) break
         const e = await sub.next(HEARTBEAT_MS)
         if (e) {
           reply.raw.write(frame(e))
-          if (e.type === 'done') break // 终态帧已写入，随后清理
+          // 终态连接不因实时 done 断开（重跑/追问回合场景连接保持）；非终态保持原语义
+          if (e.type === 'done' && !terminalAtConnect) break // 终态帧已写入，随后清理
         } else if (Date.now() > deadline) {
           // 长时间无事件（异常兜底）：发送当前状态心跳后继续，避免连接僵死
           if (!reply.raw.writableEnded) reply.raw.write(': ping\n\n')

@@ -4,9 +4,13 @@ import layout from '@/styles/layout.module.css';
 import { useI18n } from '@/i18n';
 import { useHealthStore } from '@/store/healthStore';
 import { Icon } from '@/components/ui/Icon';
+import { Collapse } from '@/components/ui/Collapse';
 import { errorCodeKey } from '@/lib/errors';
 
-/** 侧栏连接卡（Demo conn-card）：AGH 连接状态 + 会话标识 + 模型（P-04/P-06/P-07） */
+/**
+ * 侧栏连接卡：默认只给人话状态（连接状态点 + 一句说明）；
+ * 会话标识、模型等机器细节收进「详情」折叠（P-02 渐进披露），空值不摆占位行。
+ */
 export function HealthCard({ sessionId }: { sessionId?: string | null }) {
   const { t } = useI18n();
   const health = useHealthStore((s) => s.health);
@@ -23,6 +27,7 @@ export function HealthCard({ sessionId }: { sessionId?: string | null }) {
     : health?.mode === 'mock'
       ? t('health.mockConnected')
       : t('health.connected');
+  const model = health?.model ?? '';
 
   return (
     <div className={ui.panel}>
@@ -30,11 +35,23 @@ export function HealthCard({ sessionId }: { sessionId?: string | null }) {
         <span className={reachable ? ui.pulse : ui.pulseOff} aria-hidden />
         <span>{title}</span>
       </div>
-      <p className={ui.connSub}>
-        {t('health.session')} <b>{sessionId ?? '—'}</b>
-        <br />
-        {t('health.model')} <b>{health?.model ?? '—'}</b>
-      </p>
+      {(sessionId || model || error) && (
+        <Collapse className={layout.blockSm} title={t('health.details')}>
+          <p className={ui.connSub}>
+            {sessionId && (
+              <>
+                {t('health.session')} <b>{sessionId}</b>
+                <br />
+              </>
+            )}
+            {model && (
+              <>
+                {t('health.model')} <b>{model}</b>
+              </>
+            )}
+          </p>
+        </Collapse>
+      )}
       {error && (
         <p className={ui.connIssue}>
           <Icon name="warn" />

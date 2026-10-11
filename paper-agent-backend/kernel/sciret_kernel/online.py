@@ -54,11 +54,29 @@ def snapshot_name_for(goal: str) -> str:
     return f"live-{slug}-{digest}"
 
 
+def pick_fetch_query(goal: str, queries: list[str] | None) -> str:
+    """检索 query 选择：优先模型规划查询（state.queries），否则回落 goal 原文。
+
+    背景（G1b 病灶）：中文 goal 原文直接透传 Crossref/OpenAlex 的英文文献库，
+    相关性极差。规划查询（T5 受控判断点产出）由模型依据 goal 生成英文关键词式
+    查询，显著提升命中质量；模型拒绝/未传时回落 goal 原文（既有行为，不阻断）。
+
+    确定性：取第一个非空查询（不做逐个尝试——多查询会引入"第一次成功与否"
+    的时序依赖，破坏可复现红线；多余查询留给未来扩展）。
+    """
+    for q in (queries or []):
+        q = str(q).strip()
+        if q:
+            return q
+    return goal
+
+
 def refresh_snapshot(
     goal: str,
     sources: list[str],
     per_source: int = 8,
     timeout_s: float = 90.0,
+    queries: list[str] | None = None,
 ) -> dict[str, Any]:
     """尝试联网抓取并写入快照目录。
 
@@ -68,6 +86,11 @@ def refresh_snapshot(
 
     失败**不抛异常**：网络不可用是预期情形（受限环境/离线演示），
     应当降级而不是让整条流水线崩掉。真正无快照可用时由调用方报错。
+
+    检索 query：优先 `queries` 中的规划查询（见 `pick_fetch_query`），
+    实际使用的 query 随返回值 `query` 字段留痕（审计可查"这次到底拿什么查的"）。
+    快照名仍由 goal 稳定派生（`snapshot_name_for`），规划查询只影响抓取内容、
+    不影响快照命名——否则同名任务会因查询不同产生不同文件名，摘要抖动。
     """
     if not FETCH_TOOL.exists():
         return {"ok": False, "reason": f"抓取器不存在：{FETCH_TOOL}"}
@@ -76,6 +99,7 @@ def refresh_snapshot(
     if offline_forced():
         return {"ok": False, "reason": f"已由 {ENV_OFFLINE}=1 强制离线"}
 
+    fetch_query = pick_fetch_query(goal, queries)
     name = snapshot_name_for(goal)
     out_path = corpus.CORPUS_DIR / f"{name}.json"
     corpus.CORPUS_DIR.mkdir(parents=True, exist_ok=True)
@@ -90,7 +114,7 @@ def refresh_snapshot(
             [
                 sys.executable,
                 str(FETCH_TOOL),
-                "--query", goal,
+                "--query", fetch_query,
                 "--out", str(tmp_path),
                 "--per-source", str(per_source),
                 "--sources", ",".join(sources),
@@ -136,6 +160,7 @@ def refresh_snapshot(
             "path": out_path,
             "records": len(records),
             "source_status": dict(snap.get("source_status", {})),
+            "query": fetch_query,
         }
     except subprocess.TimeoutExpired:
         return {"ok": False, "reason": f"抓取超时（>{int(timeout_s)}s）"}
@@ -156,18 +181,25 @@ def resolve_online(
     sources: list[str],
     per_source: int = 8,
     timeout_s: float = 90.0,
+    queries: list[str] | None = None,
+    skip_sources: list[str] | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
     """为在线模式解析出(快照名, 快照数据, 来源状态注记)。
 
     流程：尝试刷新 → 成功用新的；失败回落**既有**快照（按关键词选优）。
-    注记 `online` 会进 `source_status`，让审计能看出"本次是真联网还是回落"。
+    注记 `online` 会进 `source_status`，让审计能看出"本次是真联网还是回落"，
+    `online_query` 留痕实际使用的检索查询（规划查询或 goal 原文）。
+
+    源熔断（v2.2）：`skip_sources` 中的源在本 run 内不再抓取（上一轮已标记
+    unavailable），全部源熔断时直接回落既有快照；无快照仍 Fail-fast，绝不伪造。
 
     两条必须守住的性质：
     1. **回落时不覆盖 source_status 里的失败原因** —— 否则"抓取失败"会被
        快照里的 `ok:8` 覆盖掉，降级语义（L1/L2）就会被误判为 L0；
     2. **绝不伪造记录** —— 无既有快照可回落时抛错，让流水线 Fail-fast。
     """
-    attempt = {"online_attempted": lit_source != "local", "online_refresh": False}
+    fetch_query = pick_fetch_query(goal, queries)
+    attempt = {"online_attempted": lit_source != "local", "online_refresh": False, "online_query": fetch_query}
     if lit_source == "local":
         name, snap = corpus.select_snapshot(goal, lit_source)
         return name, snap, attempt
@@ -179,8 +211,23 @@ def resolve_online(
     fetch_sources = [s for s in sources if s in source_spi.REGISTRY]
     if not fetch_sources:
         fetch_sources = source_spi.known_sources()
+    skipped = sorted({str(s) for s in (skip_sources or [])})
+    if skipped:
+        fetch_sources = [s for s in fetch_sources if s not in set(skipped)]
+        attempt["circuit_skipped"] = list(skipped)
+    if not fetch_sources:
+        # 全部源已熔断：不再发起任何抓取，直落既有快照（无快照则照旧 Fail-fast）
+        reason = f"源熔断生效（{', '.join(skipped)} 本 run 内不再重试）"
+        names = corpus.available_snapshots()
+        if not names:
+            raise FileNotFoundError(
+                f"在线检索失败且无可用本地快照可回落：{reason}。"
+                f"请检查网络/代理，或先运行 kernel/tools/fetch_corpus.py 冻结一份语料。"
+            )
+        name, snap = corpus.select_snapshot(goal, "auto")
+        return name, snap, {**attempt, "online_refresh": False, "online_fallback_reason": reason}
 
-    result = refresh_snapshot(goal, fetch_sources, per_source=per_source, timeout_s=timeout_s)
+    result = refresh_snapshot(goal, fetch_sources, per_source=per_source, timeout_s=timeout_s, queries=queries)
     if result.get("ok"):
         name = str(result["name"])
         return name, corpus.load_snapshot(name), {

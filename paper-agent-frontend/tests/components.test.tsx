@@ -76,6 +76,17 @@ describe('FE-06 降级两级提示（P-01）', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
+  it('info 级别带原因时直显原因原文，不套用"数据源不可用"模板', () => {
+    renderAt(
+      <DegradedBanner
+        info={{ ...base, level: 'info', source: 'user', reason: '用户请求停止执行' }}
+      />,
+      { at: '/' },
+    );
+    expect(screen.getByText('用户请求停止执行')).toBeInTheDocument();
+    expect(screen.queryByText(/user 当前不可用/)).not.toBeInTheDocument();
+  });
+
   it('degraded 级别说明"任务未中断"，并给出原因、影响与下一步动作', async () => {
     const onRetry = vi.fn();
     renderAt(<DegradedBanner info={{ ...base, level: 'degraded' }} onRetry={onRetry} />, {

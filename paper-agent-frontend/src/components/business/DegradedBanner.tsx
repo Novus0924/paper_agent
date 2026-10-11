@@ -30,7 +30,9 @@ export function DegradedBanner({ info, onRetry, onChangeSource }: DegradedBanner
         <Icon name="info" className={ui.noteIc} />
         <span>
           <b>{t('degraded.infoTitle')}</b>{' '}
-          {t('degraded.infoLead', { source: info.source })}
+          {info.reason
+            ? info.reason
+            : t('degraded.infoLead', { source: info.source })}
           {info.impact && <em className={ui.muted}> · {info.impact}</em>}
         </span>
       </p>

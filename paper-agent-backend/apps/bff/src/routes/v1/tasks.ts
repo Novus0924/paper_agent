@@ -35,7 +35,8 @@ const WORKFLOWS_NOT_IMPLEMENTED: Record<string, string> = {
 
 const LIT_SOURCES = ['local', 'arxiv', 'auto'] as const
 
-/** 工作流步骤定义（与领域内核 WorkflowSpec 同源；M2 内核落地后由其提供） */
+/** 工作流步骤定义（与领域内核 WorkflowSpec 同源；跨语言契约测试 workflow-contract.test.ts 锁定一致性）。
+ *  S1 是受控模型步骤（内核 workflow.MODEL_STEPS）：整链 DONE 后由系统自动追加模型回合执行，手动单步/续跑被拒绝。 */
 export const WORKFLOW_STEPS: Record<string, { id: string; label: string }[]> = {
   research: [
     { id: 'R1', label: '多源检索' },
@@ -44,6 +45,7 @@ export const WORKFLOW_STEPS: Record<string, { id: string; label: string }[]> = {
     { id: 'R4', label: '事实验证' },
     { id: 'R5', label: '综述写作' },
     { id: 'R6', label: '自评审' },
+    { id: 'S1', label: '综合回答' },
   ],
   materials: [
     { id: 'P1', label: '候选生成' },
@@ -63,8 +65,11 @@ function newTaskId(): string {
 }
 
 export function registerTasksRoutes(app: FastifyInstance, ctx: AppContext): void {
+  /** archived 过滤的合法取值（缺省 false：只看活跃） */
+  const ARCHIVED_FILTERS = ['false', 'true', 'all'] as const
+
   app.get('/tasks', async (req) => {
-    const query = req.query as { status?: string }
+    const query = req.query as { status?: string; archived?: string }
     let statusFilter: RunStatus | undefined
     if (query.status) {
       const allowed: readonly RunStatus[] = ['PLANNED', 'RUNNING', 'DONE', 'FAILED']
@@ -72,7 +77,16 @@ export function registerTasksRoutes(app: FastifyInstance, ctx: AppContext): void
       if (!hit) throw new ApiError('BAD_PARAM', `status 过滤值非法：${query.status}`, '允许：PLANNED | RUNNING | DONE | FAILED。')
       statusFilter = hit
     }
-    const tasks = ctx.index.list(statusFilter)
+    const archivedRaw = query.archived ?? 'false'
+    if (!(ARCHIVED_FILTERS as readonly string[]).includes(archivedRaw)) {
+      throw new ApiError('BAD_PARAM', `archived 过滤值非法：${archivedRaw}`, '允许：false（活跃）| true（归档）| all（全部）。')
+    }
+    let tasks = ctx.index.list(statusFilter)
+    if (archivedRaw !== 'all') {
+      const wantArchived = archivedRaw === 'true'
+      // 旧索引记录无 archived 字段 → 视作未归档
+      tasks = tasks.filter((t) => (t.archived === true) === wantArchived)
+    }
     return { tasks: tasks.map(taskSnapshot), total: tasks.length }
   })
 
@@ -82,6 +96,29 @@ export function registerTasksRoutes(app: FastifyInstance, ctx: AppContext): void
     const rec = ctx.index.get(taskId)
     if (!rec) throw ApiError.notFound(`任务 ${taskId}`)
     return taskSnapshot(rec)
+  })
+
+  app.post('/tasks/:id/archive', async (req) => {
+    const taskId = validateTaskId((req.params as { id: string }).id)
+    const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>
+    const archived = body['archived']
+    if (typeof archived !== 'boolean') {
+      throw ApiError.badBody('archived 必填且必须是布尔值（body 形如 {"archived": true}）。')
+    }
+    const rec = ctx.index.get(taskId)
+    if (!rec) throw ApiError.notFound(`任务 ${taskId}`)
+    // 运行中（状态机 RUNNING 或执行锁占用）不可归档/恢复：先 stop 再操作
+    if (rec.run_status === 'RUNNING' || ctx.exec.isBusy(taskId)) {
+      throw new ApiError(
+        'BAD_STATE',
+        '任务运行中，请先停止',
+        '等待执行结束（订阅 /events 获取 done 事件）或先 POST /api/v1/tasks/{id}/stop，再执行归档/恢复。',
+      )
+    }
+    rec.archived = archived
+    rec.archived_at = archived ? new Date().toISOString() : null
+    ctx.index.put(rec)
+    return { task_id: taskId, archived, archived_at: rec.archived_at }
   })
 
   app.post('/tasks', async (req, reply) => {
@@ -184,5 +221,7 @@ export function taskSnapshot(rec: TaskRecord) {
     session_id: rec.session_id,
     created_at: rec.created_at,
     updated_at: rec.updated_at,
+    archived: rec.archived === true,
+    archived_at: rec.archived_at ?? null,
   }
 }

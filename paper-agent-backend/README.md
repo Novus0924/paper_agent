@@ -9,12 +9,17 @@
 >
 > | 验证 | 命令 | 当前结果 |
 > |---|---|---|
-> | 代码级门禁 | `pnpm quality-gate` | vitest **120/120** · 内核 **55/55** · `tsc` 0 error · `eslint` 0 error |
+> | 代码级门禁 | `pnpm quality-gate` | vitest **158/158** · 内核 **91/91** · `tsc` 0 error · `eslint` 0 error |
 > | DoD 总验收 | `pnpm dod` | 11 项门禁 + 13 条逐条判定全绿 |
 > | 端到端 | `bash scripts/verify-*.sh` | 六段合计 **179 项**断言全绿 |
 >
-> 已知未实现项（需求已列、边界如实标注）：`materials` 工作流算子、提示注入内容检测、
-> AGH 集成一致性校验、熔断/OCR、容器化（§12.4 标为"建议"）。逐条说明见 §9.5。
+> 已知未实现项（需求已列、边界如实标注）：`materials` 工作流算子、
+> AGH 集成一致性校验、OCR、容器化（§12.4 标为"建议"）。逐条说明见 §9.5。
+>
+> **v2.2 变更摘要**：
+> ① 终态追问打通——DONE/FAILED 任务允许 ask/revise（同一 AGH 会话发起新回合，终态产物不可变，回复经既有 message SSE 事件流呈现）；
+> ② 提示注入检测落地——规则型 `kernel/sciret_kernel/injection.py`（12 条中英模式，零依赖），R1 入账本前清洗元数据并以 note 留痕、`sciret_plan` 对 goal 命中附 warning（不阻断）；
+> ③ 源熔断——同 run 内 unavailable 的源记入 `state.circuit`，resume 重跑 R1 跳过其二次抓取并留痕。
 
 ---
 
@@ -33,7 +38,7 @@
 2. **执行不绕过 AGH**：BFF 不直接 spawn 领域进程跑主链路，全部经 AGH 会话（Task↔Session 1:1）；
 3. BFF 与 AGH 同生态：Node ≥ 24.10 + TypeScript + 官方 `@agnes/sdk`。
 
-**对 AGH 仓库（`D:\agnes-harness-main`）只读引用，绝不修改其源码**（经 pnpm `link:` 依赖接入）。
+**对 AGH 仓库（工作区 `../agnes-harness`）只读引用，绝不修改其源码**（经 pnpm `link:` 依赖接入）。
 
 ---
 
@@ -57,7 +62,7 @@ paper-agent-2/
 │   │   ├── export/               # ★ zip.ts（零依赖 ZIP 写入器）+ service.ts（Exporter SPI）
 │   │   └── routes/               # health + /api/v1/{tasks,events,report,export,messages}
 │   ├── types/                   # AGH 最小类型声明（见 §6 说明）
-│   ├── test/                    # 单测 + 契约测试（120 个）
+│   ├── test/                    # 单测 + 契约测试（155 个）
 │   └── scripts/                 # 诊断脚本（spike-* / zip-probe / daemon-ready / *-probe）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
@@ -123,7 +128,7 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 变量 | 用途 | 默认 |
 |---|---|---|
 | `PAPER_AGENT_ROOT` | 项目根 | 自动探测（当前工作目录） |
-| `PAPER_AGENT_AGH_ROOT` | AGH 仓库根（**只读引用，禁止改其源码**） | 自动探测同级 `agnes-harness` / `agnes-harness-main`，再试 `../`、`D:/`、`C:/` 候选（判据：`packages/cli/dist/local/agnes.mjs` 存在） |
+| `PAPER_AGENT_AGH_ROOT` | AGH 仓库根（**只读引用，禁止改其源码**） | 自动探测同级 `agnes-harness` / `agnes-harness-main`，再试 `../` 候选（判据：`packages/cli/dist/local/agnes.mjs` 存在） |
 | `PAPER_AGENT_PORT` | BFF 端口 | `8787` |
 | `PAPER_AGENT_PYTHON` | Python 解释器（内核，≥3.10） | 自动探测 `python`/`python3`/`py`，再试各用户 `~/.workbuddy/binaries/python/versions/<版本>/python.exe` |
 | `PAPER_AGENT_LOG_LEVEL` | 日志级别 | `info` |
@@ -484,7 +489,7 @@ node scripts/start.mjs --bff-only   # 只起 BFF
 | **导出复用 AGH 原生** | daemon **无导出 RPC**，故经 CLI：`agnes export <session_id> --format agnes -o x.jsonl` 实测可用（产出事件 JSONL）。M7 已把该路径封装为 `kind=session`，且与 CLI 直出**逐字节一致**。 |
 | **⚠️ 已知问题** | `agnes sessions`（列表/`--json`）在当前 home 上返回 `INTERNAL_ERROR RESULT_INVALID`——**AGH 侧投影问题，非本项目缺陷**（会话本身已正常写入 `sessions.db`，且 `export`/`load` 均可用）。红线要求不得改 AGH 源码，故记录在案并通过 `session.load` + 本任务索引 + `export` 作为"可核对/可导出"证据路径。 |
 | **遗留包** | 用户 AGH home 中存在 v1.0 遗留包 `paper-agent-tools`（其 7 个 hot-tools 与本项目 `sciret_*` **重名**）→ 启用本插件前**必须先停用旧包**：`bash scripts/install-plugin.sh disable-old`。⚠️ `agh package enable/disable` 的参数**只接受包名**（`paper-agent-tools`、`@paper-agent/plugin-sciret`），传贡献点 id（`ext:paper-agent/tools`、`ext:paper-agent/sciret`）会被 AGH 的参数校验直接拒绝（`^(?:@[a-z0-9]…/[a-z0-9]…)$`）——旧文案与本脚本一度都按 `ext:…` 写，于是"停用旧包/启用新包"这两步**实际上从未生效过**，脚本却照样打印成功。现在 `install-plugin.sh` 在 enable/disable 后**回读 `package status` 确认终态**（`enabled=True/False`），不达标就报错退出。反向恢复用同一形式的命令（`bash agh.sh package enable paper-agent-tools`；本轮为验证"停用"而没再把它开回去）。 |
-| **AGH 根定位（机器无关）** | AGH 是**另一个仓库**，每台机器位置不同；原先在 6 处写死 `D:/agnes-harness-main`（`config.ts`、`start.mjs`、`doctor.mjs`、`agh-daemon-up.sh`、`install-plugin.sh`、`verify-message.sh`），换机即"未找到 AGH 构建产物"。现统一为：Node 侧 `scripts/lib/paths.mjs::resolveAghRoot`、BFF 侧 `config.ts::detectAghRoot`、Bash 侧 `scripts/_env.sh::pa_agh_root`，三处**同一候选顺序**（判据都是 `packages/cli/dist/local/agnes.mjs`）。改顺序必须三处同步——口径不一致会出现"doctor 说 AGH 就绪但 BFF 起不来"。显式设置 `PAPER_AGENT_AGH_ROOT` 时**以它为准且不回落**：路径没有构建产物就 fail-fast 并提示修正（静默改用别的目录会让排查者对着一个谁都没选的 AGH 猜）。 |
+| **AGH 根定位（机器无关）** | AGH 是**另一个仓库**，每台机器位置不同；原先在 6 处写死某台开发机的盘符绝对路径，换机即"未找到 AGH 构建产物"。现统一为：Node 侧 `scripts/lib/paths.mjs::resolveAghRoot`、BFF 侧 `config.ts::detectAghRoot`、Bash 侧 `scripts/_env.sh::pa_agh_root`，三处**同一候选顺序**（只按"与本项目同级/上级"的相对布局探测，判据都是 `packages/cli/dist/local/agnes.mjs`）。改顺序必须三处同步——口径不一致会出现"doctor 说 AGH 就绪但 BFF 起不来"。显式设置 `PAPER_AGENT_AGH_ROOT` 时**以它为准且不回落**：路径没有构建产物就 fail-fast 并提示修正（静默改用别的目录会让排查者对着一个谁都没选的 AGH 猜）。 |
 
 ### 6.1 插件安装与运行期环境变量（本机三大陷阱）
 
@@ -546,7 +551,7 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 > 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
 
 - `bash scripts/quality-gate.sh` → **四道门禁全绿**（§15/§16 要求"类型 + **Lint** + 测试"）：
-  vitest **120/120** · 内核 **55/55**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**
+  vitest **158/158** · 内核 **91/91**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**
   （lint 为类型感知规则，覆盖 `src` + `test` + `scripts`；30 个 warning 是既有非空断言等，不阻断。
   想收紧用 `pnpm lint:strict`（`--max-warnings 0`）。）
   （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/多轮消息队列/分层 DTO/AGH 接口契约）；
@@ -652,7 +657,7 @@ state.json → {"degraded": true,
 **一键启动器托管 2.0 前端**（`PAPER_AGENT_WEB_PORT=5178/5179 node scripts/start.mjs --no-browser`，两次实测）
 
 ```text
-[✓] AGH 构建产物就绪: …\agnes-harness-main\packages\cli\dist\local\agnes.mjs   ← 同级自动探测，未设任何环境变量
+[✓] AGH 构建产物就绪: …\agnes-harness\packages\cli\dist\local\agnes.mjs   ← 同级自动探测，未设任何环境变量
 [✓] 复用已运行的 daemon（pid=2648 pipe=\\.\pipe\agnes-2ef89d7847bb7c1c）        ← 已在跑就不再起一个
 [✓] BFF 已就绪: http://127.0.0.1:8787
 [✓] 前端开发服务器已启动: http://127.0.0.1:5179                                 ← 真探测首页 200，不是"睡 1500ms 后宣布成功"

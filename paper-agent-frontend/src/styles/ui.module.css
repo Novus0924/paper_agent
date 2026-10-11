@@ -724,6 +724,14 @@
   flex-wrap: wrap;
   gap: 7px;
 }
+/* 任务列表上方的关键词搜索行：只占一行，不与 chips 抢高度 */
+.searchRow {
+  display: flex;
+  margin-bottom: var(--s3);
+}
+.searchRow input {
+  max-width: 320px;
+}
 .src {
   display: inline-flex;
   align-items: center;

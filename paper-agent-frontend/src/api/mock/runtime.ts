@@ -6,6 +6,7 @@ import {
 } from '../normalize';
 import { ApiError } from '../errors';
 import type {
+  ArchiveResult,
   Conclusion,
   EvidenceBundle,
   EvidenceItem,
@@ -13,11 +14,15 @@ import type {
   ExportManifestItem,
   ExportResult,
   HealthInfo,
+  MessageQueueEntry,
+  MessageQueueResponse,
   Report,
   ReportResponse,
+  RunStatus,
   SseEnvelope,
   SourceName,
   Step,
+  StopResult,
   TaskSnapshot,
   WorkflowName,
 } from '../types';
@@ -567,6 +572,64 @@ export class MockRuntime {
     this.persist();
   }
 
+  /**
+   * 请求停止执行：与后端 services/execution.ts stop 同形——
+   * 运行中停止收敛为 FAILED + final_state CANCELLED，登记"用户请求停止执行"的
+   * info 降级（resumable），剩余脚本截断、可 resume 续跑；终态任务幂等返回实际终态。
+   */
+  stop(taskId: string): StopResult {
+    const task = this.store.tasks[taskId];
+    if (!task) throw new ApiError('NOT_FOUND');
+    const stoppedAt = nowIso();
+    if (
+      task.snapshot.run_status === 'DONE' ||
+      task.snapshot.run_status === 'FAILED'
+    ) {
+      return {
+        task_id: taskId,
+        run_status: task.snapshot.run_status,
+        stopped_at: stoppedAt,
+        final_state: task.snapshot.run_status,
+      };
+    }
+
+    const timer = this.timers.get(taskId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.timers.delete(taskId);
+    // 未播放的帧整段丢弃：停止后时间线不再推进（resume 会重建完整脚本）
+    task.script = task.script.slice(0, task.cursor);
+    const at = this.elapsed(task) + 100;
+    task.script.push(
+      { at, event: 'done', data: { run_status: 'FAILED', report_ready: false } },
+      {
+        at,
+        event: 'degraded',
+        data: {
+          level: 'info',
+          source: 'user',
+          reason: '用户请求停止执行',
+          impact: '剩余步骤未执行，可通过 resume 断点续跑',
+          resumable: true,
+        },
+      },
+    );
+    task.paused = false;
+    // 同步播完这两帧：快照立即收敛，避免"接口说停了、界面还在转"。
+    // emit() 不推进 cursor（常规推进在 scheduleNext 的定时器闭包里），同步播放要手动 +1。
+    this.emit(taskId);
+    task.cursor += 1;
+    this.emit(taskId);
+    task.cursor += 1;
+    this.scheduleNext(taskId);
+    this.persist();
+    return {
+      task_id: taskId,
+      run_status: task.snapshot.run_status,
+      stopped_at: stoppedAt,
+      final_state: 'CANCELLED',
+    };
+  }
+
   /** 断点续跑 / 重试失败步骤：从首个未完成帧继续播放 */
   resume(taskId: string, fromStep?: string): void {
     const task = this.store.tasks[taskId];
@@ -605,10 +668,35 @@ export class MockRuntime {
     this.persist();
   }
 
-  list(): TaskSnapshot[] {
-    return this.store.order
+  list(params?: {
+    status?: RunStatus;
+    archived?: 'false' | 'true' | 'all';
+  }): TaskSnapshot[] {
+    let items = this.store.order
       .map((id) => this.store.tasks[id]?.snapshot)
       .filter((s): s is TaskSnapshot => Boolean(s));
+    if (params?.status) items = items.filter((s) => s.run_status === params.status);
+    if (params?.archived && params.archived !== 'all') {
+      // 与后端 routes/v1/tasks.ts 同形：旧记录无 archived 字段视作未归档
+      const wantArchived = params.archived === 'true';
+      items = items.filter((s) => (s.archived === true) === wantArchived);
+    }
+    return items;
+  }
+
+  /** 归档 / 恢复：与后端 routes/v1/tasks.ts POST /archive 同形（运行中 BAD_STATE） */
+  archive(
+    taskId: string,
+    archived: boolean,
+  ): ArchiveResult {
+    const task = this.store.tasks[taskId];
+    if (!task) throw new ApiError('NOT_FOUND');
+    if (archived && task.snapshot.run_status === 'RUNNING')
+      throw new ApiError('BAD_STATE');
+    const archived_at = archived ? nowIso() : null;
+    task.snapshot = { ...task.snapshot, archived, archived_at };
+    this.persist();
+    return { task_id: taskId, archived, archived_at };
   }
 
   get(taskId: string): TaskSnapshot | null {
@@ -650,6 +738,7 @@ export class MockRuntime {
         turn_id: turnId,
         role: 'user',
         text,
+        action,
         status: running ? 'queued' : 'done',
         queued_order: running ? pending + 1 : undefined,
       },
@@ -659,7 +748,7 @@ export class MockRuntime {
       at: insertAt,
       event: 'message',
       turnId,
-      data: { turn_id: turnId, role: 'user', text, status: 'done' },
+      data: { turn_id: turnId, role: 'user', text, action, status: 'done' },
     };
     const follow = buildFollowUpScript(turnId, text, action, {
       reportReady: task.snapshot.report_ready === true,
@@ -714,6 +803,62 @@ export class MockRuntime {
     task.cursor = Math.min(task.cursor, task.script.length);
     this.persist();
     this.scheduleNext(taskId);
+  }
+
+  /**
+   * 消息队列查询：与后端 GET /tasks/{id}/messages 同形。
+   * pending 取还没播放的排队帧；history 取已放行（promote 后 status done）的用户消息。
+   */
+  listMessages(taskId: string): MessageQueueResponse {
+    const task = this.store.tasks[taskId];
+    if (!task) throw new ApiError('NOT_FOUND');
+    const toEntry = (frame: ScriptFrame, status: MessageQueueEntry['status'], order?: number): MessageQueueEntry => {
+      const d = frame.data as {
+        turn_id?: string;
+        text?: string;
+        action?: 'ask' | 'revise';
+      };
+      return {
+        turn_id: frame.turnId ?? d.turn_id ?? '',
+        task_id: taskId,
+        action: d.action ?? 'ask',
+        text: d.text ?? '',
+        order: order ?? 1,
+        queued_at: task.snapshot.updated_at,
+        status,
+      };
+    };
+    // 排队帧只可能出现在 cursor 之后（cursor 之前的都已放行）
+    const pending: MessageQueueEntry[] = task.script
+      .slice(task.cursor)
+      .filter(
+        (f) =>
+          f.event === 'message' &&
+          (f.data as { role?: string }).role === 'user' &&
+          (f.data as { status?: string }).status === 'queued',
+      )
+      .map((f) =>
+        toEntry(
+          f,
+          'queued',
+          (f.data as { queued_order?: number }).queued_order,
+        ),
+      );
+    const history: MessageQueueEntry[] = task.script
+      .filter(
+        (f) =>
+          f.event === 'message' &&
+          (f.data as { role?: string }).role === 'user' &&
+          (f.data as { status?: string }).status === 'done',
+      )
+      .map((f) => toEntry(f, 'done'));
+    return {
+      task_id: taskId,
+      busy: task.snapshot.run_status === 'RUNNING' || task.scheduled,
+      pending,
+      active: undefined,
+      history,
+    };
   }
 
   report(taskId: string): ReportResponse {
@@ -944,6 +1089,29 @@ export class MockRuntime {
         lines.push(`${i + 1}. ${e.title} · ${e.year ?? '—'} · ${e.ref} · ${e.ev_id}`);
       });
     return lines.join('\n');
+  }
+
+  /** 报告 Markdown 直下：用演示数据生成，与 exportArtifact(kind=report) 同源 */
+  downloadReportMd(taskId: string): ExportResult {
+    const task = this.store.tasks[taskId];
+    if (!task)
+      return { ok: false, kind: 'report', code: 'NOT_FOUND', error: '没有找到这个任务。' };
+    const reportRes = this.report(taskId);
+    if (reportRes.status !== 'ready' || !reportRes.report) {
+      return {
+        ok: false,
+        kind: 'report',
+        code: 'NOT_READY',
+        error: '报告尚未生成，无法下载 Markdown。',
+      };
+    }
+    return {
+      ok: true,
+      kind: 'report',
+      filename: `${taskId}.md`,
+      mime: 'text/markdown;charset=utf-8',
+      content: this.reportMarkdown(task, reportRes.report, this.evidence(taskId)),
+    };
   }
 
   health(): HealthInfo {

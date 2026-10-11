@@ -2,8 +2,7 @@ import { useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import layout from '@/styles/layout.module.css';
 import report from '@/styles/report.module.css';
-import ui from '@/styles/ui.module.css';
-import { useI18n } from '@/i18n';
+import ui from '@/styles/ui.module.css';import { useI18n } from '@/i18n';
 import { isRunning } from '@/lib/status';
 import { visibleMessages } from '@/api/normalize';
 import { useTaskStore } from '@/store/taskStore';
@@ -61,14 +60,36 @@ export function ReportPage() {
     !failed &&
     (entry.reportStatus === 'generating' || entry.report?.status === 'generating');
 
+  /** 一键重跑：携带 goal/workflow/lit_source/sources 到新建页预填 */
+  function rerun() {
+    const snap = entry?.snapshot;
+    if (!snap) return;
+    navigate('/new', {
+      state: {
+        rerun: {
+          goal: snap.goal ?? snap.title,
+          workflow: snap.workflow,
+          lit_source: snap.lit_source,
+          sources: snap.sources,
+        },
+      },
+    });
+  }
+
   return (
     <div className={layout.page}>
       <header className={layout.pageHead}>
         <div>
-          <h2 className={layout.pageTitle}>{t('report.title')}</h2>
-          <p className={layout.pageLead}>{entry.snapshot?.goal ?? entry.snapshot?.title ?? t('report.title')}</p>
+          {/* 任务目标作为主标题（页面标题与卡片标题不再重复"报告"二字） */}
+          <p className={report.docKind}>{t('report.subtitle')}</p>
+          <h2 className={layout.pageTitle}>
+            {entry.snapshot?.goal ?? entry.snapshot?.title ?? t('report.subtitle')}
+          </h2>
         </div>
         <div className={layout.headActions}>
+          <Button size="sm" icon="refresh" onClick={rerun} title={t('overview.rerunHint')}>
+            {t('report.rerun')}
+          </Button>
           <Button size="sm" icon="monitor" onClick={() => navigate(`/monitor/${taskId}`)}>
             {t('nav.monitor')}
           </Button>
