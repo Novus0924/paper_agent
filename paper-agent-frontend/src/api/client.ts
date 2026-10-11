@@ -7,6 +7,8 @@ import type {
   ExportKind,
   ExportResult,
   HealthInfo,
+  LibraryEvidenceResponse,
+  ListLibraryParams,
   MessageQueueResponse,
   ReportResponse,
   RunStatus,
@@ -50,6 +52,11 @@ export interface ApiClient {
   subscribe(taskId: string, handlers: SubscribeHandlers): Unsubscribe;
   getReport(taskId: string): Promise<ReportResponse>;
   getEvidence(taskId: string): Promise<EvidenceBundle>;
+  /**
+   * 文献库：跨任务汇总证据（GET /library/evidence）。
+   * 与任务内证据页不同，这里扫描全部任务、按 DOI 可选去重，供全局检索。
+   */
+  listLibraryEvidence(params?: ListLibraryParams): Promise<LibraryEvidenceResponse>;
   cite(
     taskId: string,
     evId: string,

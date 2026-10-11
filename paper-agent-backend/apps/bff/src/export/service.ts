@@ -1,7 +1,8 @@
 import type { Logger } from '../infra/logger.js'
 import type { TaskRecord } from '../store/task-index.js'
-import type { ReportService } from '../services/report.js'
+import type { ReportService, LedgerRecordView } from '../services/report.js'
 import { ApiError } from '../infra/errors.js'
+import { asArray, asRecord, asText } from '../infra/coerce.js'
 import { buildZip, type ZipEntry } from './zip.js'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -15,10 +16,11 @@ const execFileAsync = promisify(execFile)
 /**
  * 导出服务（BE-10，需求 §8.1 接口 15、§8.2 导出契约、§9.6 验收、§560 Exporter SPI）。
  *
- * 三类导出（§385）：
+ * 四类导出（§385）：
  *   - `report`  → Markdown 文件流（text/markdown）
  *   - `audit`   → 审计包 ZIP（报告 + 账本 + 事件 + 结论 + **校验脚本** + 清单）
  *   - `session` → AGH 会话轨迹（**经 AGH 原生导出**，不重造底座，P-04/P-06）
+ *   - `bibtex`  → 该任务 R1 文献证据的 BibTeX 全量导出（text/plain 文件流）
  *
  * 未完成 → 409 NOT_READY，并说明当前可导出范围（§386）。
  * 失败 → 500 EXPORT_ERROR，附人类可读原因与重试指引。
@@ -27,7 +29,7 @@ const execFileAsync = promisify(execFile)
  *   只需向 `EXPORTERS` 注册一个 `Exporter` 实现即可新增格式，路由与参数解析零改动。
  */
 
-export type ExportKind = 'report' | 'audit' | 'session'
+export type ExportKind = 'report' | 'audit' | 'session' | 'bibtex'
 
 export type ExportResult = {
   kind: ExportKind
@@ -350,12 +352,104 @@ const sessionExporter: Exporter = {
   },
 }
 
+// ---------------------------------------------------------------- bibtex（R1 文献全量导出）
+
+/** 取任务账本里 R1（多源检索）产出的文献证据 */
+function r1Literature(records: LedgerRecordView[]): LedgerRecordView[] {
+  return records.filter((r) => r.record_type === 'evidence' && asText(r.data['producer_step']) === 'R1')
+}
+
+/**
+ * BibTeX 特殊字符转义（BibTeX 惯例）。
+ * 单次扫描映射，避免「先转义反斜杠、后转义 `{}`」把 `\textbackslash{}` 中的花括号二次转义。
+ */
+const BIB_ESCAPE: Record<string, string> = {
+  '&': '\\&',
+  '%': '\\%',
+  $: '\\$',
+  '#': '\\#',
+  _: '\\_',
+  '{': '\\{',
+  '}': '\\}',
+  '~': '\\textasciitilde{}',
+  '^': '\\textasciicircum{}',
+  '\\': '\\textbackslash{}',
+}
+
+function escapeBib(value: string): string {
+  return value.replace(/[&%$#_{}~^\\]/g, (c) => BIB_ESCAPE[c] ?? c)
+}
+
+/** 第一作者姓（取末段词并去非字母数字/中文）；取不到回退 Anon */
+function surnameOf(author: string): string {
+  const parts = author.trim().split(/\s+/).filter(Boolean)
+  const last = parts[parts.length - 1] ?? ''
+  return last.replace(/[^0-9A-Za-z\u4e00-\u9fff]/g, '') || 'Anon'
+}
+
+/** BibTeX 引用键：第一作者姓 + 年份 + 序号（序号防碰撞） */
+function bibKey(ref: Record<string, unknown>, index: number): string {
+  const authors = asArray(ref['authors']).map((a) => asText(a)).filter(Boolean)
+  const first = authors[0]
+  const surname = first ? surnameOf(first) : 'Anon'
+  const yearRaw = ref['year']
+  const year = yearRaw === null || yearRaw === undefined || yearRaw === '' ? 'nd' : String(yearRaw).replace(/[^0-9]/g, '') || 'nd'
+  return `${surname}${year}${index}`
+}
+
+/** 单条 BibTeX 条目：字段 author/title/journal/year/doi，缺失的字段**跳过该行** */
+function toBibEntry(ref: Record<string, unknown>, index: number): string {
+  const author = asArray(ref['authors']).map((a) => asText(a)).filter(Boolean).join(', ')
+  const title = asText(ref['title'])
+  const journal = asText(ref['venue'])
+  const year = ref['year']
+  const doi = asText(ref['doi'])
+  const fields: Array<[string, string]> = []
+  if (author) fields.push(['author', author])
+  if (title) fields.push(['title', title])
+  if (journal) fields.push(['journal', journal])
+  if (year !== null && year !== undefined && year !== '') fields.push(['year', String(year)])
+  if (doi) fields.push(['doi', doi])
+  const body = fields.map(([k, v]) => `  ${k} = {${escapeBib(v)}}`).join(',\n')
+  return `@article{${bibKey(ref, index)},\n${body}\n}\n`
+}
+
+const bibtexExporter: Exporter = {
+  kind: 'bibtex',
+  available(task, ctx) {
+    if (r1Literature(ctx.reports.readLedger(task.task_id)).length === 0) {
+      return { ok: false, reason: '任务尚无 R1 检索文献证据（无文献可导出为 BibTeX）' }
+    }
+    return { ok: true }
+  },
+  async export(task, ctx) {
+    const lit = r1Literature(ctx.reports.readLedger(task.task_id))
+    if (lit.length === 0) {
+      // 防御性兜底（available() 已拦）：不静默产出空文件，明确 409
+      throw new ApiError(
+        'NOT_READY',
+        `任务 ${task.task_id} 无 R1 文献证据，无法生成 BibTeX`,
+        '请先完成 R1 多源检索，或改用其他导出类型。',
+      )
+    }
+    const body = lit.map((rec, i) => toBibEntry(asRecord(rec.data['ref']), i + 1)).join('\n')
+    return {
+      kind: 'bibtex',
+      contentType: 'text/plain; charset=utf-8',
+      filename: `${task.task_id}.bib`,
+      body,
+      contents: [`${task.task_id}.bib`],
+    }
+  },
+}
+
 // ---------------------------------------------------------------- 注册表（SPI）
 
 export const EXPORTERS: Record<ExportKind, Exporter> = {
   report: reportExporter,
   audit: auditExporter,
   session: sessionExporter,
+  bibtex: bibtexExporter,
 }
 
 export const EXPORT_KINDS = Object.keys(EXPORTERS) as ExportKind[]

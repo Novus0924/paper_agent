@@ -19,8 +19,9 @@
 
 设计约束（都是踩过或想到的）：
 - **零第三方依赖**：内核只用标准库（§1 红线）。故协议用 `typing.Protocol` 而非 ABC。
-- **归一化记录形状固定**：`doi/title/authors/year/venue/type/license/source`。
-  缺字段留空字符串或 None，**不要**编造。
+- **归一化记录形状固定**：`doi/title/authors/year/venue/type/license/source/abstract`。
+  缺字段留空字符串或 None，**不要**编造。`abstract` 用于 R2 摘要级精读（摘要缺失留空，
+  由下游按"标题分词"回退——不因缺摘要而伪造内容）。
 - **parse 必须对畸形数据免疫**：真实 API 会返回缺字段/类型不符的项
   （`title` 是空列表、作者是 null）。parse 里跳过无标题的项并计数，不抛异常——
   一个坏条目不该让整个源失败。
@@ -28,6 +29,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -137,7 +140,7 @@ class CrossrefSource:
             {
                 "query.bibliographic": query,
                 "rows": rows,
-                "select": "DOI,title,author,issued,container-title,license,type",
+                "select": "DOI,title,author,issued,container-title,license,type,abstract",
             }
         )
         return f"https://api.crossref.org/works?{params}"
@@ -161,6 +164,9 @@ class CrossrefSource:
                     "venue": _first(item.get("container-title")),
                     "type": _first(item.get("type")),
                     "license": _crossref_licenses(item.get("license")),
+                    # Crossref 的 abstract 常含 JATS 标签（<jats:p>…</jats:p>），去标签后归一化入账
+                    # （占位/残片归一为空串 → 下游按"摘要缺失"如实标注）
+                    "abstract": _normalize_abstract(_strip_jats(_first(item.get("abstract")))),
                     "source": self.name,
                 }
             )
@@ -181,7 +187,7 @@ class OpenAlexSource:
             {
                 "search": query,
                 "per-page": rows,
-                "select": "doi,title,publication_year,authorships,primary_location,type",
+                "select": "doi,title,publication_year,authorships,primary_location,type,abstract_inverted_index",
             }
         )
         return f"https://api.openalex.org/works?{params}"
@@ -210,6 +216,11 @@ class OpenAlexSource:
                     "type": _first(item.get("type")),
                     # OpenAlex 不返回许可链接；留空而不是编造（§11 严禁伪造）
                     "license": "",
+                    # OpenAlex 的 abstract 是倒排索引，需按 position 重建为文本；
+                    # 重建结果可能为占位（"Abstract not Available."）/残片 → 归一化为空串（缺失）
+                    "abstract": _normalize_abstract(
+                        _rebuild_inverted_index(item.get("abstract_inverted_index"))
+                    ),
                     "source": self.name,
                 }
             )
@@ -217,6 +228,85 @@ class OpenAlexSource:
 
 
 # ── 解析辅助 ─────────────────────────────────────────────────────────────
+
+#: JATS/HTML 标签（Crossref abstract 常含 `<jats:p>` / `<jats:italic>` 等）
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+#: 去标签后常出现「标点前有空格」（如 `markup .`），归一化回紧贴标点
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,;:!?%)\]}>])")
+
+
+def _strip_jats(text: object) -> str:
+    """Crossref `abstract` 去 JATS/HTML 标签并归一化空白与实体。
+
+    确定性且对畸形输入免疫：非字符串/空 → ""。标签替换为空格（保证块级标签两侧不粘连），
+    HTML 实体（`&amp;` 等）解码，压空白，再把「标点前空格」收回。
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    s = _TAG_RE.sub(" ", text)
+    s = html.unescape(s)
+    s = _WS_RE.sub(" ", s).strip()
+    return _SPACE_BEFORE_PUNCT_RE.sub(r"\1", s)
+
+
+def _rebuild_inverted_index(value: object) -> str:
+    """OpenAlex `abstract_inverted_index`（`{词: [位置...]}`）→ 文本。
+
+    标准重建：收集 `(position, word)` 对，按 position 升序拼接（同位置按词序稳定）。
+    对畸形输入免疫（非 dict / 位置非列表 / 空）→ ""。
+    """
+    if not isinstance(value, dict):
+        return ""
+    pairs: list[tuple[int, str]] = []
+    for word, positions in value.items():
+        if not isinstance(word, str) or not isinstance(positions, (list, tuple)):
+            continue
+        for pos in positions:
+            if isinstance(pos, int) and not isinstance(pos, bool):
+                pairs.append((pos, word))
+    pairs.sort(key=lambda x: (x[0], x[1]))
+    return " ".join(w for _, w in pairs)
+
+
+#: 已知「无摘要」占位文本（源在无摘要时可能返回这些，而非空）——大小写不敏感、容忍尾部句点
+_ABSTRACT_PLACEHOLDERS = frozenset(
+    {
+        "abstract not available",
+        "no abstract available",
+        "abstract unavailable",
+        "摘要不可用",
+    }
+)
+
+#: 摘要最小有效长度（字符）：低于此值视为残片/占位（非真实摘要）
+ABSTRACT_MIN_CHARS = 40
+
+
+def _normalize_abstract(text: object) -> str:
+    """摘要归一化：把「占位文本 / 过短残片」归一为空串（视为**缺失**）。
+
+    动机（实测）：OpenAlex 倒排索引重建后可能得到占位文本（如 "Abstract not Available."，23 字符），
+    若原样当作真实摘要，R2 会走摘要路径且**不标注 `abstract_missing`** —— 违背"缺失如实标注"原则。
+
+    规则（确定性）：
+    1. 非字符串 / strip 后为空 → ""；
+    2. strip 后（压空白、去尾部句点）命中 `_ABSTRACT_PLACEHOLDERS`（大小写不敏感）→ ""；
+    3. strip 后长度 < ``ABSTRACT_MIN_CHARS`` → ""（占位/残片不是可用摘要）；
+    4. 否则返回 strip 后的原文（保留原始大小写与内容，不改写）。
+    """
+    if not isinstance(text, str):
+        return ""
+    s = text.strip()
+    if not s:
+        return ""
+    probe = _WS_RE.sub(" ", s).rstrip(".").strip().lower()
+    if probe in _ABSTRACT_PLACEHOLDERS:
+        return ""
+    if len(s) < ABSTRACT_MIN_CHARS:
+        return ""
+    return s
+
 
 def _dig(obj: object, *path: str, key: str | None = None) -> object:
     """安全取值：`obj.a.b`，任一层缺失或类型不符都返回 default（不抛）。

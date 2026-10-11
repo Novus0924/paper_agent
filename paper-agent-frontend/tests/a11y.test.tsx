@@ -156,6 +156,18 @@ const VIEWS: View[] = [
     interactive: all('button, a, input, select'),
     minInteractive: 8,
   },
+  {
+    label: '文献库',
+    at: () => '/library',
+    // settled 用文献库专属文案：其它页面残留的 app 也在 document 里，
+    // 标题类的查询会跨应用命中多份；统计标签与这一分页串只此一处。
+    settled: async () => {
+      await screen.findByText('去重合并');
+      await screen.findByText('第 1–10 条 / 共 19 条');
+    },
+    interactive: all('button, a, input, select'),
+    minInteractive: 10,
+  },
 ];
 
 function offender(el: HTMLElement): string {

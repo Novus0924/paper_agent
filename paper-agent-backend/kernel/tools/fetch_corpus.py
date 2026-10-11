@@ -32,6 +32,20 @@ from sciret_kernel import sources as source_spi  # noqa: E402
 #（§6「多源受控并发，整体耗时≈最慢源而非各源之和」）
 MAX_WORKERS = 4
 
+#: abstract 截断上限（字符）：仅防快照膨胀，保留足够供 R2 摘要级精读的正文
+ABSTRACT_MAX_CHARS = 4000
+
+
+def truncate_abstract(rec: dict) -> dict:
+    """就地截断单条记录的 abstract（超长时），返回该记录（便于链式调用）。
+
+    仅截断不补齐：缺失/非字符串/no-op 不改动（不伪造内容）。
+    """
+    a = rec.get("abstract")
+    if isinstance(a, str) and len(a) > ABSTRACT_MAX_CHARS:
+        rec["abstract"] = a[:ABSTRACT_MAX_CHARS]
+    return rec
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="冻结真实文献元数据快照（仅元数据，不取全文）")
@@ -98,6 +112,9 @@ def main(argv: list[str] | None = None) -> int:
         seen.add(key)
         deduped.append(it)
     deduped.sort(key=lambda x: ((x.get("doi") or ""), (x.get("title") or "")))
+    # abstract 截断（防快照膨胀）：源解析已携带 abstract，此处只做体积治理
+    for it in deduped:
+        truncate_abstract(it)
 
     if not deduped:
         print("[error] 未获取到任何记录，不生成快照（禁止伪造数据）。", file=sys.stderr)

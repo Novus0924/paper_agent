@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -673,6 +674,29 @@ class TestOnlineRetrieval(unittest.TestCase):
             else:
                 os.environ[online.ENV_OFFLINE] = saved
 
+    def test_refresh_snapshot_forces_utf8_stderr_decoding(self) -> None:
+        """抓取器子进程输出必须按 UTF-8 + errors=replace 解码。
+
+        回归来源：Windows 下抓取器 stderr 可能写入非 UTF-8（GBK）字节，
+        `subprocess.run(text=True)` 的 reader 线程会抛 UnicodeDecodeError（本次未致命但属隐患）。
+        显式指定 encoding+errors 后，坏字节被替换而非抛异常（text=True 与 encoding 可共存，encoding 优先）。
+
+        注：mkstemp/os.close 打桩指向**不存在的临时路径**，避免真实落盘/删除
+        （受限环境对 unlink 有 safe-delete 守卫）；本用例只验证子进程调用参数。
+        """
+        fake = mock.Mock(returncode=1, stderr="", stdout="")
+        with tempfile.TemporaryDirectory() as td:
+            missing = Path(td) / "not-created.tmp"
+            with mock.patch.object(online.subprocess, "run", return_value=fake) as run, \
+                 mock.patch.object(online.tempfile, "mkstemp", return_value=(0, str(missing))), \
+                 mock.patch.object(online.os, "close"):
+                r = online.refresh_snapshot("goal-utf8-decode", ["crossref"])
+        self.assertFalse(r["ok"])
+        run.assert_called_once()
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs.get("encoding"), "utf-8", "抓取器输出必须显式按 UTF-8 解码")
+        self.assertEqual(kwargs.get("errors"), "replace", "坏字节应替换而非抛异常")
+
     def test_local_ignores_live_snapshots(self) -> None:
         """local 必须排除 `live-*`（在线运行时产物），否则 local 不再可复现。
 
@@ -787,6 +811,7 @@ class TestSourceSPI(unittest.TestCase):
         self.assertEqual(r["license"], "")
         self.assertEqual(r["authors"], [])
         self.assertEqual(r["source"], "openalex")
+        self.assertEqual(r["abstract"], "", "缺摘要必须留空，不得编造")
 
     def test_parse_accepts_non_dict_payload(self) -> None:
         """parse 收到 None / 列表 / 字符串等非预期载荷时返回空，不得抛。"""
@@ -797,7 +822,7 @@ class TestSourceSPI(unittest.TestCase):
     # ── 归一化：两个源的输出形状一致（下游才能统一处理）──
     def test_normalized_shape_is_identical_across_sources(self) -> None:
         """不同源的记录**字段集必须一致** —— 否则下游要按源分支处理，SPI 就白做了。"""
-        expected = {"doi", "title", "authors", "year", "venue", "type", "license", "source"}
+        expected = {"doi", "title", "authors", "year", "venue", "type", "license", "source", "abstract"}
         crossref = sources.CrossrefSource().parse(
             {"message": {"items": [{"DOI": "10.1/a", "title": ["A"], "issued": {"date-parts": [[2023, 5]]}}]}}
         )
@@ -1514,6 +1539,245 @@ class TestSourceCircuitBreaker(unittest.TestCase):
             with mock.patch.object(online, "refresh_snapshot", return_value={"ok": False, "reason": "模拟断网"}):
                 out = execute_step(state, run_dir, Ledger(run_dir), "R1")
             self.assertIn("源熔断", out["human_summary"])
+
+
+class TestAbstractEnrichment(unittest.TestCase):
+    """摘要级精读升级：源解析携带 abstract + R2 摘要结构化拆解（摘要路径 / 回退路径）。
+
+    覆盖：
+    - Crossref abstract 去 JATS 标签；OpenAlex abstract_inverted_index 倒排重建；
+    - _to_plain / 快照 records 携带 abstract（旧快照缺字段 = 空，兼容）；
+    - R2 摘要路径：关键句数量（top 3）、含目标关键词优先、长度过滤；
+    - R2 回退路径：无摘要 → 标题分词 + detail.abstract_missing；
+    - fetch_corpus 快照 abstract 截断（≤4000）。
+    """
+
+    def test_crossref_parse_strips_jats_tags(self) -> None:
+        payload = {
+            "message": {
+                "items": [
+                    {
+                        "DOI": "10.1/j",
+                        "title": ["JATS Paper"],
+                        "abstract": (
+                            "<jats:p>This is an &amp; abstract with <jats:italic>markup</jats:italic>."
+                            "</jats:p><jats:p>Second part.</jats:p>"
+                        ),
+                    }
+                ]
+            }
+        }
+        rec = sources.CrossrefSource().parse(payload)[0]
+        self.assertEqual(rec["abstract"], "This is an & abstract with markup. Second part.")
+
+    def test_crossref_missing_abstract_is_empty(self) -> None:
+        rec = sources.CrossrefSource().parse({"message": {"items": [{"DOI": "10.1/n", "title": ["N"]}]}})[0]
+        self.assertEqual(rec["abstract"], "")
+
+    def test_openalex_parse_rebuilds_inverted_abstract(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "title": "OA Paper",
+                    "abstract_inverted_index": {
+                        "Solid": [0],
+                        "electrolytes": [1],
+                        "enable": [2],
+                        "high": [3],
+                        "energy": [4],
+                        "density": [5],
+                        "batteries.": [6],
+                    },
+                }
+            ]
+        }
+        rec = sources.OpenAlexSource().parse(payload)[0]
+        self.assertEqual(rec["abstract"], "Solid electrolytes enable high energy density batteries.")
+
+    def test_openalex_malformed_inverted_index_is_empty(self) -> None:
+        for bad in ("nope", [], {"x": "not-a-list"}, {"Word": None}):
+            rec = sources.OpenAlexSource().parse({"results": [{"title": "T", "abstract_inverted_index": bad}]})[0]
+            self.assertEqual(rec["abstract"], "", f"倒排索引畸形时应留空：{bad!r}")
+
+    # ── 占位/残片摘要过滤（_normalize_abstract，缺失如实标注）──
+
+    def test_normalize_abstract_filters_placeholders(self) -> None:
+        """已知占位文本（大小写不敏感、容忍尾部句点）→ 空串（视为缺失）。"""
+        from sciret_kernel.sources import _normalize_abstract
+
+        for placeholder in (
+            "Abstract not Available.",
+            "ABSTRACT NOT AVAILABLE",
+            "abstract not available",
+            "  Abstract Not Available.  ",
+            "No abstract available.",
+            "no abstract available",
+            "Abstract unavailable",
+            "摘要不可用",
+            "摘要不可用。",
+        ):
+            self.assertEqual(_normalize_abstract(placeholder), "", f"占位摘要应归一为空：{placeholder!r}")
+
+    def test_normalize_abstract_filters_short_fragments(self) -> None:
+        from sciret_kernel.sources import _normalize_abstract
+
+        self.assertEqual(_normalize_abstract(""), "")
+        self.assertEqual(_normalize_abstract("   "), "")
+        self.assertEqual(_normalize_abstract("Short fragment."), "", "非占位但 <40 字符残片 → 空")
+        self.assertEqual(_normalize_abstract("x" * 39), "", "39 字符 < 阈值 → 空")
+        self.assertEqual(_normalize_abstract("x" * 40), "x" * 40, "恰好 40 字符保留（边界）")
+
+    def test_normalize_abstract_keeps_genuine_long_abstract(self) -> None:
+        from sciret_kernel.sources import _normalize_abstract
+
+        long = "Solid electrolytes enable high energy density batteries and improve safety margins."
+        self.assertEqual(_normalize_abstract("  " + long + "  "), long, "正常长摘要应原样保留（仅 strip）")
+
+    def test_source_parsers_apply_placeholder_filter(self) -> None:
+        """两个源解析后的 abstract 都必须经占位过滤：占位 → 空串（缺失）。"""
+        cr = sources.CrossrefSource().parse(
+            {"message": {"items": [{"DOI": "10.1/p", "title": ["P"], "abstract": "Abstract not available."}]}}
+        )[0]
+        self.assertEqual(cr["abstract"], "")
+        oa = sources.OpenAlexSource().parse(
+            {
+                "results": [
+                    {
+                        "title": "P",
+                        "abstract_inverted_index": {"Abstract": [0], "not": [1], "Available.": [2]},
+                    }
+                ]
+            }
+        )[0]
+        self.assertEqual(oa["abstract"], "")
+
+    def test_to_plain_carries_abstract_with_empty_default(self) -> None:
+        from sciret_kernel.pipeline import _to_plain
+
+        self.assertEqual(_to_plain({"abstract": "hello"})["abstract"], "hello")
+        self.assertEqual(_to_plain({})["abstract"], "", "旧快照缺 abstract 字段 → 空串（兼容）")
+
+    def test_fetch_corpus_truncates_abstract(self) -> None:
+        tool = _load_fetch_corpus_tool()
+        rec = {"title": "T", "abstract": "x" * 5000}
+        tool.truncate_abstract(rec)
+        self.assertEqual(len(rec["abstract"]), tool.ABSTRACT_MAX_CHARS)
+        short = {"title": "T", "abstract": "short"}
+        tool.truncate_abstract(short)
+        self.assertEqual(short["abstract"], "short")
+
+    def _r1_evidence(self, ledger: Ledger, **ref: object) -> None:
+        ledger.append(
+            "evidence",
+            {
+                "ev_id": "EV-0001",
+                "tier": "fact",
+                "kind": "literature",
+                "title": str(ref.get("title", "Test Paper")),
+                "ref": {
+                    "doi": "10.1/x",
+                    "title": str(ref.get("title", "Test Paper")),
+                    "authors": ["A Author"],
+                    "year": 2024,
+                    "venue": "J",
+                    "source": "crossref",
+                    **ref,
+                },
+                "producer_step": "R1",
+                "snapshot": "test",
+            },
+        )
+
+    def test_R2_abstract_path_extracts_key_sentences(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            run_dir = make_run(Path(t), "run-abs")
+            state = RunState.create(
+                run_dir,
+                task_id="run-abs",
+                goal="solid electrolyte impedance characterization",
+                workflow="research",
+                lit_source="local",
+                sources=["crossref", "openalex"],
+                steps=steps_for("research"),
+            )
+            ledger = Ledger(run_dir)
+            abstract = (
+                "This work studies solid electrolyte interfaces. "
+                "OK. "
+                "Impedance characterization reveals interfacial resistance. "
+                "The solid electrolyte enables high energy density batteries. "
+                "Safety is improved."
+            )
+            self._r1_evidence(ledger, title="Solid Electrolyte Study", abstract=abstract)
+
+            out = execute_step(state, run_dir, ledger, "R2")
+            self.assertEqual(len(out["evidence_ids"]), 1)
+            r2 = [r.data for r in ledger.evidence() if r.data.get("producer_step") == "R2"][0]
+
+            self.assertTrue(str(r2["title"]).startswith("摘要精读："), r2["title"])
+            highlights = r2["detail"]["abstract_highlights"]
+            self.assertEqual(len(highlights), 3, "摘要路径应取 top 3 关键句")
+            # 含目标关键词的句子优先入选
+            self.assertTrue(any("Impedance characterization" in h for h in highlights))
+            self.assertTrue(any("solid electrolyte enables" in h.lower() for h in highlights))
+            # 长度过滤：过短句（OK.）不得入选
+            self.assertFalse(any(h.strip().rstrip(".") == "OK" for h in highlights))
+            # 摘要路径不得标 abstract_missing；既有 focus_terms 保留
+            self.assertNotIn("abstract_missing", r2["detail"])
+            self.assertIn("focus_terms", r2["detail"])
+
+    def test_R2_fallback_marks_abstract_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            run_dir = make_run(Path(t), "run-noabs")
+            state = RunState.create(
+                run_dir,
+                task_id="run-noabs",
+                goal="solid electrolyte impedance characterization",
+                workflow="research",
+                lit_source="local",
+                sources=["crossref", "openalex"],
+                steps=steps_for("research"),
+            )
+            ledger = Ledger(run_dir)
+            self._r1_evidence(ledger, title="No Abstract Paper")  # 无 abstract 字段
+
+            execute_step(state, run_dir, ledger, "R2")
+            r2 = [r.data for r in ledger.evidence() if r.data.get("producer_step") == "R2"][0]
+            self.assertTrue(str(r2["title"]).startswith("精读解构："), "回退路径保留标题分词口径")
+            self.assertTrue(r2["detail"].get("abstract_missing"), "回退路径必须标 abstract_missing")
+            self.assertNotIn("abstract_highlights", r2["detail"])
+            self.assertIn("focus_terms", r2["detail"])
+
+    def test_R2_all_short_abstract_yields_no_highlights_but_no_missing_flag(self) -> None:
+        """abstract 非空但无可用句（全过短）→ 走摘要路径，highlights 为空，不标 missing。"""
+        with tempfile.TemporaryDirectory() as t:
+            run_dir = make_run(Path(t), "run-short")
+            state = RunState.create(
+                run_dir,
+                task_id="run-short",
+                goal="solid electrolyte",
+                workflow="research",
+                lit_source="local",
+                sources=["crossref"],
+                steps=steps_for("research"),
+            )
+            ledger = Ledger(run_dir)
+            self._r1_evidence(ledger, title="Short", abstract="OK. Yes. No.")
+            execute_step(state, run_dir, ledger, "R2")
+            r2 = [r.data for r in ledger.evidence() if r.data.get("producer_step") == "R2"][0]
+            self.assertTrue(str(r2["title"]).startswith("摘要精读："))
+            self.assertEqual(r2["detail"]["abstract_highlights"], [])
+            self.assertNotIn("abstract_missing", r2["detail"])
+
+
+def _load_fetch_corpus_tool():
+    """按文件路径加载 fetch_corpus.py（tools/ 不是包，无法直接 import）。"""
+    path = Path(__file__).resolve().parents[1] / "tools" / "fetch_corpus.py"
+    spec = importlib.util.spec_from_file_location("fetch_corpus_under_test", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 class TestCliEndToEnd(unittest.TestCase):

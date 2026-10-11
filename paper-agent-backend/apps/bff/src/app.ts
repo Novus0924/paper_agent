@@ -10,6 +10,7 @@ import type { EventRelay } from './events/relay.js'
 import type { ReportService } from './services/report.js'
 import type { ExportService } from './export/service.js'
 import type { MessageService } from './services/message.js'
+import type { LibraryService } from './services/library.js'
 import { registerHealthRoute } from './routes/health.js'
 import { registerV1Routes } from './routes/v1/index.js'
 
@@ -36,6 +37,8 @@ export interface AppContext {
   exports: ExportService
   /** 多轮消息服务（BE-11：同会话追问/修订，运行中排队按序执行） */
   messages: MessageService
+  /** 跨 run 文献/证据库（聚合全部任务账本，形成可检索文献库） */
+  library: LibraryService
 }
 
 export function buildApp(ctx: AppContext): FastifyInstance {
@@ -94,7 +97,7 @@ export function buildApp(ctx: AppContext): FastifyInstance {
   }))
 
   registerHealthRoute(app, ctx.cfg, ctx.gateway, ctx.index)
-  registerV1Routes(app, ctx, ctx.exec, ctx.reports, ctx.exports, ctx.messages)
+  registerV1Routes(app, ctx, ctx.exec, ctx.reports, ctx.exports, ctx.messages, ctx.library)
 
   return app
 }

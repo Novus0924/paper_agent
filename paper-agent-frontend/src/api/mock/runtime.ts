@@ -14,6 +14,9 @@ import type {
   ExportManifestItem,
   ExportResult,
   HealthInfo,
+  LibraryEvidenceItem,
+  LibraryEvidenceResponse,
+  ListLibraryParams,
   MessageQueueEntry,
   MessageQueueResponse,
   Report,
@@ -30,6 +33,8 @@ import {
   buildFollowUpScript,
   buildScript,
   datasetFor,
+  LIBRARY_SEED_EVIDENCE,
+  LIBRARY_SEED_TASKS,
   revisionSection,
   WORKFLOWS,
   type ScriptFrame,
@@ -943,6 +948,120 @@ export class MockRuntime {
       label: labelForEvent(e),
       detail: JSON.stringify(e.data),
     }));
+  }
+
+  /**
+   * 文献库（GET /library/evidence 的同形实现）：
+   * 把演示种子证据按 goal 映射回真实任务（task_id/goal 一致，报告跳转可落地），
+   * 再依次做筛选 → 可选 DOI 去重 → 分页。契约默认 dedupe=on、limit=50、offset=0。
+   *
+   * 排序与代表项对齐后端（be-dev3 契约）：任务 created_at 降序 → task_id 升序 → 任务内 seq 升序；
+   * 去重时代表项取该顺序下首个出现的条目（即最新任务的、同任务内序号最小的那条）。
+   * 不这么做就会出现"mock 里代表项是旧任务、live 里是新任务"的偏差。
+   */
+  library(params?: ListLibraryParams): LibraryEvidenceResponse {
+    const limit = params?.limit ?? 50;
+    const offset = params?.offset ?? 0;
+    const dedupe = params?.dedupe ?? true;
+
+    const snapshots = this.store.order
+      .map((id) => this.store.tasks[id]?.snapshot)
+      .filter((s): s is TaskSnapshot => Boolean(s));
+    const byGoal = new Map(snapshots.map((s) => [s.goal ?? '', s]));
+
+    // 种子任务 → 真实任务（goal 逐字匹配）；任务内 seq 用种子顺序
+    const taskOf = new Map<string, { id: string; createdAt: string; goal: string }>();
+    for (const seed of LIBRARY_SEED_TASKS) {
+      const snap = byGoal.get(seed.goal);
+      taskOf.set(seed.key, {
+        id: snap?.task_id ?? seed.key,
+        createdAt: snap?.created_at ?? '',
+        goal: seed.goal,
+      });
+    }
+    const seqOf = new Map<string, number>();
+    const perTask = new Map<string, number>();
+    LIBRARY_SEED_EVIDENCE.forEach((seed, i) => {
+      const n = perTask.get(seed.task_key) ?? 0;
+      seqOf.set(`${seed.task_key}#${i}`, n);
+      perTask.set(seed.task_key, n + 1);
+    });
+
+    const ordered = LIBRARY_SEED_EVIDENCE.map((seed, i) => ({ seed, i })).sort(
+      (a, b) => {
+        const ta = taskOf.get(a.seed.task_key);
+        const tb = taskOf.get(b.seed.task_key);
+        if ((ta?.createdAt ?? '') !== (tb?.createdAt ?? '')) {
+          return (ta?.createdAt ?? '') < (tb?.createdAt ?? '') ? 1 : -1; // 最新任务优先
+        }
+        if ((ta?.id ?? '') !== (tb?.id ?? '')) {
+          return (ta?.id ?? '') < (tb?.id ?? '') ? -1 : 1;
+        }
+        return (seqOf.get(`${a.seed.task_key}#${a.i}`) ?? 0) -
+          (seqOf.get(`${b.seed.task_key}#${b.i}`) ?? 0);
+      },
+    );
+
+    const q = (params?.q ?? '').trim().toLowerCase();
+    let items: LibraryEvidenceItem[] = ordered.map(({ seed, i }) => {
+      const task = taskOf.get(seed.task_key);
+      // ev_id 与后端同形：任务内序号（EV-0001…），跨任务会重复——
+      // 所以它不能单独作为去重键或列表 key（下面分组键与页面 key 都带 task_id）。
+      const seq = (seqOf.get(`${seed.task_key}#${i}`) ?? 0) + 1;
+      return {
+        ev_id: `EV-${String(seq).padStart(4, '0')}`,
+        task_id: task?.id ?? seed.task_key,
+        task_goal: task?.goal ?? '',
+        tier: seed.tier,
+        kind: seed.kind,
+        title: seed.title,
+        ref: { ...seed.ref },
+        producer_step: seed.producer_step,
+        duplicates_count: 0,
+      };
+    });
+
+    items = items.filter((it) => {
+      if (params?.kind && it.kind !== params.kind) return false;
+      if (params?.tier && it.tier !== params.tier) return false;
+      if (params?.source && it.ref.source !== params.source) return false;
+      if (params?.task_id && it.task_id !== params.task_id) return false;
+      if (!q) return true;
+      return [
+        it.title,
+        it.ref.title,
+        it.ref.doi,
+        it.ref.authors,
+        it.ref.venue,
+        it.task_goal,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(q);
+    });
+
+    if (dedupe) {
+      const groups = new Map<string, LibraryEvidenceItem>();
+      for (const it of items) {
+        // 有 DOI 才按 DOI 合并；无 DOI 的产物不聚合（每条独立，duplicates_count=0）。
+        // 键必须带 task_id：ev_id（EV-0001…）每个任务从 1 起编、跨任务会重复，
+        // 只用 ev_id 作键会把不同任务里的无 DOI 证据错误合并（后端确认的偏差点）。
+        const key =
+          it.ref.doi !== '' ? `doi:${it.ref.doi}` : `ev:${it.task_id}:${it.ev_id}`;
+        const existing = groups.get(key);
+        if (existing) existing.duplicates_count += 1;
+        else groups.set(key, { ...it });
+      }
+      items = [...groups.values()];
+    }
+
+    return {
+      total: items.length,
+      tasks_scanned: new Set(items.map((x) => x.task_id)).size,
+      items: items.slice(offset, offset + Math.max(0, limit)),
+      offset,
+      limit,
+    };
   }
 
   export(taskId: string, kind: ExportKind): ExportResult {

@@ -121,6 +121,11 @@ def refresh_snapshot(
             ],
             capture_output=True,
             text=True,
+            # ⚠️ Windows 下抓取器 stderr 可能写入非 UTF-8（GBK）字节：text=True 默认按系统编码解码，
+            #    reader 线程会抛 UnicodeDecodeError（本次未致命但属隐患）。显式 UTF-8 + errors=replace，
+            #    坏字节被替换而非抛异常（text=True 与 encoding 可共存，encoding 优先）。
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_s,
             # ⚠️ cwd 必须是 kernel/：fetch_corpus.py 以 `from sciret_kernel...` 导入内核模块，
             #    而内核**不装包**（靠 cwd 定位自身）。cwd 错了就是

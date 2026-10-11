@@ -31,8 +31,12 @@ export const KIND_LABEL: Record<EvidenceKind, MsgKey> = {
   factcheck: 'evidence.kindFactcheck',
   draft: 'evidence.kindDraft',
   review: 'evidence.kindReview',
+  // 内核 S1「综合回答」产物。不进 KIND_ORDER：它是模型的非确定性输出，
+  // 只在文献库/证据列表里以徽标出现，不作为筛选主维度（筛选仍聚焦七类确定性证据）。
+  synthesis: 'evidence.kindSynthesis',
 };
 
+/** 筛选下拉主维度：七类确定性证据（synthesis 见上，不在此列） */
 export const KIND_ORDER: EvidenceKind[] = [
   'literature',
   'data',
@@ -44,3 +48,20 @@ export const KIND_ORDER: EvidenceKind[] = [
 ];
 
 export const TIER_ORDER: EvidenceTier[] = ['fact', 'artifact'];
+
+/**
+ * 检索来源的短标签（文献库来源徽标用）：与 config/registry 的 SOURCES 同源，
+ * 只是把长名压到徽标可容长度，避免在窄列里换行。
+ */
+export const SOURCE_SHORT: Record<string, string> = {
+  arxiv: 'arXiv',
+  crossref: 'Crossref',
+  openalex: 'OpenAlex',
+  semantic_scholar: 'Semantic Scholar',
+  local: '本地语料库',
+};
+
+
+export function sourceLabel(source: string): string {
+  return SOURCE_SHORT[source] ?? source;
+}

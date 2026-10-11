@@ -88,7 +88,7 @@ describe('FE-02 应用外壳（§4.2 文档页面结构 + Demo 视觉）', () =>
     expect(await screen.findByText('导出与交付')).toBeInTheDocument();
   });
 
-  it('收起/展开导航栏（220 → 64px）偏好落盘，刷新后保持', async () => {
+  it('收起/展开导航栏（240 → 64px）偏好落盘，刷新后保持', async () => {
     renderApp('/');
     const toggle = await screen.findByRole('button', { name: '收起导航栏' });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');

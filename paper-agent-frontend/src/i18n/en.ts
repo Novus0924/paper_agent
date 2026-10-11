@@ -87,7 +87,7 @@ export const en: DeepPartial<typeof zhCN> = {
   },
   monitor: { title: 'Monitor' },
   report: { title: 'Report' },
-  evidence: { title: 'Evidence' },
+  evidence: { title: 'Evidence', kindSynthesis: 'Synthesized answer' },
   settings: { title: 'Settings' },
   export: {
     panelTitle: 'Export',

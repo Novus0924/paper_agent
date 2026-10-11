@@ -13,6 +13,8 @@ import type {
   ExportManifestItem,
   ExportResult,
   HealthInfo,
+  LibraryEvidenceResponse,
+  ListLibraryParams,
   MessageQueueResponse,
   ReportResponse,
   SseEnvelope,
@@ -246,6 +248,26 @@ export class LiveApiClient implements ApiClient {
       `/tasks/${encodeURIComponent(taskId)}/evidence?view=audit`,
     );
     return toEvidenceBundle(raw);
+  }
+
+  /**
+   * 文献库（GET /library/evidence，契约 v1）。
+   * dedupe 用 on/off 表达（契约给的默认值是 on）；limit/offset 始终显式下发，
+   * 让后端分页口径只此一处，不依赖服务端的隐式默认。
+   */
+  listLibraryEvidence(params?: ListLibraryParams): Promise<LibraryEvidenceResponse> {
+    const query = new URLSearchParams();
+    if (params?.q) query.set('q', params.q);
+    if (params?.kind) query.set('kind', params.kind);
+    if (params?.tier) query.set('tier', params.tier);
+    if (params?.source) query.set('source', params.source);
+    if (params?.task_id) query.set('task_id', params.task_id);
+    query.set('dedupe', params?.dedupe === false ? 'off' : 'on');
+    query.set('limit', String(params?.limit ?? 50));
+    query.set('offset', String(params?.offset ?? 0));
+    return this.request<LibraryEvidenceResponse>(
+      `/library/evidence?${query.toString()}`,
+    );
   }
 
   async cite(

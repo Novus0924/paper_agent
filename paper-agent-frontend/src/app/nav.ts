@@ -5,6 +5,7 @@ import type { RunStatus } from '@/api/types';
 export const ROUTES = {
   overview: '/',
   new: '/new',
+  library: '/library',
   monitor: (taskId: string) => `/monitor/${taskId}`,
   report: (taskId: string) => `/report/${taskId}`,
   evidence: (taskId: string) => `/evidence/${taskId}`,
@@ -29,12 +30,14 @@ export interface NavItem {
 }
 
 /**
- * 全局导航只保留与工作区无关的两级入口（§4.2 调整：用户评审后收敛）。
+ * 全局导航只保留与工作区无关的入口（§4.2 调整：用户评审后收敛）。
  * 运行监控 / 报告 / 证据溯源是"某个任务"的视图，改由任务行与任务页内的动作进入，
  * 避免在没有当前任务时出现禁用项或跳错任务。
+ * 文献库是跨任务的全局视图（本次迭代新增），因此与总览、设置并列。
  */
 export const NAV_ITEMS: NavItem[] = [
   { key: 'nav.overview', icon: 'panel', to: () => ROUTES.overview },
+  { key: 'nav.library', icon: 'evidence', to: () => ROUTES.library },
   { key: 'nav.settings', icon: 'settings', to: () => ROUTES.settings },
 ];
 
@@ -50,6 +53,8 @@ export function routeMeta(pathname: string): { titleKey: MsgKey; taskId: string 
       return { titleKey: 'overview.title', taskId: null };
     case 'new':
       return { titleKey: 'newTask.title', taskId: null };
+    case 'library':
+      return { titleKey: 'library.title', taskId: null };
     case 'monitor':
       return { titleKey: 'monitor.title', taskId };
     case 'report':

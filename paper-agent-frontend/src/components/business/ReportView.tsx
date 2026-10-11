@@ -127,7 +127,7 @@ export function ReportView({ taskId, report: doc, evidence, sessionId }: ReportV
       {/* 章节正文：限宽居中提升可读性；不再重复"正文"节标题 */}
       {doc.sections.map((section) => (
         <section key={section.id} id={section.id} className={cx(report.prose, layout.blockSm)}>
-          <h3 className={ui.leadText}>{section.title}</h3>
+          <h3 className={report.docHeading}>{section.title}</h3>
           <Markdown text={section.body} evBadge={evBadge} />
         </section>
       ))}

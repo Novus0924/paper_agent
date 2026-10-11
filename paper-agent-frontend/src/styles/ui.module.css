@@ -24,6 +24,14 @@
   background: var(--surface-2);
   color: var(--ink);
 }
+/* 按压反馈：比 hover 再深一档，给键盘/触摸都有"按下去了"的实感 */
+.button:active {
+  background: var(--raised);
+}
+.button:focus-visible {
+  border-color: var(--line-2);
+  box-shadow: var(--focus-ring);
+}
 .button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -36,6 +44,10 @@
 .solid:hover {
   background: var(--accent-hover);
   color: var(--accent-fg);
+}
+.solid:active {
+  background: var(--accent-hover);
+  opacity: 0.9;
 }
 .chip {
   height: 28px;
@@ -177,7 +189,8 @@
   padding: var(--s3) var(--s4);
   border-bottom: 1px solid var(--line);
   font-weight: 620;
-  font-size: 13.5px;
+  /* 区块标题：16px/620，是全站稳定的一级分区标题字号 */
+  font-size: 16px;
 }
 .cardHead .actions {
   margin-left: auto;

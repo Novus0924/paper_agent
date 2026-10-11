@@ -6,10 +6,12 @@ import { registerEventsRoute } from './events.js'
 import { registerReportRoutes } from './report.js'
 import { registerExportRoutes } from './export.js'
 import { registerMessageRoutes } from './messages.js'
+import { registerLibraryRoutes } from './library.js'
 import type { ExecutionService } from '../../services/execution.js'
 import type { ReportService } from '../../services/report.js'
 import type { ExportService } from '../../export/service.js'
 import type { MessageService } from '../../services/message.js'
+import type { LibraryService } from '../../services/library.js'
 
 /**
  * /api/v1 路由注册入口（版本化前缀，§8）。
@@ -24,6 +26,7 @@ export function registerV1Routes(
   reports: ReportService,
   exports: ExportService,
   messages: MessageService,
+  library: LibraryService,
 ): void {
   app.register(
     async (v1) => {
@@ -36,6 +39,7 @@ export function registerV1Routes(
       registerReportRoutes(v1, ctx, reports)
       registerExportRoutes(v1, ctx, exports)
       registerMessageRoutes(v1, ctx, messages)
+      registerLibraryRoutes(v1, library)
     },
     { prefix: '/api/v1' },
   )

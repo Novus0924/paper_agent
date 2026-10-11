@@ -5,6 +5,9 @@ import type {
   DegradedEvent,
   DoneEvent,
   EvidenceItem,
+  EvidenceKind,
+  EvidenceTier,
+  LibraryRef,
   MessageEvent,
   Report,
   ReportEvent,
@@ -471,6 +474,343 @@ export function datasetFor(workflow: WorkflowName): Dataset {
     conclusions: RESEARCH_CONCLUSIONS,
   };
 }
+
+/* ---------------- 文献库（跨任务证据汇总） ---------------- */
+
+/**
+ * 文献库演示种子：3 个任务、23 条证据。
+ * 刻意覆盖：同一 DOI 被多个任务/同一任务多次检索到（跨任务 + 同任务去重演示）、
+ * fact/artifact 两级、literature/data/analysis/note/factcheck/draft/review/synthesis 八类、五种检索来源。
+ * synthesis 是内核 S1「综合回答」产物（tier=artifact、无 DOI），与 live 同形——缺它就会漏测
+ * "新增 kind 未登记文案 → t(undefined) 崩溃" 这一类问题。
+ * task.goal 与运行时种子任务的 goal 逐字一致，便于把 task_id 映射回真实任务，跳转报告可落地。
+ */
+export interface LibrarySeedTask {
+  key: string;
+  goal: string;
+}
+
+export interface LibrarySeedItem {
+  task_key: string;
+  tier: EvidenceTier;
+  kind: EvidenceKind;
+  title: string;
+  ref: LibraryRef;
+  producer_step: string;
+}
+
+export const LIBRARY_SEED_TASKS: LibrarySeedTask[] = [
+  {
+    key: 'solid-electrolyte',
+    goal: '固态电解质界面阻抗的主要表征方法有哪些？请检索近五年文献，给出方法对比与结论。',
+  },
+  {
+    key: 'perovskite',
+    goal: '钙钛矿太阳能电池缺陷钝化有哪些主流策略？请比较其效率与稳定性提升。',
+  },
+  {
+    key: 'hard-carbon',
+    goal: '钠离子电池硬碳负极孔径调控对首次库伦效率的影响有哪些结论？',
+  },
+];
+
+/** 文献书目块：同一篇论文在不同任务里共享同一 DOI 与题录，是去重的依据 */
+function lit(
+  doi: string,
+  title: string,
+  authors: string,
+  year: string,
+  venue: string,
+  source: string,
+): LibraryRef {
+  return { doi, title, authors, year, venue, source };
+}
+
+/** 非文献证据（产物）：无 DOI，去重时按条独立，不参与合并 */
+function artifact(title: string, source = 'local'): LibraryRef {
+  return { doi: '', title, authors: '', year: '', venue: '', source };
+}
+
+export const LIBRARY_SEED_EVIDENCE: LibrarySeedItem[] = [
+  // 任务 A —— 固态电解质界面阻抗（research）
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'fact',
+    kind: 'literature',
+    title: '固态电解质界面阻抗 EIS 建模综述',
+    ref: lit(
+      '10.1039/d2ee01234a',
+      '固态电解质界面阻抗 EIS 建模综述',
+      'N. Kumar 等',
+      '2022',
+      'Energy & Environmental Science',
+      'crossref',
+    ),
+    producer_step: 'R1',
+  },
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'fact',
+    kind: 'literature',
+    title: '分布弛豫时间（DRT）在电化学阻抗中的应用',
+    ref: lit(
+      '10.1016/j.jpowsour.2023.233111',
+      '分布弛豫时间（DRT）在电化学阻抗中的应用',
+      'L. Rossi 等',
+      '2023',
+      'Journal of Power Sources',
+      'crossref',
+    ),
+    producer_step: 'R1',
+  },
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'fact',
+    kind: 'literature',
+    title: '变温阻抗谱分离晶界与体相贡献',
+    ref: lit(
+      '10.1021/acs.chemmater.1b01023',
+      '变温阻抗谱分离晶界与体相贡献',
+      'M. Tanaka 等',
+      '2021',
+      'Chemistry of Materials',
+      'crossref',
+    ),
+    producer_step: 'R2',
+  },
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'fact',
+    kind: 'literature',
+    title: '原位 (S)TEM 观测固态界面演化',
+    ref: lit(
+      '10.1038/s41560-024-01567-8',
+      '原位 (S)TEM 观测固态界面演化',
+      'S. Weber 等',
+      '2024',
+      'Nature Energy',
+      'openalex',
+    ),
+    producer_step: 'R2',
+  },
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'artifact',
+    kind: 'data',
+    title: '方法—原理—可测界面—优劣势对照表（v3）',
+    ref: artifact('方法对照矩阵 v3'),
+    producer_step: 'R3',
+  },
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'artifact',
+    kind: 'analysis',
+    title: '晶界活化能分歧的区间统计',
+    ref: artifact('晶界活化能区间统计'),
+    producer_step: 'R4',
+  },
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'fact',
+    kind: 'factcheck',
+    title: '引用核验结果：12 条 DOI 全部有效',
+    ref: artifact('引用核验结果'),
+    producer_step: 'R4',
+  },
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'artifact',
+    kind: 'draft',
+    title: '综述草稿（第 2 版）',
+    ref: artifact('综述草稿 v2'),
+    producer_step: 'R5',
+  },
+  {
+    task_key: 'solid-electrolyte',
+    tier: 'fact',
+    kind: 'review',
+    title: '自评审与复现校验结论',
+    ref: artifact('自评审结论'),
+    producer_step: 'R6',
+  },
+  {
+    // 内核 S1「综合回答」（kernel/sciret_kernel/ledger.py synthesize）：模型综合生成的 artifact，
+    // tier=artifact、producer_step=S1、无 DOI（是产物而非论文，不参与 DOI 去重）。
+    // 它是该任务组最后一条，排序后落到列表第 2 页——正是 QA 终验里翻页白屏的那一页。
+    task_key: 'solid-electrolyte',
+    tier: 'artifact',
+    kind: 'synthesis',
+    title: '综合回答：固态电解质界面阻抗表征方法总览',
+    ref: artifact('综合回答（模型综合生成）'),
+    producer_step: 'S1',
+  },
+
+  // 任务 B —— 钙钛矿缺陷钝化（materials）；首条借用了任务 A 的同一篇论文
+  {
+    task_key: 'perovskite',
+    tier: 'fact',
+    kind: 'literature',
+    title: '固态电解质界面阻抗 EIS 建模综述',
+    ref: lit(
+      '10.1039/d2ee01234a',
+      '固态电解质界面阻抗 EIS 建模综述',
+      'N. Kumar 等',
+      '2022',
+      'Energy & Environmental Science',
+      'semantic_scholar',
+    ),
+    producer_step: 'P2',
+  },
+  {
+    task_key: 'perovskite',
+    tier: 'fact',
+    kind: 'literature',
+    title: '钙钛矿太阳能电池缺陷钝化策略综述',
+    ref: lit(
+      '10.1038/s41578-023-00601-x',
+      '钙钛矿太阳能电池缺陷钝化策略综述',
+      'A. Müller 等',
+      '2023',
+      'Nature Reviews Materials',
+      'openalex',
+    ),
+    producer_step: 'P2',
+  },
+  {
+    // 同一任务、同一 DOI 的第二条：核验阶段（P4）从另一来源再次命中同一篇论文，
+    // 去重开启时应与上面的 P2 条目合并为一条（duplicates_count=1）。
+    task_key: 'perovskite',
+    tier: 'fact',
+    kind: 'literature',
+    title: '钙钛矿太阳能电池缺陷钝化策略综述',
+    ref: lit(
+      '10.1038/s41578-023-00601-x',
+      '钙钛矿太阳能电池缺陷钝化策略综述',
+      'A. Müller 等',
+      '2023',
+      'Nature Reviews Materials',
+      'crossref',
+    ),
+    producer_step: 'P4',
+  },
+  {
+    task_key: 'perovskite',
+    tier: 'fact',
+    kind: 'literature',
+    title: '分子钝化剂对钙钛矿界面缺陷的钝化机理',
+    ref: lit(
+      '10.1126/science.adf1234',
+      '分子钝化剂对钙钛矿界面缺陷的钝化机理',
+      'R. Chen 等',
+      '2023',
+      'Science',
+      'crossref',
+    ),
+    producer_step: 'P2',
+  },
+  {
+    task_key: 'perovskite',
+    tier: 'artifact',
+    kind: 'data',
+    title: '钝化策略—效率—稳定性对照矩阵',
+    ref: artifact('钝化策略对照矩阵'),
+    producer_step: 'P3',
+  },
+  {
+    task_key: 'perovskite',
+    tier: 'fact',
+    kind: 'factcheck',
+    title: '效率与稳定性数据一致性核验',
+    ref: artifact('数据一致性核验'),
+    producer_step: 'P4',
+  },
+  {
+    task_key: 'perovskite',
+    tier: 'artifact',
+    kind: 'analysis',
+    title: '钝化策略排序与证据强度分级',
+    ref: artifact('策略排序与分级'),
+    producer_step: 'P5',
+  },
+  {
+    task_key: 'perovskite',
+    tier: 'fact',
+    kind: 'review',
+    title: '材料方案自评审与复现校验',
+    ref: artifact('方案自评审'),
+    producer_step: 'P5',
+  },
+
+  // 任务 C —— 硬碳负极孔径调控（research，运行中）
+  {
+    task_key: 'hard-carbon',
+    tier: 'fact',
+    kind: 'literature',
+    title: '硬碳负极孔径分布与钠储存机理',
+    ref: lit(
+      '10.1038/s41560-023-04567-8',
+      '硬碳负极孔径分布与钠储存机理',
+      'K. Sato 等',
+      '2023',
+      'Nature Energy',
+      'arxiv',
+    ),
+    producer_step: 'R1',
+  },
+  {
+    task_key: 'hard-carbon',
+    tier: 'fact',
+    kind: 'literature',
+    title: '首次库伦效率与比表面积的相关性研究',
+    ref: lit(
+      '10.1016/j.ensm.2024.103456',
+      '首次库伦效率与比表面积的相关性研究',
+      'P. Novak 等',
+      '2024',
+      'Energy Storage Materials',
+      'crossref',
+    ),
+    producer_step: 'R1',
+  },
+  {
+    task_key: 'hard-carbon',
+    tier: 'fact',
+    kind: 'literature',
+    title: '分布弛豫时间（DRT）在电化学阻抗中的应用',
+    ref: lit(
+      '10.1016/j.jpowsour.2023.233111',
+      '分布弛豫时间（DRT）在电化学阻抗中的应用',
+      'L. Rossi 等',
+      '2023',
+      'Journal of Power Sources',
+      'semantic_scholar',
+    ),
+    producer_step: 'R2',
+  },
+  {
+    task_key: 'hard-carbon',
+    tier: 'artifact',
+    kind: 'note',
+    title: '孔径调控术语与表征口径笔记',
+    ref: artifact('术语与表征口径笔记'),
+    producer_step: 'R1',
+  },
+  {
+    task_key: 'hard-carbon',
+    tier: 'fact',
+    kind: 'literature',
+    title: '固态电解质界面阻抗 EIS 建模综述',
+    ref: lit(
+      '10.1039/d2ee01234a',
+      '固态电解质界面阻抗 EIS 建模综述',
+      'N. Kumar 等',
+      '2022',
+      'Energy & Environmental Science',
+      'semantic_scholar',
+    ),
+    producer_step: 'R2',
+  },
+];
 
 /* ---------------- 事件脚本 ---------------- */
 

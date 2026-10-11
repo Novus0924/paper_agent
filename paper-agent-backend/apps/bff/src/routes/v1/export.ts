@@ -6,11 +6,12 @@ import { EXPORT_KINDS, type ExportKind, type ExportService } from '../../export/
 
 /**
  * 导出路由（BE-10，需求 §8.1 接口 15、§8.2 导出契约）：
- *   GET /api/v1/tasks/{id}/export?kind=report|audit|session
+ *   GET /api/v1/tasks/{id}/export?kind=report|audit|session|bibtex
  *
  * - `report`  → Markdown 文件流（text/markdown）
  * - `audit`   → 审计包 ZIP（报告+账本+事件+结论+**校验脚本**+清单）
  * - `session` → AGH 会话轨迹（经 AGH 原生导出；`&format=agnes|sharegpt|claude-code`，默认 agnes）
+ * - `bibtex`  → 该任务 R1 文献证据的 BibTeX 全量导出（text/plain）
  *
  * 未完成 → 409 NOT_READY 并说明可导出范围（§386）；失败 → 500 EXPORT_ERROR 附原因与重试指引。
  * 非法 kind → 400 BAD_PARAM并列出允许值（不静默回退，§6枚举回退须显式告知）。

@@ -19,7 +19,14 @@ body {
   background: var(--bg);
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  /* 字距/连字精修：避免"fi/AV"等紧排突兀；标题与正文都受益 */
+  font-feature-settings:
+    'kern' 1,
+    'liga' 1,
+    'calt' 1;
+  font-kerning: normal;
 }
 
 h1,

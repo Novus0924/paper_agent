@@ -7,6 +7,8 @@ import type {
   ExportKind,
   ExportResult,
   HealthInfo,
+  LibraryEvidenceResponse,
+  ListLibraryParams,
   MessageQueueResponse,
   ReportResponse,
   SendResult,
@@ -109,6 +111,14 @@ export class MockApiClient implements ApiClient {
 
   async getEvidence(taskId: string): Promise<EvidenceBundle> {
     return this.runtime.evidence(taskId);
+  }
+
+  async listLibraryEvidence(
+    params?: ListLibraryParams,
+  ): Promise<LibraryEvidenceResponse> {
+    // 与 Live 一致地留一点网络耗时：加载骨架才有机会被看到（也让"防抖 + 异步"路径可测）
+    await new Promise((r) => setTimeout(r, 60));
+    return this.runtime.library(params);
   }
 
   async cite(taskId: string, evId: string) {

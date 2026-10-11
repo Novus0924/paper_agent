@@ -69,7 +69,8 @@ export function EvidenceCard({ taskId, item, bound, highlighted }: EvidenceCardP
         <span className={report.evId}>{item.ev_id}</span>
         <span className={report.evTitle}>{item.title}</span>
         <Tag>{t(TIER_LABEL[item.tier])}</Tag>
-        <Tag>{t(KIND_LABEL[item.kind])}</Tag>
+        {/* 兜底：未知 kind 退化为原值，避免 t(undefined) 抛错 */}
+        <Tag>{KIND_LABEL[item.kind] ? t(KIND_LABEL[item.kind]) : item.kind}</Tag>
       </div>
 
       {item.summary && <p className={report.evSummary}>{item.summary}</p>}

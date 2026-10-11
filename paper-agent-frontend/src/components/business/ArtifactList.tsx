@@ -67,7 +67,8 @@ export function ArtifactList({ taskId, steps, bundle }: ArtifactListProps) {
                 to={`/evidence/${taskId}?ev=${item.ev_id}`}
               >
                 <span className={cx(ui.tag, monitor.artifactKind)}>
-                  {t(KIND_LABEL[item.kind])}
+                  {/* 兜底：未知 kind 退化为原值，避免 t(undefined) 抛错 */}
+                  {KIND_LABEL[item.kind] ? t(KIND_LABEL[item.kind]) : item.kind}
                 </span>
                 <span className={monitor.artifactMain}>
                   <span className={monitor.artifactTitle}>{item.title}</span>

@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import { OverviewPage } from '@/pages/OverviewPage';
 import { NewTaskPage } from '@/pages/NewTaskPage';
+import { LibraryPage } from '@/pages/LibraryPage';
 import { MonitorPage } from '@/pages/MonitorPage';
 import { ReportPage } from '@/pages/ReportPage';
 import { EvidencePage } from '@/pages/EvidencePage';
@@ -28,6 +29,7 @@ export function App() {
         <Route index element={<OverviewPage />} />
         <Route path="overview" element={<Navigate to="/" replace />} />
         <Route path="new" element={<NewTaskPage />} />
+        <Route path="library" element={<LibraryPage />} />
         <Route path="monitor/:id" element={<MonitorPage />} />
         <Route path="report/:id" element={<ReportPage />} />
         <Route path="evidence/:id" element={<EvidencePage />} />

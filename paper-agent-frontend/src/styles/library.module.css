@@ -1,0 +1,126 @@
+/* 文献库（跨任务证据汇总）：统计条 + 筛选 + 列表行。
+   取值全部来自 tokens.css；颜色/圆角禁止写死（tests/tokens.test.ts 有锁）。 */
+
+/* ---------- 顶部统计条 ---------- */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  padding: var(--s4) var(--s5);
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 92px;
+}
+/* 数值与标签复用 ui.statValue / ui.statLabel（与总览统计卡完全同款） */
+.statUnit {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+  margin-left: 4px;
+}
+
+/* ---------- 筛选行 ---------- */
+.filterBar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+.filterField {
+  min-width: 148px;
+}
+.dedupeField {
+  align-self: center;
+  margin-left: auto;
+}
+
+/* ---------- 列表 ---------- */
+.rowList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4) 0 0;
+}
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  padding: var(--s3) var(--s4);
+  transition:
+    border-color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+.row:hover {
+  border-color: var(--line-2);
+  background: var(--surface-2);
+}
+.rowHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2) var(--s3);
+  flex-wrap: wrap;
+}
+.rowTitle {
+  flex: 1;
+  min-width: 220px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.rowBadges {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+.rowMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--s2) var(--s4);
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.rowTask {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  max-width: 100%;
+  color: var(--link);
+  font-size: 11.5px;
+}
+.rowTask:hover {
+  text-decoration: underline;
+}
+.taskText {
+  max-width: 46ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.refMono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+/* 去重合并数：琥珀色小徽标，提示"这一条其实代表多条记录" */
+.dup {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line-2));
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}

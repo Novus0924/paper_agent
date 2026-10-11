@@ -62,11 +62,18 @@
   margin-top: var(--s6);
 }
 .sectionTitle {
-  font-size: 15px;
-  font-weight: 650;
+  font-size: 16px;
+  font-weight: 620;
   color: var(--ink);
   padding-bottom: var(--s2);
   border-bottom: 1px solid var(--line);
+}
+/* 报告正文内的章节标题：与区块标题同一字号梯级，但不带分隔线（正文流内更克制） */
+.docHeading {
+  font-size: 16px;
+  font-weight: 620;
+  color: var(--ink);
+  line-height: 1.4;
 }
 .citeNote {
   margin-top: var(--s3);

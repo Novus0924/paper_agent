@@ -4,11 +4,13 @@ import userEvent from '@testing-library/user-event';
 import { StepBar } from '@/components/business/StepBar';
 import { DegradedBanner } from '@/components/business/DegradedBanner';
 import { Composer } from '@/components/business/Composer';
+import { EvidenceCard } from '@/components/business/EvidenceCard';
+import { ArtifactList } from '@/components/business/ArtifactList';
 import { api, type ApiClient } from '@/api/client';
 import { useTaskStore } from '@/store/taskStore';
 import { renderAt, resetStores, seedTask } from './harness';
 import { step } from './helpers';
-import type { ChatMessage, DegradedInfo } from '@/api/types';
+import type { ChatMessage, DegradedInfo, EvidenceBundle, EvidenceItem } from '@/api/types';
 
 beforeEach(() => {
   resetStores();
@@ -259,5 +261,47 @@ describe('FE-10 Composer 与消息排队（P-05）', () => {
       .byId[taskId]?.messages.find((m) => m.status === 'failed');
     expect(failed?.text).toBe('这条会失败');
     expect(ta).toHaveValue('');
+  });
+});
+
+/**
+ * QA 终验回归：内核 S1 综合回答产出 kind='synthesis' / 未来可能再新增 kind，
+ * 前端组件绝不能因为文案表查不到而 t(undefined) 崩溃——必须退化为原值。
+ */
+describe('FE-08 证据 kind 文案兜底', () => {
+  const synthesisItem: EvidenceItem = {
+    ev_id: 'EV-0010',
+    tier: 'artifact',
+    kind: 'synthesis',
+    title: '综合回答：固态电解质界面阻抗表征方法总览',
+    ref: 'artifacts/S1/synthesis.md',
+    producer_step: 'S1',
+    summary: '模型综合生成的回答，已绑定有效证据角标。',
+  };
+
+  it('EvidenceCard 渲染 synthesis 证据给出「综合回答」标签', () => {
+    renderAt(<EvidenceCard taskId="run-1" item={synthesisItem} bound={[]} />, { at: '/' });
+    expect(screen.getByText('综合回答')).toBeInTheDocument();
+    expect(screen.getByText('产物（artifact）')).toBeInTheDocument();
+  });
+
+  it('EvidenceCard 遇未知 kind 退化为原值字符串而不崩溃', () => {
+    const mystery: EvidenceItem = { ...synthesisItem, kind: 'mystery' as never };
+    renderAt(<EvidenceCard taskId="run-1" item={mystery} bound={[]} />, { at: '/' });
+    expect(screen.getByText('mystery')).toBeInTheDocument();
+  });
+
+  it('ArtifactList 渲染 synthesis 产物给出「综合回答」标签', () => {
+    const bundle: EvidenceBundle = {
+      task_id: 'run-1',
+      evidence: [synthesisItem],
+      conclusions: [],
+      trace: [],
+    };
+    renderAt(
+      <ArtifactList taskId="run-1" steps={[step('S1', 'DONE')]} bundle={bundle} />,
+      { at: '/' },
+    );
+    expect(screen.getByText('综合回答')).toBeInTheDocument();
   });
 });

@@ -5,6 +5,7 @@ import { TaskIndex } from './store/task-index.js'
 import { ExecutionService } from './services/execution.js'
 import { ReportService } from './services/report.js'
 import { MessageService } from './services/message.js'
+import { LibraryService } from './services/library.js'
 import { ExportService } from './export/service.js'
 import { EventRelay } from './events/relay.js'
 import { buildApp } from './app.js'
@@ -73,7 +74,10 @@ async function main(): Promise<void> {
   // 导出服务（BE-10：report/audit/session；session 经 AGH 原生 CLI 导出）
   const exports = new ExportService(cfg.runsDir, reports, log, cfg.aghCli, cfg.aghHome, cfg.agnesProfile)
 
-  const app = buildApp({ cfg, log, gateway, index, exec, relay, reports, exports, messages })
+  // 跨 run 文献/证据库（聚合全部任务账本，只读）
+  const library = new LibraryService(cfg.runsDir, index, reports, log)
+
+  const app = buildApp({ cfg, log, gateway, index, exec, relay, reports, exports, messages, library })
 
   // 仅回环监听
   await app.listen({ host: cfg.host, port: cfg.port })

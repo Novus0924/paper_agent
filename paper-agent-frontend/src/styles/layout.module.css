@@ -124,7 +124,8 @@
   background: var(--raised);
   color: var(--ink);
   font-weight: 600;
-  box-shadow: inset 2px 0 0 var(--accent);
+  /* 选中态左侧竖条：3px 强调色，是"当前页"最稳的非文字提示 */
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 .navIcon {
   flex: 0 0 auto;
@@ -318,7 +319,8 @@
   width: 100%;
   max-width: var(--content-max);
   margin: 0 auto;
-  padding: var(--s6) var(--s5) var(--s4);
+  /* 留白节奏统一：页面四周 32px，与卡片内 16px 内边距形成 2:1 的稳定比例 */
+  padding: var(--s6);
 }
 /* 环境自检横幅：与页面同宽的一行提示，绝不能套 .page（min-height:100% 会把正文推到第二屏） */
 .bannerSlot {
@@ -332,13 +334,16 @@
   gap: var(--s2);
 }
 .pageTitle {
-  font-size: 21px;
-  font-weight: 680;
-  letter-spacing: 0.2px;
+  /* 页面主标题：24–28px/600 梯度头部，与 16px 区块标题、14px 正文拉开层次 */
+  font-size: 26px;
+  font-weight: 620;
+  letter-spacing: -0.2px;
+  line-height: 1.25;
 }
 .pageLead {
   color: var(--ink-3);
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 1.7;
   max-width: 660px;
 }
 .headRow {
@@ -431,7 +436,7 @@
     display: none;
   }
   .page {
-    padding: var(--s4) var(--s3);
+    padding: var(--s5) var(--s4);
   }
   .bannerSlot {
     margin: var(--s3) var(--s3) 0;

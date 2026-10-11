@@ -192,8 +192,8 @@ describe('ZIP 写入器（零依赖，APPNOTE 6.3.x）', () => {
 // ------------------------------------------------------------------ SPI 注册表
 
 describe('Exporter SPI（§560 新增导出格式 = 实现导出器）', () => {
-  it('注册表恰好覆盖需求规定的三种导出类型', () => {
-    expect(EXPORT_KINDS.sort()).toEqual(['audit', 'report', 'session'])
+  it('注册表恰好覆盖需求规定的导出类型', () => {
+    expect(EXPORT_KINDS.sort()).toEqual(['audit', 'bibtex', 'report', 'session'])
     for (const k of EXPORT_KINDS) {
       expect(EXPORTERS[k].kind).toBe(k)
       expect(typeof EXPORTERS[k].available).toBe('function')
@@ -343,6 +343,106 @@ describe('GET /api/v1/tasks/{id}/export?kind=session（经 AGH 原生导出）',
     expect(body.code).toBe('EXPORT_ERROR')
     expect(body.error).toContain('agh.sh export')
     expect(res.rawPayload.length).toBeGreaterThan(0)
+  })
+})
+
+// ------------------------------------------------------------------ bibtex
+
+/** 写一份只含 R1 文献证据的账本（bibtex 导出只依赖它，不依赖报告门禁） */
+function seedLiteratureLedger(
+  taskId: string,
+  items: Array<{ ev_id: string; title: string; ref?: Record<string, unknown> }>,
+): void {
+  const dir = join(runsDir, taskId)
+  mkdirSync(dir, { recursive: true })
+  const lines = items.map((it, i) =>
+    JSON.stringify({
+      seq: i + 1,
+      record_type: 'evidence',
+      at: '2026-10-10T00:00:00Z',
+      ev_id: it.ev_id,
+      tier: 'fact',
+      kind: 'literature',
+      title: it.title,
+      producer_step: 'R1',
+      ref: { doi: '', title: it.title, authors: [], year: null, venue: '', source: 'crossref', ...(it.ref ?? {}) },
+      chain_hash: 'aa'.repeat(32),
+    }),
+  )
+  writeFileSync(join(dir, 'ledger.jsonl'), lines.join('\n') + '\n', 'utf8')
+}
+
+describe('GET /api/v1/tasks/{id}/export?kind=bibtex（BibTeX 全量导出）', () => {
+  it('200 text/plain：attachment 文件名 <task_id>.bib，含各字段条目', async () => {
+    seedTask()
+    seedLiteratureLedger(TASK_ID, [
+      {
+        ev_id: 'EV-0001',
+        title: 'Solid-State Electrolytes',
+        ref: { doi: '10.1007/s41918-019-00048-0', authors: ['Alice Zhang', 'Bob Li'], year: 2019, venue: 'Electrochemical Energy Reviews' },
+      },
+      {
+        ev_id: 'EV-0002',
+        title: 'Interface Impedance',
+        ref: { doi: '10.1/xyz', authors: ['Carol Wang'], year: 2021 }, // 无 venue → 跳过 journal 行
+      },
+    ])
+    const res = await app.inject({ method: 'GET', url: `/api/v1/tasks/${TASK_ID}/export?kind=bibtex` })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['content-type']).toContain('text/plain')
+    expect(res.headers['content-disposition']).toBe(`attachment; filename="${TASK_ID}.bib"`)
+    expect(res.headers['x-content-type-options']).toBe('nosniff')
+
+    const bib = res.body
+    // 两条 @article 条目
+    expect((bib.match(/@article\{/g) ?? []).length).toBe(2)
+    // 字段齐全的条目
+    expect(bib).toContain('author = {Alice Zhang, Bob Li}')
+    expect(bib).toContain('title = {Solid-State Electrolytes}')
+    expect(bib).toContain('journal = {Electrochemical Energy Reviews}')
+    expect(bib).toContain('year = {2019}')
+    expect(bib).toContain('doi = {10.1007/s41918-019-00048-0}')
+    // 缺失字段（venue）跳过该行：EV-0002 条目不出现 journal
+    const ev2 = bib.split('@article{')[2]!
+    expect(ev2).not.toContain('journal = ')
+    expect(ev2).toContain('doi = {10.1/xyz}')
+  })
+
+  it('键为 第一作者姓+年份+序号，同姓氏同年份不碰撞', async () => {
+    seedTask()
+    seedLiteratureLedger(TASK_ID, [
+      { ev_id: 'EV-0001', title: 'One', ref: { authors: ['Alice Zhang'], year: 2020 } },
+      { ev_id: 'EV-0002', title: 'Two', ref: { authors: ['Aaron Zhang'], year: 2020 } },
+    ])
+    const res = await app.inject({ method: 'GET', url: `/api/v1/tasks/${TASK_ID}/export?kind=bibtex` })
+    const keys = [...res.body.matchAll(/@article\{([^,]+),/g)].map((m) => m[1])
+    expect(keys).toHaveLength(2)
+    expect(new Set(keys).size).toBe(2)
+    expect(keys[0]).toContain('Zhang')
+    expect(keys[0]).toContain('2020')
+  })
+
+  it('特殊字符按 BibTeX 惯例转义（& % _ #）', async () => {
+    seedTask()
+    seedLiteratureLedger(TASK_ID, [
+      { ev_id: 'EV-0001', title: 'A & B 50% _under_ #1', ref: { authors: ['X & Y'], year: 2022, venue: 'J_M' } },
+    ])
+    const res = await app.inject({ method: 'GET', url: `/api/v1/tasks/${TASK_ID}/export?kind=bibtex` })
+    expect(res.body).toContain('title = {A \\& B 50\\% \\_under\\_ \\#1}')
+    expect(res.body).toContain('author = {X \\& Y}')
+    expect(res.body).toContain('journal = {J\\_M}')
+  })
+
+  it('无 R1 文献证据 → 409 NOT_READY 并说明可导出范围（不含 bibtex）', async () => {
+    seedTask(TASK_ID, { session_id: '' })
+    mkdirSync(join(runsDir, TASK_ID), { recursive: true })
+    writeFileSync(join(runsDir, TASK_ID, 'ledger.jsonl'), '', 'utf8')
+    const res = await app.inject({ method: 'GET', url: `/api/v1/tasks/${TASK_ID}/export?kind=bibtex` })
+    expect(res.statusCode).toBe(409)
+    const body = res.json()
+    expect(body.code).toBe('NOT_READY')
+    expect(body.error).toContain('尚不可导出')
+    expect(body.error).not.toContain('bibtex')
   })
 })
 

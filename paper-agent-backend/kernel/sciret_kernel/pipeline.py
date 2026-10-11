@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -102,6 +103,8 @@ def _to_plain(rec: dict[str, Any]) -> dict[str, Any]:
         "year": rec.get("year"),
         "venue": rec.get("venue") or "",
         "source": rec.get("source") or "",
+        # 摘要用于 R2 摘要级精读；旧快照无此字段 → 空串（下游按标题分词回退）
+        "abstract": rec.get("abstract") or "",
     }
 
 
@@ -261,6 +264,43 @@ def step_R1(
 
 # ---------------------------------------------------------------- R2 论文精读
 
+#: 摘要关键句上限（摘要级精读产出）
+ABSTRACT_TOP_SENTENCES = 3
+#: 关键句长度过滤下限/上限（字符）：过短（"OK."）噪声，过长截断防产物膨胀
+ABSTRACT_MIN_SENTENCE_LEN = 10
+ABSTRACT_MAX_SENTENCE_LEN = 400
+
+#: 分句：中英文句末标点 + 换行；英文句点要求后接空白/行尾（避免切断 "3.5"）。
+#: 标点作为分隔符被吃掉（关键句无需保留句末标点，可读性不受影响）。
+_SENTENCE_SPLIT_RE = re.compile(r"[。！？；!?;]+|(?<=\S)\.(?=\s|$)|\n+")
+
+
+def _extract_highlights(
+    abstract: str, goal_tokens: set[str], top_n: int = ABSTRACT_TOP_SENTENCES
+) -> list[str]:
+    """确定性摘要关键句抽取（零依赖，不引模型/分词库）。
+
+    规则（同输入同输出）：
+    1. 按中英文句末标点/换行分句；
+    2. **长度过滤**：去空白后 < ``ABSTRACT_MIN_SENTENCE_LEN`` 的句子丢弃（滤掉 "OK." 类噪声）；
+    3. **关键句打分**：`命中目标关键词数 × 3 + 位置权重`（前两句位置权重 2/1，其余 0）——
+       关键词权重刻意大于位置权重，保证"含关键词但靠后"的句子能胜过"靠前但无关键词"的句子；
+    4. 取分数 top-N（同分按原文次序）；最后**还原为原文顺序**输出，便于人类连续阅读。
+    每句截断至 ``ABSTRACT_MAX_SENTENCE_LEN``。
+    """
+    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(abstract or "")]
+    scored: list[tuple[int, int, str]] = []
+    for i, sent in enumerate(parts):
+        if len(sent) < ABSTRACT_MIN_SENTENCE_LEN:
+            continue
+        hits = len(corpus._tokens(sent) & goal_tokens)  # noqa: SLF001 - 同包内复用确定性分词
+        pos_weight = 2 if i == 0 else (1 if i == 1 else 0)
+        scored.append((hits * 3 + pos_weight, i, sent))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    picked = scored[:top_n]
+    picked.sort(key=lambda x: x[1])  # 还原原文顺序
+    return [s[:ABSTRACT_MAX_SENTENCE_LEN] for _, _, s in picked]
+
 
 def step_R2(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
     lit = [r for r in ledger.evidence() if r.data.get("producer_step") == "R1"]
@@ -274,13 +314,25 @@ def step_R2(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
             "human_summary": "检索覆盖不足（0 篇相关文献），无文献可精读；后续将按覆盖缺口口径产出结论",
             "evidence_ids": [],
         }
+    goal_tokens = corpus._tokens(state.goal)  # noqa: SLF001
     idx = _next_evidence_index(ledger)
     ev_ids: list[str] = []
+    abstract_reads = 0
     for rec in lit:
         ref = rec.data.get("ref", {})
         title = str(ref.get("title", ""))
+        abstract = str(ref.get("abstract") or "")
         words = [w for w in corpus._tokens(title)]  # noqa: SLF001 - 同包内复用分词（确定性）
-        focus = "、".join(sorted(words)[:6])
+        detail: dict[str, Any] = {"focus_terms": sorted(words)[:12], "year": ref.get("year"), "venue": ref.get("venue")}
+        if abstract.strip():
+            # 摘要级精读：结构化拆解关键句（确定性规则，无模型/无依赖）
+            detail["abstract_highlights"] = _extract_highlights(abstract, goal_tokens)
+            title_text = f"摘要精读：{title[:60]}"
+            abstract_reads += 1
+        else:
+            # 回退（旧快照/源无摘要）：保留既有标题分词口径，并**如实标注**摘要缺失
+            detail["abstract_missing"] = True
+            title_text = f"精读解构：{title[:60]}"
         ev_id = _ev_id(idx)
         idx += 1
         ledger.append(
@@ -289,8 +341,8 @@ def step_R2(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
                 "ev_id": ev_id,
                 "tier": "fact",
                 "kind": "analysis",
-                "title": f"精读解构：{title[:60]}",
-                "detail": {"focus_terms": sorted(words)[:12], "year": ref.get("year"), "venue": ref.get("venue")},
+                "title": title_text,
+                "detail": detail,
                 "ref": {"derived_from": rec.data["ev_id"], "doi": ref.get("doi", "")},
                 "producer_step": "R2",
             },
@@ -298,7 +350,10 @@ def step_R2(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
         ev_ids.append(ev_id)
     return {
         "step": "R2",
-        "human_summary": f"已精读解构 {len(ev_ids)} 篇文献的主题焦点",
+        "human_summary": (
+            f"已精读解构 {len(ev_ids)} 篇文献的主题焦点"
+            + (f"（其中 {abstract_reads} 篇为摘要级精读）" if abstract_reads else "（无摘要，回退标题分词）")
+        ),
         "evidence_ids": ev_ids,
     }
 

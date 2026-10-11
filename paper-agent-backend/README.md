@@ -9,7 +9,7 @@
 >
 > | 验证 | 命令 | 当前结果 |
 > |---|---|---|
-> | 代码级门禁 | `pnpm quality-gate` | vitest **158/158** · 内核 **91/91** · `tsc` 0 error · `eslint` 0 error |
+> | 代码级门禁 | `pnpm quality-gate` | vitest **173/173** · 内核 **105/105** · `tsc` 0 error · `eslint` 0 error（本轮新增文件） |
 > | DoD 总验收 | `pnpm dod` | 11 项门禁 + 13 条逐条判定全绿 |
 > | 端到端 | `bash scripts/verify-*.sh` | 六段合计 **179 项**断言全绿 |
 >
@@ -20,6 +20,11 @@
 > ① 终态追问打通——DONE/FAILED 任务允许 ask/revise（同一 AGH 会话发起新回合，终态产物不可变，回复经既有 message SSE 事件流呈现）；
 > ② 提示注入检测落地——规则型 `kernel/sciret_kernel/injection.py`（12 条中英模式，零依赖），R1 入账本前清洗元数据并以 note 留痕、`sciret_plan` 对 goal 命中附 warning（不阻断）；
 > ③ 源熔断——同 run 内 unavailable 的源记入 `state.circuit`，resume 重跑 R1 跳过其二次抓取并留痕。
+>
+> **v2.3 变更摘要（科研 agent 核心功能）**：
+> ① **跨 run 文献/证据库 API**——`GET /api/v1/library/evidence` 聚合**全部任务**账本证据，支持关键词/kind/tier/source/task_id 过滤与按规范 DOI 去重（`duplicates_count`），形成可跨任务检索的文献库；
+> ② **摘要级精读**——源解析携带 `abstract`（Crossref 去 JATS 标签、OpenAlex 倒排重建、快照截断 4000），R2 改为摘要结构化拆解（确定性分句+关键词/位置打分取 top3 关键句），无摘要则回退标题分词并标 `abstract_missing`；
+> ③ **BibTeX 全量导出**——`GET /api/v1/tasks/{id}/export?kind=bibtex` 从 R1 文献证据导出 BibTeX（键=第一作者姓+年份+序号，字段缺失跳过，特殊字符按惯例转义）。
 
 ---
 
@@ -58,11 +63,12 @@ paper-agent-2/
 │   │   ├── services/execution.ts# 执行编排（经会话下发 + per-Task 互斥）
 │   │   ├── services/report.ts    # ★ 报告与证据只读装配（不 spawn 内核）
 │   │   ├── services/message.ts   # ★ 多轮消息（同会话追问/修订 + 运行中排队按序执行）
+│   │   ├── services/library.ts   # ★ 跨 run 文献/证据库（聚合全任务账本 + DOI 去重）
 │   │   ├── events/               # 事件模型 / 总线 / AGH 事件中继（§5）
 │   │   ├── export/               # ★ zip.ts（零依赖 ZIP 写入器）+ service.ts（Exporter SPI）
-│   │   └── routes/               # health + /api/v1/{tasks,events,report,export,messages}
+│   │   └── routes/               # health + /api/v1/{tasks,events,report,export,messages,library}
 │   ├── types/                   # AGH 最小类型声明（见 §6 说明）
-│   ├── test/                    # 单测 + 契约测试（155 个）
+│   ├── test/                    # 单测 + 契约测试（173 个）
 │   └── scripts/                 # 诊断脚本（spike-* / zip-probe / daemon-ready / *-probe）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
@@ -154,7 +160,8 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 10–11 | GET | `/report` / `/report.md` | ✅ 就绪 `200 {status:"ready",view:"view",report:{…}}` / 未就绪 `200 {status:"generating"}`；**`?view=audit` 才回传哈希与链信息**；MD 带 nosniff + inline |
 | 12–13 | GET | `/evidence` / `/cite` | ✅ 证据/结论/轨迹只读装配（同支持 `?view=audit`）；cite 支持 EV 编号与 ≥6 位哈希前缀 |
 | 14 | POST | `/messages`（+ GET/DELETE 队列） | ✅ 同会话追问/修订；运行中**入队**（`queued:true`+`order`）而非拒绝；回合结束按序放行 |
-| 15 | GET | `/export?kind=report｜audit｜session` | ✅ 报告 MD 文件流 / 审计包 ZIP（含校验脚本）/ AGH 原生会话轨迹；未就绪 409 NOT_READY |
+| 15 | GET | `/export?kind=report｜audit｜session｜bibtex` | ✅ 报告 MD 文件流 / 审计包 ZIP（含校验脚本）/ AGH 原生会话轨迹 / **BibTeX 文献全量导出**；未就绪 409 NOT_READY |
+| 16 | GET | `/library/evidence` | ✅ **跨 run 文献/证据库**：聚合全任务账本证据，`q/kind/tier/source/task_id` 过滤 + `dedupe` DOI 去重 + 分页；空目录返回空集，非法参数 400 |
 
 > 另有辅助接口 `GET /api/v1/tasks/{id}/execution`（busy/步骤快照，供轮询与调试；SSE 到位后前端以 SSE 为主）。
 
@@ -182,7 +189,7 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 错误码全集已实现（`{error, code}` 统一体、状态码映射、人类可读修复指引并入 `error` 文本）：
 `BAD_GOAL / BAD_BODY / BAD_PARAM / BAD_ID / NOT_FOUND / NO_REPORT / BUSY / BAD_STATE / NOT_READY / SESSION_ERROR / CLI_ERROR / EXPORT_ERROR`。
 
-### 5.3 导出三件套与 Exporter SPI（实测要点）
+### 5.3 导出四件套与 Exporter SPI（实测要点）
 
 - **session 导出必须走 AGH 原生**：daemon 注册的 RPC 只有
   `authenticate / initialize / session/cancel / session/load / session/new / session/prompt`——**没有导出 RPC**。
@@ -203,6 +210,9 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
   新增导出格式 = 实现一个导出器，**路由与参数解析零改动**。
 - **未就绪语义**：409 `NOT_READY` 并列出当前实际可导出的格式；全不可用时明说「当前无可导出格式」。
 - **不静默回退**：缺 `kind` → 400；非法 `kind` / `format` → 400 且列出全部允许值（§6枚举回退须显式告知）。
+- **`kind=bibtex`（v2.3 新增）**：从任务账本 **R1 文献证据**生成 BibTeX（`@article`，字段 `author/title/journal/year/doi`，
+  缺失字段跳过该行）；引用键 = `第一作者姓 + 年份 + 序号`（序号防碰撞）；`& % _ # $ { } ~ ^ \` 按 BibTeX 惯例转义。
+  返回 `text/plain; charset=utf-8` + `attachment; filename="<task_id>.bib"`；**无 R1 文献 → 409 NOT_READY**（不产出空文件）。
 
 ### 5.4 降级治理与容错策略（实测要点）
 
@@ -301,13 +311,37 @@ else: raise PermanentError(f"unsupported source: {src}")
 - **`parse` 必须对畸形数据免疫**：真实 API 会返回缺 `title`、`author: null`、甚至非 dict 的条目。
   实测我的第一版就因 `_first()` 签名写错而让 openalex 整个源失败 ——
   但降级记录**如实工作**（标 `unavailable` 而非伪造成功），这正是 SPI 该有的行为。
-- **归一化字段固定**：`doi/title/authors/year/venue/type/license/source`，
+- **归一化字段固定**：`doi/title/authors/year/venue/type/license/source/abstract`，
   不同源输出形状一致，下游无需按源分支（否则 SPI 白做）。
   OpenAlex 的 DOI 是完整 URL，必须剥前缀才能与 Crossref 对齐 —— 否则跨源去重失效。
+  `abstract`（v2.3）：Crossref 去 JATS 标签、OpenAlex 倒排索引重建；再经 `_normalize_abstract`
+  **占位/过短过滤**（"Abstract not Available." 等占位文本或 <40 字符残片 → 空串，视为缺失），
+  缺失留空由下游回退标题分词并标 `abstract_missing`（绝不编造）。
 - **注册即校验**：无名/超时非正/缺方法/重名都报错。重名**不静默覆盖** ——
   覆盖会让"到底在用哪个实现"变成只有运行期才知道的事。
 - **未知源名在 CLI 直接报错**（退出码 2），不是静默跳过 ——
   静默跳过会让"配了源却没抓"完全不可见。
+
+### 5.11 跨 run 文献库与摘要级精读（v2.3）
+
+**① 跨 run 文献/证据库**（`apps/bff/src/services/library.ts` + `routes/v1/library.ts`）
+- 数据源：`data/task-index.json` 的任务列表 → 逐任务读 `runs/<task_id>/ledger.jsonl`，
+  聚合**全部任务**的 evidence 记录（不只当前任务），关联任务 `goal`（账本无 goal，取自索引）。
+- 契约：`GET /api/v1/library/evidence?q=&kind=&tier=&source=&task_id=&dedupe=on&limit=50&offset=0`
+  → `{ total, tasks_scanned, items:[{ev_id,task_id,task_goal,tier,kind,title,ref,producer_step,duplicates_count}], offset, limit }`。
+- `q` 大小写不敏感命中 title/ref.title/doi/作者；`kind|tier|source|task_id` 精确匹配；
+  `dedupe=on`（默认）按**规范化 DOI**聚合（无 DOI 不聚合），代表取「最新任务」那条，
+  `duplicates_count = 组内条目数 - 1`（单条/无 DOI/`dedupe=off` 恒为 0）。
+  `total` = 过滤+去重后总条数；`tasks_scanned` = 结果 items 中去重的 task_id 数（与分页无关，与前端「收录任务数」口径一致）。
+- 空目录/无任务 → 200 空集（不报错）；非法参数 → 400 `BAD_PARAM`（不静默回退）。
+- 设计取舍：**正确性优先**，不做复杂索引（复用 `ReportService.readLedger` 的 mtime 指纹缓存）。
+
+**② 摘要级精读**（`kernel/sciret_kernel/pipeline.py::step_R2`）
+- 源解析（`sources.py`）携带 `abstract`；快照写入时截断 4000 字符（`fetch_corpus.truncate_abstract`）。
+- R2 摘要路径：**确定性**分句（中英文句末标点）→ 长度过滤（<10 字符丢弃）→ 关键句打分
+  （命中目标关键词数 ×3 + 位置权重 2/1/0）→ 取 top3 → `detail.abstract_highlights`（每句截断 400 字符）；
+  `title` 改为 `摘要精读：<原题>`；既有 `focus_terms` 逻辑保留。
+- R2 回退路径：abstract 为空（含旧快照缺字段）→ 保留标题分词口径并标 `detail.abstract_missing: true`（如实标注，不伪造）。
 
 ### ⚠️ 顺带修掉两处跨边界不一致（都是"声明了但没实现"）
 
@@ -551,10 +585,13 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 > 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
 
 - `bash scripts/quality-gate.sh` → **四道门禁全绿**（§15/§16 要求"类型 + **Lint** + 测试"）：
-  vitest **158/158** · 内核 **91/91**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**
-  （lint 为类型感知规则，覆盖 `src` + `test` + `scripts`；30 个 warning 是既有非空断言等，不阻断。
+  vitest **173/173** · 内核 **105/105**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**（本轮新增/改动文件）
+  （lint 为类型感知规则，覆盖 `src` + `test` + `scripts`；既有非空断言等为 warning，不阻断。
   想收紧用 `pnpm lint:strict`（`--max-warnings 0`）。）
-  （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/多轮消息队列/分层 DTO/AGH 接口契约）；
+  > ⚠️ v2.3 实测：`eslint scripts` 会在**既有** `scripts/sync-spawn-shim.cjs` 报 5 个 `no-undef: require` error
+  > （该文件在 v2.2 提交即存在、与本次改动无关，属 eslint 配置未把 `.cjs` 纳入 Node 全局环境的历史缺口）。
+  > 本次新增/改动的前端 API 文件与内核文件 **0 error**；该历史缺口待专项修复，不在此轮偷改无关文件。
+  （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/多轮消息队列/分层 DTO/AGH 接口契约/跨 run 文献库/BibTeX/摘要精读）；
   > 注：`contract.test.ts` 的 scope 解析用例在本机依赖 AGH home 的 ACL 合规；
   > 该ACL 已于 2026-10-10 修复，用例**真正通过**（保留了「遇到 `CONFIG_CREDENTIAL_STORE`
   > 则显式跳过并打印诊断指引」的兜底，避免环境问题让质量门长驻红灯，详见 §8 第 9 条）。

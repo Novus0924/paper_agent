@@ -3,10 +3,21 @@
 
 export type RunStatus = 'PLANNED' | 'RUNNING' | 'DONE' | 'FAILED';
 export type StepStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'SKIPPED' | 'FAILED';
-/** tier 取值 fact/artifact；kind 取值 literature/data/analysis/note/factcheck/draft/review，二者不可混用 */
+/**
+ * tier 取值 fact/artifact；kind 取值 literature/data/analysis/note/factcheck/draft/review/synthesis，二者不可混用。
+ * synthesis 是内核 S1「综合回答」产出的 artifact（kernel/sciret_kernel/ledger.py EVIDENCE_KINDS），
+ * 之前漏登记会让文献库/证据页在遇到它时用 undefined 查文案表而整页崩溃。
+ */
 export type EvidenceTier = 'fact' | 'artifact';
 export type EvidenceKind =
-  'literature' | 'data' | 'analysis' | 'note' | 'factcheck' | 'draft' | 'review';
+  | 'literature'
+  | 'data'
+  | 'analysis'
+  | 'note'
+  | 'factcheck'
+  | 'draft'
+  | 'review'
+  | 'synthesis';
 
 export type WorkflowName = 'research' | 'materials';
 export type SourceName = 'arxiv' | 'crossref' | 'openalex' | 'semantic_scholar' | 'local';
@@ -166,6 +177,58 @@ export interface EvidenceBundle {
   evidence: EvidenceItem[];
   conclusions: Conclusion[];
   trace: TraceEntry[];
+}
+
+/** 文献库条目的书目引用块（GET /library/evidence 契约 v1） */
+export interface LibraryRef {
+  /** 有 DOI 时为准一去重键；非文献证据为空串 */
+  doi: string;
+  title: string;
+  authors: string;
+  year: string;
+  venue: string;
+  /** 检索来源：arxiv / crossref / openalex / semantic_scholar / local */
+  source: string;
+}
+
+/** 跨任务汇总的一条证据（文献库列表行） */
+export interface LibraryEvidenceItem {
+  ev_id: string;
+  task_id: string;
+  /** 来源任务的研究目标（可能与 title 不同，用于展示归属） */
+  task_goal: string;
+  tier: EvidenceTier;
+  kind: EvidenceKind;
+  title: string;
+  ref: LibraryRef;
+  producer_step: string;
+  /** 该 DOI 被合并掉的重复条数（去重开启时 > 0） */
+  duplicates_count: number;
+}
+
+/** GET /library/evidence 响应（契约冻结） */
+export interface LibraryEvidenceResponse {
+  /** 过滤（含去重）后的总条数，与分页无关 */
+  total: number;
+  /** 本次结果覆盖的任务数 */
+  tasks_scanned: number;
+  items: LibraryEvidenceItem[];
+  offset: number;
+  limit: number;
+}
+
+/** GET /library/evidence 过滤参数 */
+export interface ListLibraryParams {
+  /** 关键词：标题 / 作者 / DOI / 来源任务 */
+  q?: string;
+  kind?: EvidenceKind;
+  tier?: EvidenceTier;
+  source?: string;
+  task_id?: string;
+  /** 按 DOI 去重，缺省视为开启（契约默认 on） */
+  dedupe?: boolean;
+  limit?: number;
+  offset?: number;
 }
 
 export type MessageStatus = 'queued' | 'sending' | 'streaming' | 'done' | 'failed';
