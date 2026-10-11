@@ -233,6 +233,15 @@ TOOLS: dict[str, Callable[[dict[str, Any], Path], dict[str, Any]]] = {
 
 
 def main(argv: list[str] | None = None) -> int:
+    # stdout 是 JSON 契约通道，且各处都用 ensure_ascii=False 输出中文原文。
+    # Windows 下 sys.stdout 跟随系统代码页（简中 = cp936），管道里的中文会按 GBK 落盘，
+    # 调用方按 UTF-8 解码即成乱码 —— 生产插件显式设 PYTHONIOENCODING=utf-8 才掩盖了这一点，
+    # 契约测试没设就红了一片（标签本身并没有漂移）。JSON 交换通道的编码不该由调用方决定，这里钉死 UTF-8。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass  # 被测试框架替换成非文件流时，保持调用方给的编码
+
     parser = argparse.ArgumentParser(prog="sciret_kernel", description="paper-agent 确定性科研内核")
     parser.add_argument("tool", choices=sorted(TOOLS), help="工具名")
     parser.add_argument("--run-dir", required=True, help="任务运行目录（绝对路径）")

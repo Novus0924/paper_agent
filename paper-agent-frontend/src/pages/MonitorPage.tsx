@@ -110,7 +110,9 @@ export function MonitorPage() {
       <header className={layout.pageHead}>
         <div>
           <h2 className={layout.pageTitle}>{t('monitor.title')}</h2>
-          <p className={layout.pageLead}>{snapshot?.goal ?? t('monitor.lead')}</p>
+          {/* live 视图 DTO 只有 title（无 goal）：goal 缺失时退回 title，
+              两边都能显示完整目标；直接 ?? t('monitor.lead') 会把真实目标吞成占位文案 */}
+          <p className={layout.pageLead}>{snapshot?.goal ?? snapshot?.title ?? t('monitor.lead')}</p>
         </div>
         {/* 证据在运行中/失败时同样要看，所以这一入口不受"报告是否就绪"门禁；
             报告页的入口由下方"报告已生成"提示条给出，避免同一目标两个按钮 */}

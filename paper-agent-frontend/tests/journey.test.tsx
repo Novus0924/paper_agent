@@ -195,7 +195,7 @@ describe('FE-04 新建任务向导', () => {
       await screen.findByRole('heading', { level: 1, name: '运行监控' }),
     ).toBeInTheDocument();
     expect(runAll).toHaveBeenCalled();
-    expect(useTaskStore.getState().tasks.some((t) => t.goal.includes('硬碳负极'))).toBe(
+    expect(useTaskStore.getState().tasks.some((t) => t.goal?.includes('硬碳负极'))).toBe(
       true,
     );
   });

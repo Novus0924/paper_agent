@@ -26,7 +26,14 @@ export interface TaskSnapshot {
   task_id: string;
   /** 面向展示的标题（后端由 goal 摘要生成） */
   title: string;
-  goal: string;
+  /**
+   * 研究目标原文。
+   * 后端面向视图 DTO（apps/bff/src/routes/v1/tasks.ts 的 taskSnapshot）
+   * **只发 title，不发 goal**（实测 GET /api/v1/tasks/{id} 响应体无 goal 字段），
+   * 所以这里必须是可选：写成必填会让 `snapshot.goal` 在 live 下恒为 undefined，
+   * 而类型说它是 string —— 页面只会静默退回占位文案。
+   */
+  goal?: string;
   workflow: WorkflowName;
   lit_source: LitSource;
   sources: SourceName[];

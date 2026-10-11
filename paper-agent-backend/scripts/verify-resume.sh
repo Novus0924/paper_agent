@@ -22,7 +22,8 @@ for v in CODEBUDDY_SAFE_DELETE_BULK_GUARD CODEBUDDY_SAFE_DELETE_SANDBOX \
          CODEBUDDY_SAFE_DELETE_BROKER_DELETE; do export "$v="; done
 hash -r 2>/dev/null || true
 
-PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$(. "$(dirname "$0")/_env.sh" && pa_python || true)"
+[ -n "$PY" ] || { echo "[FATAL] 未找到 Python（内核需要 ≥3.10，可用 PAPER_AGENT_PYTHON 指定）" >&2; exit 1; }
 [ -x "$PY" ] || PY=$(command -v python3 || command -v python)
 # ⚠️ 必须用 **Windows 形式**的根路径：这里的 python.exe 是 Windows 版原生程序，
 #    它不认 MSYS 的 /d/... （会当成相对路径 → FileNotFoundError）。

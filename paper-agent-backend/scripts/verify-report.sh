@@ -7,14 +7,15 @@ cd "$(dirname "$0")/.."
 # 本机 Bash 工具的基础 PATH 可能为空（curl/node 缺失），这里自补系统与 PortableGit 路径。
 # 注意必须**前置**并 hash -r 清缓存：追加到末尾时 bash 可能已缓存"command not found"。
 export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:${PATH:-}"
-for d in /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
+for d in /c/Users/*/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/*/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
   [ -d "$d" ] && export PATH="$d:$PATH"
 done
 hash -r 2>/dev/null || true
 command -v curl >/dev/null || { echo "[FATAL] 未找到 curl，请确认 PATH 中含 /c/Windows/System32"; exit 1; }
 command -v node >/dev/null || { echo "[FATAL] 未找到 node，请确认 PATH 中含 /c/Program Files/nodejs"; exit 1; }
 ROOT=$(pwd -W 2>/dev/null || pwd)
-PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$(. "$(dirname "$0")/_env.sh" && pa_python || true)"
+[ -n "$PY" ] || { echo "[FATAL] 未找到 Python（内核需要 ≥3.10，可用 PAPER_AGENT_PYTHON 指定）" >&2; exit 1; }
 PORT="${PAPER_AGENT_PORT:-8799}"
 TID="run-m6e2e-$(date +%H%M%S)"
 RUN="$ROOT/runs/$TID"

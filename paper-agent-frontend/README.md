@@ -41,9 +41,14 @@ VITE_API_MODE=live
 VITE_API_BASE_URL=          # 留空：请求发同源，由 vite 的 server.proxy['/api'] 转给 8787
 ```
 
-为什么留空而不是写 `http://127.0.0.1:8787`：SSE 路由 `reply.hijack()` 之后自己 `writeHead`，响应头里
-**没有 `Access-Control-Allow-Origin`**（`apps/bff/src/routes/v1/events.ts`），跨源的 `EventSource` 一律被浏览器拦死，
-`PAPER_AGENT_CORS_ORIGINS` 也救不了它。同源代理既避开这一条，也和生产形态（BFF 托管构建产物）一致。
+默认留空走同源：生产形态本就是 BFF 托管构建产物，dev 用代理对齐，顺带不用管白名单。
+直连（`VITE_API_BASE_URL=http://127.0.0.1:8787`）**现在也可用**：SSE 路由 `reply.hijack()` 后自己
+`writeHead`、拿不到 app 级钩子设的响应头，这一条已在后端收口（白名单单一真源
+`bff/src/infra/cors.ts`，钩子与 SSE 共用；默认含 5173/5174，其余端口用 `PAPER_AGENT_CORS_ORIGINS`
+或启动器注入的 `PAPER_AGENT_CORS_EXTRA_ORIGINS`）。实测：`Origin: http://127.0.0.1:5174` 时 SSE 响应带
+`Access-Control-Allow-Origin` 与 `Vary: Origin`；不在白名单的 Origin → 200 但**无** ACAO（浏览器拦死）。
+> 历史的坑是"JSON 跨源能用、SSE 一帧不到"：同一个白名单写了两遍、漏了 hijack 那一处，
+> 界面表现为"连上了但没有进度"。当初改用同源代理把它绕开了，所以没人发现它坏着。
 临时演示想切回假数据不用改文件，`?mode=mock` 即可。
 
 ---
@@ -812,8 +817,9 @@ E2E_BASE_URL=http://127.0.0.1:5175 npx playwright test e2e/perf.spec.ts
 **Live 真实链路联调（2026-10-11，本机 AGH + BFF；关掉 §5 那条"未联调"）**
 
 栈是真实的：AGH daemon（命名管道 `\\.\pipe\agnes-…`，`/api/health` 报 `status:ok / agh.connected:true / sessions_open:3`）
-+ BFF 绑 `127.0.0.1:8787` + 浏览器里的前端（vite dev `127.0.0.1:5174`，`server.proxy['/api']` 做同源转发——
-SSE 路由 `reply.hijack()` 直写响应头、不含 `Access-Control-Allow-Origin`，跨源 `EventSource` 会被浏览器拦死）。
++ BFF 绑 `127.0.0.1:8787` + 浏览器里的前端（vite dev `127.0.0.1:5174`，`server.proxy['/api']` 做同源转发。
+当时选同源还因为 SSE 的 hijack 响应不带 `Access-Control-Allow-Origin`，跨源 `EventSource` 被浏览器拦死——
+**这一条后端已修**，见下一轮取证）。
 新建任务 → run-all → 监控 → 报告 → 证据 → 三件套导出全程在同一任务 `run-20261011-132648-zdwd45` 上走通，6 步 DONE。
 
 - **抓出并修掉 6 处"前端形状 ≠ 后端契约"，全部只有真跑能发现**（mock 发现不了：mock 本来就是按前端类型写的）。
@@ -834,6 +840,29 @@ SSE 路由 `reply.hijack()` 直写响应头、不含 `Access-Control-Allow-Origi
   `.env.local` 里的 `VITE_API_MODE=live` 会被 vitest 一并读走，那 73 条"红"不是回归而是本地环境泄漏——
   修法是把 test 模式固定在 `src/config/env.ts`（`metaEnv.MODE === 'test'`），给 vitest 塞 `test.env` 实测无效；
   另一条是 Composer 终态闸门最初不分 mock/live 一起禁用，打掉了 4 条 FE-10 旅程用例——409 是后端行为，演示数据没有，闸门必须 `isLive` 限定。
+
+**整合布局第二轮联调（2026-10-11 下午，`paper-agent-main`：backend/ + frontend/ 与 agnes-harness 同级）**
+
+- **又抓到一处「前端类型 ≠ 后端 DTO」**：`TaskSnapshot.goal` 原写必填，但后端面向视图的 `taskSnapshot()`
+  只发 `title`（内容就是 `rec.goal` 全文），**不发 `goal`** → live 下 `snapshot.goal` 恒 `undefined`，
+  监控页与报告页的页首副标题永远落在占位文案上。修法是类型改成诚实的 `goal?: string`，两处渲染走
+  `goal ?? title`（mock 保留完整 `goal`，因为它的 `title` 是截断到 24 字的展示标题）。
+  浏览器实测同一任务 `run-20261011-132648-zdwd45`：副标题已是
+  「固态电解质界面阻抗的主要表征方法有哪些？请检索近五年文献，给出方法对比与结论。」
+- **门禁在本轮改动之后复跑**：`typecheck` 0 error、`lint` 0 error（1 条既有 `react-refresh` 告警）、
+  `vitest` **178 passed / 11 files**、`vite build` 通过（379 modules，479 KB JS / 158 KB gzip）。
+- **跨源 SSE 真跑 TCP 取证**（后端修好 hijack 响应头之后）：`Origin: http://127.0.0.1:5174` → 带
+  `Access-Control-Allow-Origin` + `Vary: Origin`；`Origin: http://evil.example` → 200 但无 ACAO；无 Origin → 无 ACAO、流正常。
+  同源代理侧 `GET http://127.0.0.1:5179/api/v1/tasks/<id>/events` 实测返回 `ping`/`step` 快照帧，历史任务重进也有进展。
+- **一键启动现在会托管本前端**（后端 `scripts/start.mjs`）：`PAPER_AGENT_WEB_PORT=5178/5179` 两次真跑，
+  都是"探到前端首页 200 才报就绪"（旧实现 spawn 后睡 1500ms 就打印成功）；`/api/health` 经该 dev server 代理可达。
+- **仍未解决、且不在前端这一侧**：中文目标经 Crossref/OpenAlex 命中的文献与主题无关
+  （取证见 `paper-agent-backend/README.md` §7「前后端整合联调」：同一 `build_url` 下中英文返回天差地别），
+  于是账本没有 `conclusion` 记录、监控页「结论 0」。这里**不做**任何"看起来像结论"的前端补白。
+- **一处命名不准，留待定文案**：右列「会话轨迹」取的实际是**账本记录数**（`toTraceEntries` 用
+  evidence+judgment+note 拼时间线，本例 17 = 16 证据 + 1 判断），与同卡片「证据登记 16」几乎重复；
+  真正的 AGH 会话轨迹只在 SSE 与 `kind=session` 导出包里，后端没有 GET 接口。
+  同理：重进已完成任务时「工具调用 0 次 / 暂无过程记录」只表示**本页会话**没收到 tool 帧，不代表这次运行没调过工具。
 
 ## 5. 尚未验证 / 已知边界（诚实清单）
 

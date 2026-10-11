@@ -66,7 +66,7 @@ export function ReportPage() {
       <header className={layout.pageHead}>
         <div>
           <h2 className={layout.pageTitle}>{t('report.title')}</h2>
-          <p className={layout.pageLead}>{entry.snapshot?.goal ?? t('report.title')}</p>
+          <p className={layout.pageLead}>{entry.snapshot?.goal ?? entry.snapshot?.title ?? t('report.title')}</p>
         </div>
         <div className={layout.headActions}>
           <Button size="sm" icon="monitor" onClick={() => navigate(`/monitor/${taskId}`)}>

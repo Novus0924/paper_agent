@@ -14,10 +14,12 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5174,
     strictPort: true,
-    // 联调用同源代理：后端 SSE 路由 reply.hijack() 后直写响应头，不含
-    // Access-Control-Allow-Origin（events.ts），跨源 EventSource 会被浏览器拦死。
-    // 生产形态本就是 BFF 托管构建产物（scripts/start.mjs）= 同源，dev 以代理对齐，
-    // 顺带免去为每个前端端口配 PAPER_AGENT_CORS_ORIGINS。
+    // 联调用同源代理：生产形态本就是 BFF 托管构建产物（scripts/start.mjs）= 同源，
+    // dev 以代理对齐，顺带免去为每个前端端口配 PAPER_AGENT_CORS_ORIGINS。
+    // （历史上这里还写着"SSE 跨源必挂，因为 events.ts 的 hijack 响应没有
+    //  Access-Control-Allow-Origin"——那是真缺陷，后端已修：cors.ts 单一白名单
+    //  同时供 app 级钩子与 SSE writeHead 使用。代理仍是默认路径，直连 8787
+    //  只在显式设置 VITE_API_BASE_URL 时使用。）
     proxy: {
       '/api': { target: 'http://127.0.0.1:8787', changeOrigin: true },
     },

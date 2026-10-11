@@ -33,7 +33,8 @@ for v in CODEBUDDY_SAFE_DELETE_BULK_GUARD CODEBUDDY_SAFE_DELETE_SANDBOX \
 hash -r 2>/dev/null || true
 
 NODE24="/c/Program Files/nodejs/node.exe"
-PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$(. "$(dirname "$0")/_env.sh" && pa_python || true)"
+[ -n "$PY" ] || { echo "[FATAL] 未找到 Python（内核需要 ≥3.10，可用 PAPER_AGENT_PYTHON 指定）" >&2; exit 1; }
 ROOT=$(pwd -W 2>/dev/null || pwd)
 OUT="$ROOT/data/_m10"
 mkdir -p "$OUT"

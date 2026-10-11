@@ -574,7 +574,7 @@ export class MockRuntime {
     // 失败任务的脚本停在失败点，续跑先换回完整工作流脚本，重跑才能走到报告产出
     task.script = buildScript(
       task.snapshot.workflow,
-      task.snapshot.goal,
+      task.snapshot.goal ?? task.snapshot.title,
       task.snapshot.sources,
     );
     let index = task.script.findIndex(

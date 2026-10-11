@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import type { AppConfig } from './config.js'
 import type { Logger } from './infra/logger.js'
 import { ApiError, errorBody } from './infra/errors.js'
+import { allowedOrigins, corsHeaders } from './infra/cors.js'
 import type { AgnesGateway } from './agh/gateway.js'
 import type { TaskIndex } from './store/task-index.js'
 import { type ExecutionService } from './services/execution.js'
@@ -45,19 +46,13 @@ export function buildApp(ctx: AppContext): FastifyInstance {
   })
 
   // CORS：白名单按 Origin 回显（§11：不放任 *）
-  const allowedOrigins = new Set(
-    (process.env['PAPER_AGENT_CORS_ORIGINS'] ?? 'http://127.0.0.1:5173,http://localhost:5173')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  )
+  // 白名单与回显逻辑抽到 infra/cors.ts，因为 hijack 的 SSE 路由拿不到这里的钩子产物，
+  // 必须复用同一份实现，否则两处口径会漂移。
+  const corsAllow = allowedOrigins()
   app.addHook('onRequest', async (req, reply) => {
     const origin = req.headers.origin
-    if (origin && allowedOrigins.has(origin)) {
-      reply.header('Access-Control-Allow-Origin', origin)
-      reply.header('Vary', 'Origin')
-      reply.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Last-Event-ID')
+    for (const [key, value] of Object.entries(corsHeaders(origin, corsAllow))) {
+      reply.header(key, value)
     }
     if (req.method === 'OPTIONS' && origin) {
       reply.code(204).send()

@@ -43,14 +43,26 @@ export type AppConfig = {
   agnesProfile: string | undefined
 }
 
-const DEFAULT_AGH_CANDIDATES = [
+/**
+ * AGH 仓库根候选。
+ * 前四项对应整合布局（backend/frontend 与 agnes-harness 同级或同上级），
+ * 后三项是历史开发机约定路径。换机时优先设 PAPER_AGENT_AGH_ROOT。
+ * ⚠️ 与 scripts/lib/paths.mjs 的 aghRootCandidates 同口径，改一边要同步另一边。
+ */
+const DEFAULT_AGH_CANDIDATES = (root: string): string[] => [
+  resolve(root, '..', '..', 'agnes-harness-main'),
+  resolve(root, '..', '..', 'agnes-harness'),
+  resolve(root, '..', 'agnes-harness-main'),
+  resolve(root, '..', 'agnes-harness'),
   'D:/agnes-harness-main',
   'D:/agnes-harness',
   'C:/agnes-harness-main',
 ]
 
-function detectAghRoot(envOverride: string | undefined): string {
-  const candidates = envOverride ? [envOverride, ...DEFAULT_AGH_CANDIDATES] : DEFAULT_AGH_CANDIDATES
+function detectAghRoot(root: string, envOverride: string | undefined): string {
+  // 显式指定即"权威"：指错了要 fail-fast，不能静默换到别处的 AGH 副本
+  // （与 scripts/lib/paths.mjs 的 resolveAghRoot、scripts/_env.sh 的 pa_agh_root 同口径）。
+  const candidates = envOverride ? [envOverride] : DEFAULT_AGH_CANDIDATES(root)
   for (const dir of candidates) {
     // CLI 构建产物存在即可认为可用（serve/export 均经它）
     if (existsSync(resolve(dir, 'packages/cli/dist/local/agnes.mjs'))) return dir
@@ -59,7 +71,9 @@ function detectAghRoot(envOverride: string | undefined): string {
     envOverride
       ? `PAPER_AGENT_AGH_ROOT 指向的目录缺少构建产物：${envOverride}`
       : '未找到 Agnes Harness（AGH）本地仓库或其构建产物',
-    '请设置环境变量 PAPER_AGENT_AGH_ROOT 指向 AGH 仓库根（需已执行构建，存在 packages/cli/dist/local/agnes.mjs），或运行 scripts/doctor.mjs 查看诊断。',
+    envOverride
+      ? '请修正 PAPER_AGENT_AGH_ROOT（需已执行构建，存在 packages/cli/dist/local/agnes.mjs），或取消该变量以启用候选探测。'
+      : `请设置环境变量 PAPER_AGENT_AGH_ROOT 指向 AGH 仓库根（需已执行构建，存在 packages/cli/dist/local/agnes.mjs），或把 AGH 放在本项目同级目录；也可运行 scripts/doctor.mjs 查看诊断。已尝试：${DEFAULT_AGH_CANDIDATES(root).join(' | ')}`,
   )
 }
 
@@ -86,7 +100,7 @@ function intEnv(name: string, fallback: number, min: number, max: number): numbe
 
 export function loadConfig(rootOverride?: string): AppConfig {
   const root = resolve(rootOverride ?? process.env['PAPER_AGENT_ROOT'] ?? process.cwd())
-  const aghRoot = detectAghRoot(process.env['PAPER_AGENT_AGH_ROOT'])
+  const aghRoot = detectAghRoot(root, process.env['PAPER_AGENT_AGH_ROOT'])
   const logLevelRaw = process.env['PAPER_AGENT_LOG_LEVEL'] ?? 'info'
   if (!['debug', 'info', 'warn', 'error'].includes(logLevelRaw)) {
     throw new ConfigError(`PAPER_AGENT_LOG_LEVEL 非法：${logLevelRaw}`, '允许值：debug | info | warn | error。')

@@ -8,7 +8,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'vendor/shim/safe-bin' | paste -sd: -)
 export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:$PATH"
-for d in /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
+for d in /c/Users/*/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/*/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
   [ -d "$d" ] && export PATH="$d:$PATH"
 done
 hash -r 2>/dev/null || true
@@ -27,7 +27,8 @@ command -v unzip >/dev/null || echo "  [WARN] 无 unzip，将跳过 ZIP 交叉�
 #    这类失败最隐蔽：Python 报错常被 >/dev/null 2>&1 吞掉，脚本只表现为"产物没生成"，
 #    看起来像功能问题而不是路径问题。
 ROOT=$(pwd -W 2>/dev/null || pwd)
-PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$(. "$(dirname "$0")/_env.sh" && pa_python || true)"
+[ -n "$PY" ] || { echo "[FATAL] 未找到 Python（内核需要 ≥3.10，可用 PAPER_AGENT_PYTHON 指定）" >&2; exit 1; }
 PORT="${PAPER_AGENT_PORT:-8801}"
 TID="run-m7e2e-$(date +%H%M%S)"
 RUN="$ROOT/runs/$TID"

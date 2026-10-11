@@ -22,15 +22,22 @@ import { KNOWN_SOURCES } from '../src/services/preflight.js'
 
 const ROOT = resolve(__dirname, '../../..')
 const KERNEL_DIR = join(ROOT, 'kernel')
-const PYTHON_CANDIDATES = [
-  process.env['PAPER_AGENT_PYTHON'],
-  'python3',
-  'C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe',
-].filter((x): x is string => Boolean(x))
 
-function runPython(argv: string[]): Promise<{ code: number | null; out: string; err: string }> {
+// 与 workflow-contract.test.ts 同一套发现逻辑：本机装的是 `python`（Windows 官方安装器
+// 不提供 python3 这个名字），只试 candidates[0] 会让本测试在**有解释器**的机器上静默跳过，
+// 于是它专门要守的那条跨语言源清单一致性就再也没被验证过。
+function pythonCandidates(): string[] {
+  return [
+    process.env['PAPER_AGENT_PYTHON'],
+    'python',
+    'python3',
+    'C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe',
+  ].filter((x): x is string => Boolean(x))
+}
+
+function runPython(cmd: string, argv: string[]): Promise<{ code: number | null; out: string; err: string }> {
   return new Promise((res) => {
-    const child = spawn(PYTHON_CANDIDATES[0]!, argv, {
+    const child = spawn(cmd, argv, {
       cwd: KERNEL_DIR,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONPATH: KERNEL_DIR },
@@ -44,12 +51,14 @@ function runPython(argv: string[]): Promise<{ code: number | null; out: string; 
   })
 }
 
-/** 取内核 Source 注册表里的源名。 */
+/** 取内核 Source 注册表里的源名；每个候选解释器都试一遍，全失败才返回 null。 */
 async function kernelSources(): Promise<string[] | null> {
   if (!existsSync(KERNEL_DIR)) return null
-  const r = await runPython(['-c', 'from sciret_kernel import sources; print(",".join(sources.known_sources()))'])
-  if (r.code !== 0) return null
-  return r.out.trim().split(',').filter(Boolean)
+  for (const py of pythonCandidates()) {
+    const r = await runPython(py, ['-c', 'from sciret_kernel import sources; print(",".join(sources.known_sources()))'])
+    if (r.code === 0) return r.out.trim().split(',').filter(Boolean)
+  }
+  return null
 }
 
 describe('Source 契约（BFF ⟷ Python 内核）', () => {

@@ -123,11 +123,12 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 变量 | 用途 | 默认 |
 |---|---|---|
 | `PAPER_AGENT_ROOT` | 项目根 | 自动探测（当前工作目录） |
-| `PAPER_AGENT_AGH_ROOT` | AGH 仓库根（只读） | 自动探测 `D:/agnes-harness-main` 等候选 |
+| `PAPER_AGENT_AGH_ROOT` | AGH 仓库根（**只读引用，禁止改其源码**） | 自动探测同级 `agnes-harness` / `agnes-harness-main`，再试 `../`、`D:/`、`C:/` 候选（判据：`packages/cli/dist/local/agnes.mjs` 存在） |
 | `PAPER_AGENT_PORT` | BFF 端口 | `8787` |
-| `PAPER_AGENT_PYTHON` | Python 解释器（内核） | 自动探测 `python`/`python3`/`py` |
+| `PAPER_AGENT_PYTHON` | Python 解释器（内核，≥3.10） | 自动探测 `python`/`python3`/`py`，再试各用户 `~/.workbuddy/binaries/python/versions/<版本>/python.exe` |
 | `PAPER_AGENT_LOG_LEVEL` | 日志级别 | `info` |
-| `PAPER_AGENT_CORS_ORIGINS` | CORS 白名单（按 Origin 回显） | `http://127.0.0.1:5173,http://localhost:5173` |
+| `PAPER_AGENT_CORS_ORIGINS` | CORS 白名单（按 Origin 回显，逗号分隔） | `http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174` |
+| `PAPER_AGENT_CORS_EXTRA_ORIGINS` | 在上述白名单上**追加**（不覆盖） | 未设置；一键启动器自动追加它托管的前端 Origin |
 | `PAPER_AGENT_TOKEN` | 可选写路由令牌（默认关） | 未设置 |
 | `AGH_HOME` / `AGNES_PROFILE` | AGH 实例定位（透传给 SDK 发现） | AGH 默认（`~/.agh` / `local-dev`） |
 
@@ -453,8 +454,18 @@ node scripts/start.mjs --bff-only   # 只起 BFF
   `~/.agh/data/daemon/{owner,discovery}.json` **仍留在盘上**。只看文件会判"就绪"，
   而 BFF 走 AGH 的 `identity()` 校验必然失败 → 症状是「启动器说就绪、BFF 说找不到 daemon」。
   启动器发现僵尸记录会**改名隔离**（可逆、不删）再启动新 daemon。
-- **启动器不假设前端已交付**：本需求文档是后端交付，`web/` 不存在时**跳过并说明归属**、**不阻断**；
-  前端就位后同一条命令自动托管（dev server 或静态产物）。
+- **前端探测覆盖两种布局**：先本仓库 `web/`（后端 1.0 独立交付时的布局），再同级
+  `../paper-agent-frontend/`（2.0 整合布局）。检测不到才跳过并**列出查过哪两个路径**（旧文案写的是
+  「前端由前端组提供」——前端早已就位，只是当时没人把它接进启动器）。
+  package.json 存在但 vite 未安装 → 单独一档 `missing-deps`，直接回 `cd <目录> && npm install`，
+  而不是让子进程吐出看起来像后端故障的 `Cannot find module`。
+- **前端"已启动"必须实测**：原来是 spawn 后 `sleep 1500ms` 就打印成功；端口被别的 dev server 占用时
+  vite 因 `strictPort` 直接退出，那句成功是假的。现在轮询前端首页拿到 200 才报就绪（超时 25s 后
+  如实报"可能被占用，用 PAPER_AGENT_WEB_PORT 换端口"）。浏览器也据此开到真正有页面的那个 URL
+  （只有后端时不再把浏览器开到 404 的 BFF 根路径）。
+- **启动器把自己托管的前端 Origin 追加进 CORS 白名单**（`PAPER_AGENT_CORS_EXTRA_ORIGINS`，
+  在 BFF spawn **之前**注入）。漏掉它时，换过 `PAPER_AGENT_WEB_PORT` 又用直连模式
+  （`VITE_API_BASE_URL=http://127.0.0.1:8787`）的人会命中"JSON 正常、SSE 一帧不到"——本项目最难排查的组合。
 - **端口占用不做"自动顺延"**：端口是配置契约，静默换端口会让用户访问到错误的服务；
   改为明确报告 + 给出 `PAPER_AGENT_PORT` 换端口指引（§12.1「占用即报告并支持自动顺延或给出释放指引」）。
 - **Ctrl+C 连带停止子进程**，不留孤儿进程（E2E 有专门断言：退出后端口必须被释放）。
@@ -472,7 +483,8 @@ node scripts/start.mjs --bff-only   # 只起 BFF
 | **事件词汇** | AGH 账本事件类型为 `session/start`、`turn/start`、`step/start`、`assistant/message`、`step/end`、`turn/end` 等；M4 的 Event Relay 负责映射到本项目 9 类事件。 |
 | **导出复用 AGH 原生** | daemon **无导出 RPC**，故经 CLI：`agnes export <session_id> --format agnes -o x.jsonl` 实测可用（产出事件 JSONL）。M7 已把该路径封装为 `kind=session`，且与 CLI 直出**逐字节一致**。 |
 | **⚠️ 已知问题** | `agnes sessions`（列表/`--json`）在当前 home 上返回 `INTERNAL_ERROR RESULT_INVALID`——**AGH 侧投影问题，非本项目缺陷**（会话本身已正常写入 `sessions.db`，且 `export`/`load` 均可用）。红线要求不得改 AGH 源码，故记录在案并通过 `session.load` + 本任务索引 + `export` 作为"可核对/可导出"证据路径。 |
-| **遗留包** | 用户 AGH home 中存在 v1.0 遗留包 `paper-agent-tools`（`ext:paper-agent/tools`，`enabled=true`，7 个 hot-tools）。其工具名与本项目 `sciret_*` **重名 7 个** → 启用本插件前**必须先停用旧包**：`bash scripts/install-plugin.sh disable-old`（可逆：`bash agh.sh package enable ext:paper-agent/tools`）。本项目插件 id 为 `ext:paper-agent/sciret`。 |
+| **遗留包** | 用户 AGH home 中存在 v1.0 遗留包 `paper-agent-tools`（其 7 个 hot-tools 与本项目 `sciret_*` **重名**）→ 启用本插件前**必须先停用旧包**：`bash scripts/install-plugin.sh disable-old`。⚠️ `agh package enable/disable` 的参数**只接受包名**（`paper-agent-tools`、`@paper-agent/plugin-sciret`），传贡献点 id（`ext:paper-agent/tools`、`ext:paper-agent/sciret`）会被 AGH 的参数校验直接拒绝（`^(?:@[a-z0-9]…/[a-z0-9]…)$`）——旧文案与本脚本一度都按 `ext:…` 写，于是"停用旧包/启用新包"这两步**实际上从未生效过**，脚本却照样打印成功。现在 `install-plugin.sh` 在 enable/disable 后**回读 `package status` 确认终态**（`enabled=True/False`），不达标就报错退出。反向恢复用同一形式的命令（`bash agh.sh package enable paper-agent-tools`；本轮为验证"停用"而没再把它开回去）。 |
+| **AGH 根定位（机器无关）** | AGH 是**另一个仓库**，每台机器位置不同；原先在 6 处写死 `D:/agnes-harness-main`（`config.ts`、`start.mjs`、`doctor.mjs`、`agh-daemon-up.sh`、`install-plugin.sh`、`verify-message.sh`），换机即"未找到 AGH 构建产物"。现统一为：Node 侧 `scripts/lib/paths.mjs::resolveAghRoot`、BFF 侧 `config.ts::detectAghRoot`、Bash 侧 `scripts/_env.sh::pa_agh_root`，三处**同一候选顺序**（判据都是 `packages/cli/dist/local/agnes.mjs`）。改顺序必须三处同步——口径不一致会出现"doctor 说 AGH 就绪但 BFF 起不来"。显式设置 `PAPER_AGENT_AGH_ROOT` 时**以它为准且不回落**：路径没有构建产物就 fail-fast 并提示修正（静默改用别的目录会让排查者对着一个谁都没选的 AGH 猜）。 |
 
 ### 6.1 插件安装与运行期环境变量（本机三大陷阱）
 
@@ -632,6 +644,66 @@ state.json → {"degraded": true,
 //   min_ok_sources=1,min_hits=1 → degraded=false；min_ok_sources=2,min_hits=4 → degraded=true
 // 非法字段（min_ok_sorce 拼错）→ 直接报错，不静默取默认
 ```
+
+### 前后端整合联调（2026-10-11，`paper-agent-main` 整合布局实测）
+
+布局：`paper-agent-main/{paper-agent-backend, paper-agent-frontend}` 与 `agnes-harness{,-main}` 同级。
+
+**一键启动器托管 2.0 前端**（`PAPER_AGENT_WEB_PORT=5178/5179 node scripts/start.mjs --no-browser`，两次实测）
+
+```text
+[✓] AGH 构建产物就绪: …\agnes-harness-main\packages\cli\dist\local\agnes.mjs   ← 同级自动探测，未设任何环境变量
+[✓] 复用已运行的 daemon（pid=2648 pipe=\\.\pipe\agnes-2ef89d7847bb7c1c）        ← 已在跑就不再起一个
+[✓] BFF 已就绪: http://127.0.0.1:8787
+[✓] 前端开发服务器已启动: http://127.0.0.1:5179                                 ← 真探测首页 200，不是"睡 1500ms 后宣布成功"
+```
+
+- 原 `resolveFrontend()` 只找本仓库 `web/`（后端 1.0 独立布局），2.0 布局下恒为 `null` →
+  前端永不被托管，而浏览器又被固定开到 `http://127.0.0.1:8787`（BFF 根路径实测 **404**）。
+  现在按 `web/` → `../paper-agent-frontend/` 顺序探测，并把浏览器开到**真正有页面那个 URL**。
+- 「检测到 package.json 就 spawn vite」也不成立：依赖没装时子进程报 `Cannot find module`，
+  读起来像启动器坏了。现在单独给这一档，直接回 `cd <前端目录> && npm install`。
+
+**SSE 跨源回头（真实 TCP，不是 `app.inject`）**
+
+```bash
+curl -m3 -i -H 'Origin: http://127.0.0.1:5174' …/tasks/<id>/events
+HTTP/1.1 200 OK / Content-Type: text/event-stream / Access-Control-Allow-Origin: http://127.0.0.1:5174 / Vary: Origin
+curl -m3 -i -H 'Origin: http://evil.example'   …/tasks/<id>/events   # 200 但**无** ACAO（浏览器侧拦死）
+curl -m3 -i …/tasks/<id>/events                                      # 无 Origin（同源/代理）→ 无 ACAO，流正常
+```
+- 病根：`events.ts` 走 `reply.hijack()` 后自己 `raw.writeHead()`，app 级 `onRequest` 钩子设的头
+  **一个都到不了**那条响应 → 症状是「JSON 接口跨源正常、EventSource 一帧都收不到」。
+  白名单因此收进 `apps/bff/src/infra/cors.ts` 单一真源，两处共用。
+- `PAPER_AGENT_CORS_EXTRA_ORIGINS` 是**追加**语义（不是覆盖），供启动器把自选的前端端口加进来；
+  实测 5179 同时出现在 SSE 与 JSON 路由的 `Access-Control-Allow-Origin` 上，且默认项 5173/5174 未被挤掉。
+
+**同源代理路径**（前端 `.env.local` 留空 `VITE_API_BASE_URL` 的默认形态）实测：
+
+```text
+GET http://127.0.0.1:5179/                     → 200
+GET http://127.0.0.1:5179/api/health           → 代理到 BFF，status ok
+GET http://127.0.0.1:5179/api/v1/tasks/<id>/events → id:1 ping / id:2 step R1 DONE …（历史任务重进也能拿到快照帧）
+```
+
+**⚠️ 联调查出的检索质量问题（内核代码无错，错在上游相关性）**
+
+同一内核、同一 `build_url`，只换查询语言，直连 Crossref 实测：
+
+```text
+query.bibliographic=固态电解质界面阻抗的主要表征方法有哪些？…   total-results 9575
+  → 酶底物法测定水中粪大肠菌群的方法验证… | 建筑工程结构检测的主要方法及质量控制 | 自密实混凝土检测方法的对比研究
+query.bibliographic=solid electrolyte interphase impedance characterization methods
+  → Solid-Electrolyte-Interphase: Characterization by Impedance Spectroscopy | Revisiting High-Frequency Impedance in Li-Ion Batteries…
+```
+- Crossref/OpenAlex 对未分词的中文长句按「方法/主要/检测」这类通用字做匹配，命中一堆无关中文期刊；
+  内核如实冻结这些返回值（`corpus/live-task-*.json` 的 `query` 字段就是原始目标，可复核）。
+- 连锁后果：R4 交叉印证按「同一主题词被 ≥2 个独立来源支撑」判定，跨语言/跨批次几乎不可能重叠，
+  于是 `ledger.jsonl` 实测 `{"evidence":16,"judgment":1}`、judgment rationale
+  「0 个主题词获 ≥2 个独立来源支撑；87 个仅单源」→ **conclusion 记录恒为 0**，界面「结论 0」是如实反映，
+  不是写入器坏了（`step_R4` 的写入分支由 `kernel/tests/test_kernel.py` 覆盖）。
+- 修法在内核之外（查询归一/译英后再检索，或改用 `query.title` + 年份 filter），**不在本轮里偷偷改**：
+  它会改变检索语义与既有验收基线，需要单独设计与复测。
 
 ---
 
@@ -805,8 +877,12 @@ bash scripts/verify-dod.sh --reuse   # 复用已通过的结果（失败会重�
 1. **容器化（§12.4）未做**：需求原文写的是「提供 `docker-compose.yml`…**建议**」，
    本项目交付的是 §12.4 同时要求的"保留本机源码一键启动路径"。
    注意 AGH 原生模块是 Windows 编译产物，容器内需重新构建。
-2. **前端未联调**：本需求文档是后端交付，`web/` 不存在。
-   启动器的"前端托管"只验证了"不存在时跳过不阻断"，vite dev server 分支**未经实测**。
+2. **前端联调已真跑，但检索质量是真问题（2026-10-11 更新）**：整合布局下 `pnpm start` 实测托管
+   vite dev server，同源代理与跨源 SSE 都过（证据见 §7「前后端整合联调」）。
+   **仍未解决**：中文目标经 Crossref/OpenAlex 命中的是完全无关的文献（§7 附同一 URL 的中英文对比），
+   于是 R4 交叉印证恒为 0 个多源主题词、账本恒无 `conclusion`、界面「结论 0」。
+   表现是"证据链条目齐全但与主题无关"——演示前要么换英文目标，要么先修查询归一，不能就这么讲。
+   另外：**降级路径（L1/L2）至今只在故障注入下验证过，真实网络故障从未自然触发**。
 3. **未在真实 CI 上跑过**：`ci.yml` 已写好但**从未在GitHub Actions 上执行过**
    （本仓库未推送）。窗口路径、Node 24 与 corepack 行为在 runner 上可能与本机不同，
    首次推送需留意首次 CI 结果。

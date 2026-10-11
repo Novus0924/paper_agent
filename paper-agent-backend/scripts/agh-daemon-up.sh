@@ -15,13 +15,19 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# shellcheck source=_env.sh
+. "$(dirname "$0")/_env.sh"
+
 WS="${1:-$PWD}"
-DATA="${AGH_DATA_DIR:-C:/Users/lenovo/.agh/data}"
-DAEMON_ENTRY="D:/agnes-harness-main/packages/cli/dist/local/daemon.mjs"
+DATA="${AGH_DATA_DIR:-$(pa_agh_data_dir)}"
+DAEMON_ENTRY="$(pa_agh_daemon_entry)" || {
+  echo "[FATAL] 未找到 AGH daemon 入口，请设置 PAPER_AGENT_AGH_ROOT" >&2
+  exit 1
+}
 
 export PATH="/c/Program Files/nodejs:$PATH"
-NODE_BIN="/c/Program Files/nodejs/node.exe"
-[ -x "$NODE_BIN" ] || NODE_BIN="$(command -v node)"
+NODE_BIN="$(pa_node || true)"
+[ -n "$NODE_BIN" ] || { echo "[FATAL] 未找到 node（AGH 需要 ≥24.10）" >&2; exit 1; }
 
 # ⚠️ 必须清掉 WorkBuddy 的 shim 注入（实测踩坑）：
 #   NODE_OPTIONS=--require=.../node-language-shim.cjs 会加载 safe-delete 守卫，
@@ -37,9 +43,10 @@ DPID=$!
 trap 'kill $DPID 2>/dev/null' EXIT
 
 for i in $(seq 1 60); do
-  SOCK=$(node -e '
+  # 就绪判定读的是 **daemon 实际写入的 data-dir**（AGH_DATA_DIR 覆盖时不能再去翻 ~/.agh）
+  SOCK=$(PA_DATA="$DATA" "$NODE_BIN" -e '
 const fs=require("fs");
-const p=process.env.USERPROFILE+"/.agh/data/daemon/discovery.json";
+const p=process.env.PA_DATA+"/daemon/discovery.json";
 try{const j=JSON.parse(fs.readFileSync(p,"utf8"));
 process.stdout.write(String(j.socketPath||""));}catch(e){}
 ' 2>/dev/null)

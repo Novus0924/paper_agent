@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 # 与其跟包装器缠斗，不如把整个 shim 目录移出 PATH（只影响本脚本的子进程）。
 PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'vendor/shim/safe-bin|codebuddy/cli-connector-packages/bin' | paste -sd: -)
 export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:$PATH"
-for d in /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
+for d in /c/Users/*/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/*/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
   [ -d "$d" ] && export PATH="$d:$PATH"
 done
 hash -r 2>/dev/null || true
@@ -44,7 +44,8 @@ done
 ROOT=$(pwd -W 2>/dev/null || pwd)
 TSX_CLI="$ROOT/node_modules/tsx/dist/cli.mjs"
 [ -f "$TSX_CLI" ] || { echo "[FATAL] 未找到 tsx（$TSX_CLI），请先 pnpm install"; exit 1; }
-PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$(. "$(dirname "$0")/_env.sh" && pa_python || true)"
+[ -n "$PY" ] || { echo "[FATAL] 未找到 Python（内核需要 ≥3.10，可用 PAPER_AGENT_PYTHON 指定）" >&2; exit 1; }
 PORT="${PAPER_AGENT_PORT:-8803}"
 WORK="$ROOT/data/_m8"
 rm -rf "$WORK"; mkdir -p "$WORK"
@@ -68,8 +69,11 @@ ng(){ echo "  [FAIL] $1"; fail=$((fail+1)); }
 # 会杀掉 daemon，后续验证就全连不上。故这里内联启动，trap 留在主 shell。
 # 另一个关键：--data-dir 必须是 ~/.agh/data（AGH 主数据目录），传profile 私有目录会抢锁失败。
 echo "== 0. 启动 AGH daemon（真实会话是 P-05 的验收前提）=="
-DAEMON_ENTRY="D:/agnes-harness-main/packages/cli/dist/local/daemon.mjs"
-AGH_DATA_DIR="C:/Users/lenovo/.agh/data"
+DAEMON_ENTRY="$(. "$(dirname "$0")/_env.sh" && pa_agh_daemon_entry || true)"
+[ -n "$DAEMON_ENTRY" ] || { echo "[FATAL] 未找到 AGH daemon 入口（设 PAPER_AGENT_AGH_ROOT 指定 AGH 仓库根）" >&2; exit 1; }
+NODE_BIN="$(. "$(dirname "$0")/_env.sh" && pa_node || true)"
+[ -n "$NODE_BIN" ] || { echo "[FATAL] 未找到 node（AGH 需要 ≥24.10）" >&2; exit 1; }
+AGH_DATA_DIR="${AGH_DATA_DIR:-$(. "$(dirname "$0")/_env.sh" && pa_agh_data_dir)}"
 
 # ⚠️ 必须清掉 WorkBuddy 的 shim 注入，否则 daemon 起来就死：
 #   NODE_OPTIONS=--require=.../node-language-shim.cjs 会加载 safe-delete 守卫，
@@ -81,7 +85,7 @@ unset CODEBUDDY_SAFE_DELETE_BULK_GUARD CODEBUDDY_SAFE_DELETE_SANDBOX \
       CODEBUDDY_SAFE_DELETE_BIN_DIR CODEBUDDY_SAFE_DELETE_ENABLED \
       CODEBUDDY_SAFE_DELETE_BROKER_DELETE 2>/dev/null || true
 
-PATH="/c/Program Files/nodejs:$PATH" NODE_OPTIONS="" "/c/Program Files/nodejs/node.exe" "$DAEMON_ENTRY" \
+PATH="/c/Program Files/nodejs:$PATH" NODE_OPTIONS="" "$NODE_BIN" "$DAEMON_ENTRY" \
   --profile local-dev --workspace "$ROOT" --data-dir "$AGH_DATA_DIR" >"$WORK/daemon.log" 2>&1 &
 DPID=$!
 trap 'kill $DPID 2>/dev/null' EXIT

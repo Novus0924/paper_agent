@@ -35,6 +35,7 @@ import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { resolve, join } from 'node:path'
 import { homedir } from 'node:os'
+import { AGH_MARKER, aghRootCandidates, resolveAghRoot } from './lib/paths.mjs'
 
 const args = process.argv.slice(2)
 const noBrowser = args.includes('--no-browser')
@@ -42,8 +43,10 @@ const bffOnly = args.includes('--bff-only')
 const asJson = args.includes('--json')
 
 const ROOT = resolve(process.env['PAPER_AGENT_ROOT'] ?? process.cwd())
-const AGH_ROOT = process.env['PAPER_AGENT_AGH_ROOT'] ?? 'D:/agnes-harness-main'
-const AGH_CLI = resolve(AGH_ROOT, 'packages/cli/dist/local/agnes.mjs')
+// AGH 根现场探测（写死某台机器的 D:/ 路径会让 `pnpm start` 在别的机器上
+// 报"未找到 AGH 构建产物"，而实际仓库就在本项目同级目录）。
+const AGH_ROOT = resolveAghRoot(ROOT)
+const AGH_CLI = AGH_ROOT ? resolve(AGH_ROOT, AGH_MARKER) : null
 const AGH_HOME = process.env['AGH_HOME'] ?? join(homedir(), '.agh')
 const AGNES_PROFILE = process.env['AGNES_PROFILE'] ?? 'local-dev'
 const BFF_PORT = Number(process.env['PAPER_AGENT_PORT'] ?? 8787)
@@ -265,13 +268,13 @@ async function main() {
   if (bffOnly) {
     info('agh', '按 --bff-only 跳过 AGH 编排')
   } else {
-    if (!existsSync(AGH_CLI)) {
+    if (!AGH_CLI || !existsSync(AGH_CLI)) {
       // §12.1 第1 步：产物缺失 → 给出明确构建提示（自动构建需在 AGH 仓库内执行 pnpm build）
       fail(
         'agh-build',
-        `未找到 AGH 构建产物: ${AGH_CLI}`,
-        `在 AGH 仓库构建： cd "${AGH_ROOT}" && pnpm install && pnpm build ；` +
-          `或用 PAPER_AGENT_AGH_ROOT 指向已构建的 AGH 目录。`,
+        `未找到 AGH 构建产物（已探测：${AGH_ROOT ?? aghRootCandidates(ROOT).join(' | ')}）`,
+        `在 AGH 仓库构建： cd "<AGH 仓库根>" && pnpm install && pnpm build ；` +
+          `或用 PAPER_AGENT_AGH_ROOT 指向已构建的 AGH 目录（约定：与本项目同级目录放 agnes-harness）。`,
       )
       return finish()
     }
@@ -342,6 +345,20 @@ async function main() {
     fail('bff-deps', `未找到 tsx: ${tsxCli}`, '先安装依赖：pnpm install')
     return finish()
   }
+  // 前端探测必须在 BFF **之前**：启动器把自己托管前端的 Origin 追加进 CORS 白名单。
+  // 漏掉它的症状是"JSON 接口正常、SSE 一帧都收不到"（换过 PAPER_AGENT_WEB_PORT +
+  // 直连模式 VITE_API_BASE_URL=http://127.0.0.1:8787 时必现），排查成本极高。
+  const frontend = resolveFrontend()
+  if (frontend && !bffOnly) {
+    const feOrigin = `http://127.0.0.1:${frontend.port}`
+    const extra = (process.env['PAPER_AGENT_CORS_EXTRA_ORIGINS'] ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (!extra.includes(feOrigin)) {
+      process.env['PAPER_AGENT_CORS_EXTRA_ORIGINS'] = [...extra, feOrigin].join(',')
+    }
+  }
   process.env['PAPER_AGENT_PORT'] = String(BFF_PORT)
   spawnChild('bff', node, [tsxCli, 'apps/bff/src/index.ts'])
   try {
@@ -365,16 +382,23 @@ async function main() {
 
   // ---- 步骤 4：前端（不存在则跳过，不阻断）----
   const url = `http://127.0.0.1:${BFF_PORT}`
-  const frontend = resolveFrontend()
+  let uiUrl = url
   if (bffOnly) {
     info('frontend', '按 --bff-only 跳过前端托管')
   } else if (!frontend) {
     info(
       'frontend',
-      '未检测到前端（web/ 或 dist/ 目录不存在）→ 跳过前端托管，不影响后端全流程。\n' +
-        '      本需求文档为后端交付，前端由前端组提供；就绪后重新运行本命令即可自动托管。',
+      `未检测到前端（查过 ${resolve(ROOT, 'web')} 与 ${resolve(ROOT, '..', 'paper-agent-frontend')}）` +
+        '→ 跳过前端托管，不影响后端全流程。\n' +
+        '      接口文档: ' + url + '/api/v1  健康探针: ' + url + '/api/health' +
+        '（BFF 不托管页面，根路径返回 404）',
     )
-    log(`      后端接口文档: ${url}/api/v1  健康探针: ${url}/api/health`)
+  } else if (frontend.kind === 'missing-deps') {
+    info(
+      'frontend',
+      `前端目录已就位但依赖未安装：${frontend.dir}\n` +
+        `      先执行：cd "${frontend.dir}" && npm install，再重新运行本命令。`,
+    )
   } else {
     if (frontend.kind === 'static') {
       // 静态产物：交给 BFF 托管不合适（BFF 只挂 /api），故用最小静态服务器
@@ -394,20 +418,50 @@ async function main() {
           res.end('404')
         }
       })
-      await new Promise((r) => server.listen(frontend.port ?? 5173, '127.0.0.1', r))
-      ok('frontend', `前端静态产物已托管: ${frontend.dir} → http://127.0.0.1:${frontend.port ?? 5173}`)
+      await new Promise((r, rej) => {
+        server.once('error', rej)
+        server.listen(frontend.port, '127.0.0.1', () => r())
+      }).then(
+        () => {
+          uiUrl = `http://127.0.0.1:${frontend.port}`
+          ok('frontend', `前端静态产物已托管: ${frontend.dir} → ${uiUrl}`)
+        },
+        (e) => info('frontend', `静态托管失败：${e.message}（端口 ${frontend.port} 可能已被占用）`),
+      )
     } else {
-      spawnChild('frontend', node, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(frontend.port ?? 5173)], {
+      const feUrl = `http://127.0.0.1:${frontend.port}`
+      spawnChild('frontend', node, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(frontend.port)], {
         cwd: frontend.dir,
       })
-      await new Promise((r) => setTimeout(r, 1500))
-      ok('frontend', `前端开发服务器已启动: http://127.0.0.1:${frontend.port ?? 5173}`)
+      // 原实现是"睡 1500ms 然后宣布已启动"：端口被别的进程占用时 vite 会因 strictPort
+      // 直接退出，界面却收到一句假的成功。改为真探测首页。
+      try {
+        await waitFor(
+          async () => {
+            try {
+              return (await fetch(feUrl, { signal: AbortSignal.timeout(1500) })).ok
+            } catch {
+              return false
+            }
+          },
+          { timeoutMs: 25_000, what: `前端 dev server 就绪（${feUrl}）` },
+        )
+        uiUrl = feUrl
+        ok('frontend', `前端开发服务器已启动: ${feUrl}`)
+      } catch (e) {
+        info(
+          'frontend',
+          `${e.message}\n      端口 ${frontend.port} 可能已被其它 dev server 占用；换端口：set PAPER_AGENT_WEB_PORT=5175`,
+        )
+      }
     }
   }
 
   // ---- 步骤 5：打开浏览器到**唯一 URL** ----
+  // 有前端时开前端；只有后端时开 BFF（BFF 不托管页面，根路径是 404，
+  // 原先无条件开 8787 会让第一次使用的人以为"启动器坏了"）。
   if (!noBrowser) {
-    const target = `http://127.0.0.1:${BFF_PORT}`
+    const target = uiUrl
     const opened = await openBrowser(target)
     log(opened ? `    已打开浏览器: ${target}` : `    请手动打开: ${target}`)
   }
@@ -417,13 +471,29 @@ async function main() {
   if (asJson) process.stdout.write(JSON.stringify({ ok: true, steps, bff: url }, null, 2) + '\n')
 }
 
-/** 检测前端：优先 dev（有 vite 配置）、其次静态产物目录。 */
+/**
+ * 检测前端：本仓库 `web/`（后端 1.0 独立布局）→ 同级 `paper-agent-frontend/`（2.0 整合布局）。
+ * 只认 package.json 会把"前端已就位但依赖没装"变成 spawn 时的 "Cannot find module"，
+ * 看起来像后端启动器坏了，故这里单独给 missing-deps 一档，报清楚该跑哪条命令。
+ */
 function resolveFrontend() {
-  const webDir = resolve(ROOT, 'web')
+  const portEnv = process.env['PAPER_AGENT_WEB_PORT']
+  const candidates = [
+    { dir: resolve(ROOT, 'web'), defaultPort: 5173 },
+    { dir: resolve(ROOT, '..', 'paper-agent-frontend'), defaultPort: 5174 },
+  ]
+  for (const c of candidates) {
+    if (!existsSync(resolve(c.dir, 'package.json'))) continue
+    const port = Number(portEnv ?? c.defaultPort)
+    if (!existsSync(resolve(c.dir, 'node_modules', 'vite', 'bin', 'vite.js'))) {
+      return { kind: 'missing-deps', dir: c.dir, port }
+    }
+    return { kind: 'dev', dir: c.dir, port }
+  }
   const distDir = resolve(ROOT, 'web', 'dist')
-  const port = Number(process.env['PAPER_AGENT_WEB_PORT'] ?? 5173)
-  if (existsSync(resolve(webDir, 'package.json'))) return { kind: 'dev', dir: webDir, port }
-  if (existsSync(resolve(distDir, 'index.html'))) return { kind: 'static', dir: distDir, port }
+  if (existsSync(resolve(distDir, 'index.html'))) {
+    return { kind: 'static', dir: distDir, port: Number(portEnv ?? 5173) }
+  }
   return null
 }
 

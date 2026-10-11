@@ -7,6 +7,7 @@
  * 退出码：0 全绿 / 2 有可继续告警 / 1 有阻断。
  */
 
+import { AGH_MARKER, aghRootCandidates, resolveAghRoot, workbuddyPythonPaths } from './lib/paths.mjs'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -49,8 +50,9 @@ function run(cmd, argv, opts = {}) {
 }
 
 const ROOT = resolve(process.env['PAPER_AGENT_ROOT'] ?? process.cwd())
-const AGH_ROOT = process.env['PAPER_AGENT_AGH_ROOT'] ?? 'D:/agnes-harness-main'
-const AGH_CLI = resolve(AGH_ROOT, 'packages/cli/dist/local/agnes.mjs')
+// 同 start.mjs：AGH 根靠探测，不写死某台机器的路径
+const AGH_ROOT = resolveAghRoot(ROOT)
+const AGH_CLI = AGH_ROOT ? resolve(AGH_ROOT, AGH_MARKER) : null
 const BFF_PORT = Number(process.env['PAPER_AGENT_PORT'] ?? 8787)
 /** AGH home（发现文件与包锁都在此处）。提前定义：下方多处检查项都要用。 */
 const AGH_HOME = process.env['AGH_HOME'] ?? join(homedir(), '.agh')
@@ -82,7 +84,7 @@ async function main() {
     'python',
     'python3',
     'py',
-    'C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe',
+    ...workbuddyPythonPaths(),
   ].filter(Boolean)
   let py = pyCandidates[0]
   let pyProbe = { status: null, out: '', err: '' }
@@ -131,8 +133,20 @@ async function main() {
   add('runs', '运行目录可写', writable ? 'ok' : 'fail', runsDir, writable ? undefined : '请检查目录权限或更换 PAPER_AGENT_ROOT。', !writable)
 
   // 5. AGH 仓库与构建产物
-  const cliExists = existsSync(AGH_CLI)
-  add('agh', 'AGH 仓库与构建产物', cliExists ? 'ok' : 'warn', AGH_CLI, cliExists ? undefined : '未找到 AGH 构建产物。请设置 PAPER_AGENT_AGH_ROOT，或在 AGH 仓库执行构建（详见 AGH install 文档）。AGH 缺失时任务无法执行，但 BFF 可启动。')
+  const cliExists = Boolean(AGH_CLI) && existsSync(AGH_CLI)
+  add(
+    'agh',
+    'AGH 仓库与构建产物',
+    cliExists ? 'ok' : 'warn',
+    AGH_CLI ?? `未探测到（已尝试：${aghRootCandidates(ROOT).join(' | ')}）`,
+    cliExists
+      ? undefined
+      : '未找到 AGH 构建产物。请把 AGH 仓库放在与本项目同级目录并执行构建，或用 PAPER_AGENT_AGH_ROOT 指向已构建的 AGH 目录（详见 AGH install 文档）。' +
+        // 实测订正：原写成"AGH 缺失时…但 BFF 可启动"。真正可缺的是 **daemon**（BFF 起来后
+        // health 显示 degraded，建任务时再连）；AGH **构建产物**是 config 必需项，
+        // 缺失时 loadConfig 直接 fail-fast，BFF 根本起不来。
+        '注意：AGH 构建产物缺失时 BFF 会启动失败（config fail-fast）；只有 daemon 未运行才不影响启动（health 降级为 degraded）。',
+  )
 
   // 6. AGH daemon 运行中（**零副作用**：只读发现文件，不执行任何 CLI）
   //
@@ -266,7 +280,7 @@ async function main() {
   )
 
   // 12. 数据源连通性（含代理，§12.2）—— 零网络，只查源定义/代理/冻结语料就位情况
-  const ds = probeDataSources(ROOT)
+  const ds = await probeDataSources(ROOT, py)
   add(
     'datasources',
     '数据源连通性',
@@ -464,23 +478,44 @@ function inspectModelConfig(aghHome, profile) {
  * 发请求会带来三个问题：①拖慢启动（每个源都要等超时）②在受限网络下把环境问题
  * 误报成项目问题 ③可能真的抓下数据，产生副作用。
  *
- * 故这里只做**零网络**的检查：源定义是否就位 + 代理是否配置 + 冻结语料是否可用。
- * 真正的连通性由内核 resilience 层在运行时处理（429/5xx 重试、降级回退冻结语料），
- * 其行为由 scripts/verify-degrade.sh 验收，不在 doctor 里重复验证。
+ * 源定义的**单一真源是内核的 Source SPI 注册表**（kernel/sciret_kernel/sources.py 的 REGISTRY）。
+ * 早先这里用正则去扫 `kernel/tools/fetch_corpus.py` 里的"源名 → URL"字面量表 ——
+ * SPI 重构后引擎不再认识具体源，那张表根本不存在了，于是 doctor **恒报**
+ * "未解析到在线源定义"，把真实可用的 crossref/openalex 说成没配（假告警）。
+ * 现在直接问注册表：`build_url()` 只拼字符串，`transport()` 才发请求，这里不调用它，
+ * 所以零网络这条约束仍然成立。
  */
-function probeDataSources(root) {
-  const fetchTool = resolve(root, 'kernel/tools/fetch_corpus.py')
-  if (!existsSync(fetchTool)) {
-    return { status: 'warn', detail: `未找到 ${fetchTool}`, hint: '内核检索工具缺失，在线检索不可用（冻结语料仍可用）。' }
+const SOURCES_PROBE_PY = [
+  'import json',
+  'from sciret_kernel import sources as s',
+  'print(json.dumps([{"name": n, "endpoint": s.get(n).build_url("probe", 1).split("?")[0]} for n in s.known_sources()]))',
+].join('\n')
+
+async function probeDataSources(root, py) {
+  const spi = resolve(root, 'kernel', 'sciret_kernel', 'sources.py')
+  if (!existsSync(spi)) {
+    return { status: 'warn', detail: `未找到 ${spi}`, hint: '内核 Source SPI 缺失，在线检索不可用（冻结语料仍可用）。' }
   }
+  /** @type {Array<{name:string, endpoint:string}>} */
   let declared = []
-  try {
-    const src = readFileSync(fetchTool, 'utf8')
-    // 只读源定义表，不 import —— import 会带来网络/副作用
-    const m = src.match(/=\s*\{\s*([\s\S]*?)\n\}/)
-    if (m) declared = [...m[1].matchAll(/"([a-z0-9_-]+)":\s*"https?:/gi)].map((x) => x[1])
-  } catch {
-    /* 读不到就当没解析出，不假装通过 */
+  let probeError = ''
+  if (!py) {
+    probeError = '无可用 Python 解释器'
+  } else {
+    const r = await run(py, ['-c', SOURCES_PROBE_PY], {
+      cwd: root,
+      env: { ...process.env, PYTHONPATH: resolve(root, 'kernel') },
+      timeoutMs: 20000,
+    })
+    if (r.status === 0) {
+      try {
+        declared = JSON.parse(r.out.trim())
+      } catch (e) {
+        probeError = `注册表输出解析失败：${e instanceof Error ? e.message : String(e)}`
+      }
+    } else {
+      probeError = `内核探测失败：${(r.err || r.out || `退出码 ${r.status}`).trim().split('\n').slice(-1)[0]}`
+    }
   }
   const proxy = process.env['HTTP_PROXY'] || process.env['HTTPS_PROXY'] || process.env['http_proxy'] || process.env['https_proxy']
   // 冻结语料的真实位置由内核定义：kernel/sciret_kernel/corpus.py → CORPUS_DIR = <包目录>/corpus
@@ -488,7 +523,9 @@ function probeDataSources(root) {
   const corpusDir = resolve(root, 'kernel/sciret_kernel/corpus')
   const corpus = existsSync(corpusDir)
   const bits = [
-    declared.length > 0 ? `在线源 ${declared.length} 个（${declared.join(',')}）` : '未解析到在线源定义',
+    declared.length > 0
+      ? `在线源 ${declared.length} 个（${declared.map((d) => `${d.name}→${d.endpoint}`).join(' ')}）`
+      : `未取到内核注册的源（${probeError}）`,
     proxy ? `代理已配置（${proxy.replace(/:\/\/[^@/]*@/, '://***@')}）` : '未配置代理',
     corpus ? '冻结语料已就位（可离线运行）' : '未找到冻结语料目录',
   ]
@@ -498,7 +535,8 @@ function probeDataSources(root) {
     hint:
       declared.length > 0
         ? undefined
-        : '若需在线检索，请确认 kernel/tools/fetch_corpus.py 的源定义表完整；离线场景依赖冻结语料。',
+        : `请确认内核可用（${probeError}）：注册表在 kernel/sciret_kernel/sources.py 的 REGISTRY，` +
+          `解释器由 PAPER_AGENT_PYTHON 指定；离线场景依赖冻结语料。`,
   }
 }
 

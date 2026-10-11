@@ -12,18 +12,27 @@
 #   bash agh.sh sessions --json | export <session_id> --format agnes -o out.jsonl
 set -euo pipefail
 
-AGH_ENTRY="D:/agnes-harness-main/packages/cli/dist/local/agnes.mjs"
-PROJ_ROOT="D:/workBubbyStore/paper-agent-2"
-PY_BIN="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+# 路径/解释器全部现场探测（见 scripts/_env.sh）。
+# 这里原先写死某台开发机的 D:/ 与 C:/Users/lenovo 路径，README 的第 2、3 步
+# 在别的机器上会直接 `cd: No such file or directory`。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/_env.sh
+. "$SCRIPT_DIR/scripts/_env.sh"
 
-NODE_BIN=""
-for candidate in "C:/Program Files/nodejs/node.exe" \
-                 "C:/Users/lenovo/.workbuddy/binaries/node/versions/24.21.0-1/node.exe" \
-                 "C:/Users/lenovo/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"; do
-  if [ -x "$candidate" ]; then NODE_BIN="$candidate"; break; fi
-done
-if [ -z "$NODE_BIN" ]; then NODE_BIN="$(command -v node || true)"; fi
+PROJ_ROOT="$(pa_proj_root)"
+PROJ_ROOT_WIN="$(pa_win "$PROJ_ROOT")"
+AGH_ENTRY="$(pa_agh_entry)" || {
+  echo "[agh.sh] ❌ 未找到 AGH 构建产物（packages/cli/dist/local/agnes.mjs）。" >&2
+  echo "         请设置 PAPER_AGENT_AGH_ROOT 指向 AGH 仓库根，或把 AGH 放在本项目同级目录。" >&2
+  exit 1
+}
+
+NODE_BIN="$(pa_node || true)"
 if [ -z "$NODE_BIN" ]; then echo "[agh.sh] 找不到 node（需要 ≥24.10）" >&2; exit 1; fi
+
+PY_BIN="$(pa_python || true)"
+if [ -z "$PY_BIN" ]; then echo "[agh.sh] 找不到 Python（内核需要 ≥3.10；可用 PAPER_AGENT_PYTHON 指定）" >&2; exit 1; fi
+PY_BIN="$(pa_win "$PY_BIN")"
 
 # 起飞前自检：AGH 入口若未被当作主模块执行，会"零输出 + 退出码 0"，这里当场暴露
 if [ "${AGH_SKIP_SELFTEST:-0}" != "1" ]; then
@@ -37,8 +46,10 @@ fi
 
 cd "$PROJ_ROOT"
 export PAPER_AGENT_PYTHON="${PAPER_AGENT_PYTHON:-$PY_BIN}"
-export PAPER_AGENT_KERNEL_ROOT="${PAPER_AGENT_KERNEL_ROOT:-$PROJ_ROOT/kernel}"
-export PAPER_AGENT_RUNS_DIR="${PAPER_AGENT_RUNS_DIR:-$PROJ_ROOT/runs}"
-export PAPER_AGENT_ROOT="${PAPER_AGENT_ROOT:-$PROJ_ROOT}"
+export PAPER_AGENT_KERNEL_ROOT="${PAPER_AGENT_KERNEL_ROOT:-$PROJ_ROOT_WIN/kernel}"
+export PAPER_AGENT_RUNS_DIR="${PAPER_AGENT_RUNS_DIR:-$PROJ_ROOT_WIN/runs}"
+export PAPER_AGENT_ROOT="${PAPER_AGENT_ROOT:-$PROJ_ROOT_WIN}"
+# BFF 与插件都按同一个 AGH 根解析（config.ts 的候选探测在此变成显式值）
+export PAPER_AGENT_AGH_ROOT="${PAPER_AGENT_AGH_ROOT:-$(pa_win "$(pa_agh_root)")}"
 
 exec "$NODE_BIN" "$AGH_ENTRY" "$@"

@@ -48,6 +48,9 @@ export default tseslint.config(
         clearInterval: 'readonly',
         fetch: 'readonly',
         AbortController: 'readonly',
+        // Node 17.3+ 起有 `AbortSignal.timeout()`，本项目要求 ≥24.10，可安全使用。
+        // 用途：给探测类 fetch 加超时，避免 waitFor 被"接了 TCP 但不回话"的进程吊死。
+        AbortSignal: 'readonly',
       },
       parserOptions: {
         // ⚠️ 必须显式指向**检查期** tsconfig（含 test/ 与 scripts/），

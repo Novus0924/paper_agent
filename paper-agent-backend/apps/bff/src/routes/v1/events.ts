@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import type { AppContext } from '../../app.js'
 import { validateTaskId } from '../../infra/validate.js'
+import { allowedOrigins, corsHeaders } from '../../infra/cors.js'
 import { ApiError } from '../../infra/errors.js'
 import type { RelayEvent } from '../../events/model.js'
 
@@ -48,6 +49,10 @@ export function registerEventsRoute(app: FastifyInstance, ctx: AppContext): void
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      // hijack 之后 app 级 onRequest 钩子设的头不会出现在这条响应上，
+      // 跨域 EventSource 会在"连接成功但收不到帧"的形态下静默失败，
+      // 所以 SSE 必须自己按同一份白名单回头。
+      ...corsHeaders(req.headers.origin, allowedOrigins()),
     })
     reply.raw.write('retry: 2000\n\n')
 

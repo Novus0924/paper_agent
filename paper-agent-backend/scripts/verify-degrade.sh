@@ -11,7 +11,7 @@ export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:$PATH"
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export PATH="/c/Program Files/nodejs:/c/Windows/System32:/c/Windows:${PATH:-}"
-for d in /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/lenovo/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
+for d in /c/Users/*/.workbuddy/binaries/PortableGit/versions/*/usr/bin /c/Users/*/.workbuddy/binaries/PortableGit/versions/*/mingw64/bin; do
   [ -d "$d" ] && export PATH="$d:$PATH"
 done
 hash -r 2>/dev/null || true
@@ -25,7 +25,8 @@ for c in curl node; do
   command -v "$c" >/dev/null || { echo "[FATAL] 未找到 $c"; exit 1; }
 done
 ROOT=$(pwd -W 2>/dev/null || pwd)
-PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$(. "$(dirname "$0")/_env.sh" && pa_python || true)"
+[ -n "$PY" ] || { echo "[FATAL] 未找到 Python（内核需要 ≥3.10，可用 PAPER_AGENT_PYTHON 指定）" >&2; exit 1; }
 WORK="$ROOT/data/_m5"
 rm -rf "$WORK"; mkdir -p "$WORK"
 
