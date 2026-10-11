@@ -4,7 +4,7 @@ import type { Logger } from './infra/logger.js'
 import { ApiError, errorBody } from './infra/errors.js'
 import type { AgnesGateway } from './agh/gateway.js'
 import type { TaskIndex } from './store/task-index.js'
-import { ExecutionService } from './services/execution.js'
+import { type ExecutionService } from './services/execution.js'
 import type { EventRelay } from './events/relay.js'
 import type { ReportService } from './services/report.js'
 import type { ExportService } from './export/service.js'
@@ -91,6 +91,8 @@ export function buildApp(ctx: AppContext): FastifyInstance {
     reply.code(500).send({ error: '服务器内部错误，请查看服务端日志。', code: 'INTERNAL' })
   })
 
+  // async 是 Fastify handler 约定（可返回 Promise）；此处纯同步返回，无 await 属正常
+  // eslint-disable-next-line @typescript-eslint/require-await
   app.get('/api', async () => ({
     service: 'paper-agent-bff',
     docs: 'REST + SSE；统一前缀 /api/v1；健康探针 /api/health',

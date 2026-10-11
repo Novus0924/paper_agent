@@ -2,9 +2,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { AgnesGateway } from '../agh/gateway.js'
 import type { Logger } from '../infra/logger.js'
-import type { TaskIndex, TaskRecord } from '../store/task-index.js'
+import type { TaskIndex } from '../store/task-index.js'
 import { EventBus } from '../events/bus.js'
 import type { RelayEvent, RelayEventInput } from '../events/model.js'
+import { asText } from '../infra/coerce.js'
 
 /**
  * Event Relay（BE-06，需求文档 §5 / §9.3）：
@@ -116,9 +117,9 @@ export class EventRelay {
     const d = (data ?? {}) as Record<string, unknown>
     switch (type) {
       case 'tool/call': {
-        const tool = String(d['name'] ?? '')
+        const tool = asText(d['name'])
         if (!tool) return
-        const toolUseId = String(d['toolUseId'] ?? '')
+        const toolUseId = asText(d['toolUseId'])
         // 记录 toolUseId → 工具名：内核部分工具（run_all/status/verify）的返回不含 tool 字段
         if (toolUseId) this.toolNames.set(toolUseId, tool)
         this.bus.publish(taskId, {
@@ -132,7 +133,7 @@ export class EventRelay {
         return
       }
       case 'tool/result': {
-        const toolUseId = String(d['toolUseId'] ?? '')
+        const toolUseId = asText(d['toolUseId'])
         const structured = (d['structured'] ?? {}) as Record<string, unknown>
         const isError = d['isError'] === true
         const sciretTool = typeof structured['tool'] === 'string' ? String(structured['tool']) : ''
@@ -162,13 +163,17 @@ export class EventRelay {
           .filter((c) => c?.type === 'text' && typeof c.text === 'string')
           .map((c) => c.text)
           .join('')
+        // requestSeq 可能是数字，也可能是 AGH 给的字符串；两种都要正确取文本，
+        // 但绝不能让它以 '[object Object]' 的形式混进 turn_id（那是审计字段）。
+        const seqText = asText(d['requestSeq'], '0')
         if (!text) return
-        this.bus.publish(taskId, { type: 'message', id: `${String(d['requestSeq'] ?? 0)}`, turn_id: String(d['requestSeq'] ?? 0), role: 'assistant', text, status: 'done' })
+        this.bus.publish(taskId, { type: 'message', id: seqText, turn_id: seqText, role: 'assistant', text, status: 'done' })
         return
       }
       case 'approval/decided': {
         const toolCall = (d['toolCall'] ?? {}) as Record<string, unknown>
-        const decision = String((d['decision'] as Record<string, unknown> | undefined)?.['outcome'] ?? d['outcome'] ?? '')
+        // outcome 优先从 decision 对象里取；两者都可能是任意类型 → 用 asText 兜底
+        const decision = asText((d['decision'] as Record<string, unknown> | undefined)?.['outcome']) || asText(d['outcome'])
         this.bus.publish(taskId, {
           type: 'activity',
           step: '-',
@@ -271,8 +276,8 @@ export class EventRelay {
         const r = JSON.parse(line) as Record<string, unknown>
         if (r['record_type'] !== 'conclusion') continue
         out.push({
-          cid: String(r['cid'] ?? ''),
-          text: String(r['text'] ?? ''),
+          cid: asText(r['cid']),
+          text: asText(r['text']),
           evidence_ids: Array.isArray(r['evidence_ids']) ? (r['evidence_ids'] as string[]) : [],
         })
       }

@@ -20,14 +20,20 @@
     "start": "node scripts/start.mjs",
     "typecheck": "tsc -p apps/bff/tsconfig.check.json",
     "test": "vitest run --project fast",
+    "lint": "eslint apps/bff/src apps/bff/test apps/bff/scripts scripts",
+    "lint:fix": "eslint --fix apps/bff/src apps/bff/test apps/bff/scripts scripts",
     "quality-gate": "bash scripts/quality-gate.sh",
     "dod": "bash scripts/verify-dod.sh",
-    "dod:quick": "bash scripts/verify-dod.sh --quick"
+    "dod:quick": "bash scripts/verify-dod.sh --quick",
+    "lint:strict": "eslint --max-warnings 0 apps/bff/src apps/bff/test apps/bff/scripts scripts"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^24.10.0",
+    "eslint": "^9.39.5",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
+    "typescript-eslint": "^8.71.1",
     "vitest": "^3.2.0"
   }
 }

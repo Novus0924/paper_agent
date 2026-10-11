@@ -27,7 +27,10 @@ export function registerV1Routes(
 ): void {
   app.register(
     async (v1) => {
-      await registerTasksRoutes(v1, ctx)
+      // 注意：这些 register* 都同步返回 void，不要加 await——
+      // 加了会让读者以为它们是异步的（其实返回 undefined，await 只是白等一个微任务）。
+      // 异步的是 Fastify 自己的 plugin 机制，不需要在这里表达。
+      registerTasksRoutes(v1, ctx)
       registerExecutionRoutes(v1, ctx, exec)
       registerEventsRoute(v1, ctx)
       registerReportRoutes(v1, ctx, reports)

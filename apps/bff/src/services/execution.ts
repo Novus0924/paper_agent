@@ -285,10 +285,10 @@ export class ExecutionService {
     for (const step of state.steps ?? []) {
       const mine = task.steps.find((s) => s.id === step.id)
       if (!mine) continue
-      mine.status = step.status as StepStatus
+      mine.status = step.status
       mine.attempts = step.attempts ?? mine.attempts
     }
-    task.run_status = (state.run_status ?? task.run_status) as RunStatus
+    task.run_status = (state.run_status ?? task.run_status)
     task.degraded = Boolean(state.degraded ?? task.degraded)
     if (state.degraded_reasons?.length) task.degraded_reasons = state.degraded_reasons
     if (state.source_status && Object.keys(state.source_status).length) {

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Logger } from '../infra/logger.js'
 import type { TaskIndex } from '../store/task-index.js'
+import { asText } from '../infra/coerce.js'
 
 /**
  * 报告与证据只读服务（BE-08 报告聚合 / BE-09 证据只读，需求 §8.1 接口 10–13、§8.2、§9.5、§9.6）。
@@ -167,16 +168,16 @@ export class ReportService {
       .map((r) => {
         const ref = (r.data['ref'] ?? {}) as Record<string, unknown>
         return {
-          ev_id: String(r.data['ev_id'] ?? ''),
-          tier: String(r.data['tier'] ?? ''),
-          kind: String(r.data['kind'] ?? ''),
-          title: String(r.data['title'] ?? ''),
-          producer_step: String(r.data['producer_step'] ?? ''),
+          ev_id: asText(r.data['ev_id']),
+          tier: asText(r.data['tier']),
+          kind: asText(r.data['kind']),
+          title: asText(r.data['title']),
+          producer_step: asText(r.data['producer_step']),
           doi: (ref['doi'] as string) || null,
           authors: Array.isArray(ref['authors']) ? (ref['authors'] as unknown[]).map(String) : [],
           year: (ref['year'] as number | string) ?? null,
-          venue: String(ref['venue'] ?? ''),
-          source: String(ref['source'] ?? ''),
+          venue: asText(ref['venue']),
+          source: asText(ref['source']),
           sha256: (ref['sha256'] as string) ?? (r.data['sha256'] as string) ?? null,
           at: r.at,
           chain_hash: r.chain_hash,
@@ -186,11 +187,15 @@ export class ReportService {
     const conclusions = records
       .filter((r) => r.record_type === 'conclusion')
       .map((r) => ({
-        cid: String(r.data['cid'] ?? ''),
-        text: String(r.data['text'] ?? ''),
-        evidence_ids: Array.isArray(r.data['evidence_ids']) ? (r.data['evidence_ids'] as unknown[]).map(String) : [],
-        confidence: String(r.data['confidence'] ?? 'medium'),
-        producer_step: String(r.data['producer_step'] ?? ''),
+        cid: asText(r.data['cid']),
+        text: asText(r.data['text']),
+        // ⚠️ 不用 `.map(String)`：元素是 unknown，对象元素会变成 '[object Object]' 且不报错。
+        //    证据 ID 必须是可读的原子值，否则报告里的 `[EV-0001]` 会变成 `[EV-[object Object]]`。
+        evidence_ids: Array.isArray(r.data['evidence_ids'])
+          ? (r.data['evidence_ids'] as unknown[]).map((x) => asText(x))
+          : [],
+        confidence: asText(r.data['confidence'], 'medium'),
+        producer_step: asText(r.data['producer_step']),
         at: r.at,
       }))
 
@@ -199,13 +204,13 @@ export class ReportService {
       .map((r) => ({
         seq: r.seq,
         at: r.at,
-        summary: String(r.data['summary'] ?? r.data['dimension'] ?? '判断'),
+        summary: asText(r.data['summary']) || asText(r.data['dimension']) || '判断',
         data: r.data,
       }))
 
     const notes = records
       .filter((r) => r.record_type === 'note')
-      .map((r) => ({ seq: r.seq, at: r.at, text: String(r.data['text'] ?? '') }))
+      .map((r) => ({ seq: r.seq, at: r.at, text: asText(r.data['text']) }))
 
     const rec = this.index.get(taskId)
     return {
@@ -238,7 +243,7 @@ export class ReportService {
 
     const records = this.readLedger(taskId)
     const evidence = records.filter((r) => r.record_type === 'evidence')
-    const byId = evidence.find((r) => String(r.data['ev_id'] ?? '') === ev)
+    const byId = evidence.find((r) => asText(r.data['ev_id']) === ev)
 
     if (byId) return { found: true, citation: this.toCitation(byId) }
 
@@ -248,20 +253,20 @@ export class ReportService {
       const hit = evidence.find((r) => {
         const ref = (r.data['ref'] ?? {}) as Record<string, unknown>
         const candidates = [ref['sha256'], r.data['sha256'], r.chain_hash]
-        return candidates.some((c) => typeof c === 'string' && (c as string).toLowerCase().startsWith(lower))
+        return candidates.some((c) => typeof c === 'string' && (c).toLowerCase().startsWith(lower))
       })
       if (hit) return { found: true, citation: { ...this.toCitation(hit), matched_by: 'sha256_prefix' } }
       return {
         found: false,
         reason: `未找到哈希前缀匹配的证据（${ev}…）`,
-        available: evidence.slice(0, 20).map((r) => String(r.data['ev_id'] ?? '')),
+        available: evidence.slice(0, 20).map((r) => asText(r.data['ev_id'])),
       }
     }
 
     return {
       found: false,
       reason: `未找到证据 ${ev}（请使用 EV-#### 编号或 ≥6 位哈希前缀）`,
-      available: evidence.slice(0, 20).map((r) => String(r.data['ev_id'] ?? '')),
+      available: evidence.slice(0, 20).map((r) => asText(r.data['ev_id'])),
     }
   }
 
@@ -269,18 +274,18 @@ export class ReportService {
     const ref = (rec.data['ref'] ?? {}) as Record<string, unknown>
     const derivedFrom = ref['derived_from'] as string | undefined
     return {
-      ev_id: String(rec.data['ev_id'] ?? ''),
-      tier: String(rec.data['tier'] ?? ''),
-      kind: String(rec.data['kind'] ?? ''),
-      title: String(rec.data['title'] ?? ''),
-      producer_step: String(rec.data['producer_step'] ?? ''),
-      doi: (ref['doi'] as string) || null,
+      ev_id: asText(rec.data['ev_id']),
+      tier: asText(rec.data['tier']),
+      kind: asText(rec.data['kind']),
+      title: asText(rec.data['title']),
+      producer_step: asText(rec.data['producer_step']),
+      doi: (ref['doi']) || null,
       authors: Array.isArray(ref['authors']) ? (ref['authors'] as unknown[]).map(String) : derivedFrom ? [derivedFrom] : [],
-      year: (ref['year'] as number | string) ?? null,
-      venue: String(ref['venue'] ?? ''),
-      source: String(ref['source'] ?? ''),
-      file: (ref['file'] as string) || null,
-      sha256: (ref['sha256'] as string) ?? (rec.data['sha256'] as string) ?? null,
+      year: (ref['year']) ?? null,
+      venue: asText(ref['venue']),
+      source: asText(ref['source']),
+      file: (ref['file']) || null,
+      sha256: (ref['sha256']) ?? (rec.data['sha256']) ?? null,
       chain_hash: rec.chain_hash,
       seq: rec.seq,
       at: rec.at,
@@ -312,10 +317,10 @@ export class ReportService {
             const { seq, record_type, chain_hash, at, ...data } = obj
             out.push({
               seq: Number(seq ?? 0),
-              record_type: String(record_type ?? ''),
-              chain_hash: String(chain_hash ?? ''),
-              at: String(at ?? ''),
-              data: data as Record<string, unknown>,
+              record_type: asText(record_type),
+              chain_hash: asText(chain_hash),
+              at: asText(at),
+              data: data,
             })
           } catch {
             // 半截行（追加写崩溃残留）不采信，也不让整份账本解析失败

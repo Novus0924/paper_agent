@@ -8,6 +8,7 @@ import {
 import { readDaemonDiscovery, resolveDaemonScope, type DaemonScope } from '@agnes/daemon'
 import type { Logger } from '../infra/logger.js'
 import { ApiError } from '../infra/errors.js'
+import { asText } from '../infra/coerce.js'
 
 /**
  * Session Gateway（BE-04，端口 + AGH 适配器）：
@@ -68,13 +69,17 @@ export class AgnesGateway {
       const call = req.toolCall ?? {}
       if (!logged) {
         logged = true
+        // JSON.stringify 后再截断：对象以结构化形式落日志（可读且不会变成 [object Object]）。
         this.log.info('审批请求样例（仅首个）', { toolCall: JSON.stringify(call).slice(0, 400) })
       }
       const raw = (call['rawInput'] ?? {}) as Record<string, unknown>
-      const title = String(call['title'] ?? '')
-      const name = String(raw['name'] ?? call['name'] ?? title)
-      const args = (raw['arguments'] && typeof raw['arguments'] === 'object' ? (raw['arguments'] as Record<string, unknown>) : raw) as Record<string, unknown>
-      const runDir = String(args['run_dir'] ?? '').replace(/\\/g, '/').toLowerCase()
+      const title = asText(call['title'])
+      // ⚠️ asText 逐级兜底而不是 `String(a ?? b ?? c)`：
+//后两者都可能是对象，`String` 会静默产出 '[object Object]' 并混进工具名，
+// 让事件里的 tool 字段变成垃圾且**不报错**（事件是审计对象，污染它等于污染账本视图）。
+      const name = asText(raw['name']) || asText(call['name']) || title
+      const args = (raw['arguments'] && typeof raw['arguments'] === 'object' ? (raw['arguments'] as Record<string, unknown>) : raw)
+      const runDir = asText(args['run_dir']).replace(/\\/g, '/').toLowerCase()
       const locations = Array.isArray(call['locations'])
         ? (call['locations'] as Array<{ path?: string }>).map((l) => String(l?.path ?? '').replace(/\\/g, '/').toLowerCase())
         : []
@@ -247,7 +252,7 @@ export class AgnesGateway {
         out.push({ seq: ev.seq, type: ev.type, data: ev.data ?? ev })
       }
     } finally {
-      await iterator.return?.(undefined as never).catch(() => undefined)
+      await iterator.return?.(undefined).catch(() => undefined)
     }
     return out
   }

@@ -123,7 +123,7 @@ beforeEach(async () => {
   const stubCtx = { index, cfg: { runsDir } } as unknown as AppContext
   app = Fastify({ logger: false })
   app.setErrorHandler((err, _req, reply) => {
-    const e = err as unknown as { code?: string; status?: number; message?: string }
+    const e = err as { code?: string; status?: number; message?: string }
     if (e && typeof e.code === 'string' && typeof e.status === 'number') {
       reply.code(e.status).send(errorBody(err as never))
       return

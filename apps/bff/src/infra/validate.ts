@@ -63,16 +63,23 @@ export function validateEnum<T extends string>(
   }
 }
 
+// ⚠️ 诊断信息必须能显示"用户到底传了什么"。
+// `String(item)` 对对象/数组会产出 '[object Object]'，让这条提示彻底失去诊断价值
+// （用户看到"已丢弃 [object Object]"根本不知道该改什么）。
+// 故这里显式区分类型。
+const describe = (v: unknown): string =>
+  typeof v === 'string' ? v : `${typeof v}:${JSON.stringify(v)?.slice(0, 40) ?? String(v)}`
+
 /** sources[] 数组校验：去重、保序、剔除非法项并告知 */
 export function validateSources(raw: unknown, allowed: readonly string[]): { value: string[]; dropped: string[] } {
   if (raw === undefined || raw === null) return { value: [], dropped: [] }
-  if (!Array.isArray(raw)) return { value: [], dropped: [String(raw)] }
+  if (!Array.isArray(raw)) return { value: [], dropped: [describe(raw)] }
   const seen = new Set<string>()
   const value: string[] = []
   const dropped: string[] = []
   for (const item of raw) {
     if (typeof item !== 'string' || !allowed.includes(item)) {
-      dropped.push(String(item))
+      dropped.push(describe(item))
       continue
     }
     if (seen.has(item)) continue

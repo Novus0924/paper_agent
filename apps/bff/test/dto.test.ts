@@ -8,14 +8,12 @@ import {
   findLeakedAuditFields,
   isAuditKey,
   parseViewLevel,
-  respond,
   stripAuditFields,
 } from '../src/http/dto.js'
 import { TaskIndex } from '../src/store/task-index.js'
 import { createLogger } from '../src/infra/logger.js'
 import { errorBody } from '../src/infra/errors.js'
 import { registerReportRoutes } from '../src/routes/v1/report.js'
-import type { ReportService } from '../src/services/report.js'
 import type { AppContext } from '../src/app.js'
 
 /**
@@ -121,7 +119,7 @@ beforeEach(async () => {
   const stubCtx = { index, cfg: { runsDir: resolve(tmp, 'runs') } } as unknown as AppContext
   app = Fastify({ logger: false })
   app.setErrorHandler((err, _req, reply) => {
-    const e = err as unknown as { code?: string; status?: number }
+    const e = err as { code?: string; status?: number }
     if (e && typeof e.code === 'string' && typeof e.status === 'number') {
       reply.code(e.status).send(errorBody(err as never))
       return
@@ -129,7 +127,7 @@ beforeEach(async () => {
     reply.code(500).send({ error: String((err as Error)?.message ?? err), code: 'INTERNAL' })
   })
   await app.register(
-    async (v1) => registerReportRoutes(v1 as never, stubCtx, reports as unknown as ReportService),
+    async (v1) => registerReportRoutes(v1 as never, stubCtx, reports),
     { prefix: '/api/v1' },
   )
   await app.ready()

@@ -56,9 +56,41 @@ export interface Client {
     rename(sessionId: string, title: string): Promise<unknown>
   }
   workspace: {
-    add(path: string): Promise<unknown>
+  add(path: string): Promise<unknown>
     list(): Promise<{ items: Array<{ path: string }> }>
   }
+  /**
+   * 包管理（插件安装/信任/启用）。
+   *
+   * 运行时已实测可用（apps/bff/scripts/install-plugin.ts 靠它完成安装→信任→启用→终验），
+   * 且 test/contract.test.ts 会在运行期校验这些方法真实存在——
+   * 即"声明与运行期一致性"由测试保障，不是靠我这份手写声明自说自话。
+   *
+   * 参数形状保持宽松（Record/未知），因为 AGH 可能增删字段；
+   * 一旦需要精确类型，应从 AGH 的真实 .d.ts 派生而不是在这里猜。
+   */
+  packages: {
+    list(o?: Record<string, unknown>): Promise<unknown>
+    /** 查看来源信息（安装前确认 source 形状，脚本用它做终验） */
+    inspect(o: Record<string, unknown>): Promise<Record<string, unknown>>
+    /** 安装（等价于 Web「从来源安装」通道） */
+    install(o: Record<string, unknown>): Promise<{ operationId?: string; state?: string; [k: string]: unknown }>
+    remove(o: Record<string, unknown>): Promise<{ operationId?: string; state?: string; [k: string]: unknown }>
+    trust(o: Record<string, unknown>): Promise<{ operationId?: string; state?: string; [k: string]: unknown }>
+    enable(o: Record<string, unknown>): Promise<{ operationId?: string; state?: string; [k: string]: unknown }>
+    disable(o: Record<string, unknown>): Promise<{ operationId?: string; state?: string; [k: string]: unknown }>
+    status?(o?: Record<string, unknown>): Promise<unknown>
+    operation: {
+      get(o: { profile?: string; operationId?: string; clientId?: string }): Promise<{
+        state?: string
+        progress?: number
+        error?: string
+        result?: unknown
+      }>
+    }
+  }
+  /** daemon 分配的客户端标识（包管理调用必须带它做审计归属） */
+  clientId(): Promise<string>
 }
 
 export type TransportOption =

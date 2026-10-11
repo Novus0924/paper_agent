@@ -42,8 +42,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 类型检查（tsc）
+      - name: 类型检查（tsc，含 test/scripts）
         run: pnpm typecheck
+
+      - name: Lint（eslint，类型感知；0 error）
+        # §15「CI 质量门：类型检查 + Lint + 构建 + 测试」、§16「通过类型/Lint/构建」。
+        # 此前 CI 与 quality-gate 都**没有** Lint 环节，本步补上。
+        run: pnpm lint
 
       - name: BFF 单测 + 契约测试
         run: pnpm test

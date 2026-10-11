@@ -34,19 +34,34 @@ PY="C:/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 fail=0
 
 echo ""
-echo "== 1/3 BFF 单测（vitest）=="
+echo "== 1/4 BFF 单测（vitest）=="
 "$NODE_BIN" node_modules/vitest/vitest.mjs run 2>&1 | tail -6 || fail=1
 "$NODE_BIN" node_modules/vitest/vitest.mjs run >/dev/null 2>&1 || fail=1
 
 echo ""
-echo "== 2/3 内核单测（python unittest，连跑两次查抖动）=="
+echo "== 2/4 内核单测（python unittest，连跑两次查抖动）=="
 for i in 1 2; do
   ( cd kernel && "$PY" -m unittest discover -s tests 2>&1 | grep -E "^(OK|FAILED|Ran )" ) || fail=1
 done
 
 echo ""
-echo "== 3/3 类型检查（tsc）=="
+echo "== 3/4 类型检查（tsc）=="
 "$NODE_BIN" node_modules/typescript/bin/tsc -p apps/bff/tsconfig.check.json && echo "tsc: 0 errors" || fail=1
+
+echo ""
+# Lint 是 §15「CI 质量门：类型检查 + Lint + 构建 + 测试」与 §16 DoD 明确要求的一环——
+# 此前**根本没有 lint 配置**，我却在 DoD 判定表里给它打了 ✅（只因 quality-gate 全绿）。
+# 教训：门禁里没有的东西，不能声称它通过了。现在它是第4 道真门禁。
+echo "== 4/4 Lint（eslint，类型感知；0 error 才算通过）=="
+# 用 eslint 的**真实入口**：node_modules/.bin/eslint 是 shell 包装脚本，
+# 用 node 直接执行会因 shell 语法而 SyntaxError（本机踩过）。
+# warning 不阻断（30 个非空断言等是既有合理写法），但记下来防止无声堆积；
+# 想收紧用 pnpm lint:strict（--max-warnings 0）。
+if "$NODE_BIN" node_modules/eslint/bin/eslint.js apps/bff/src apps/bff/test apps/bff/scripts scripts; then
+  echo "eslint: 0 error"
+else
+  fail=1
+fi
 
 echo ""
 [ "$fail" = "0" ] && echo "质量门：全部通过" || echo "质量门：存在失败项"

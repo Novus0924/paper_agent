@@ -43,7 +43,7 @@ async function main() {
       if (n.done) break
       types.push((n.value as unknown as { type: string }).type)
     }
-    await it.return?.(undefined as never)
+    await it.return?.(undefined)
     console.log('[load] 历史事件数=', types.length, '前 3 =', types.slice(0, 3).join(','))
   } catch (e) {
     const x = e as { code?: unknown; message?: string }

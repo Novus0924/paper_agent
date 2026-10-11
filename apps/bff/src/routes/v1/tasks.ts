@@ -1,4 +1,5 @@
 import type { AppContext } from '../../app.js'
+import type { FastifyInstance } from 'fastify'
 import { ApiError } from '../../infra/errors.js'
 import { validateGoal, validateTaskId, validateEnum, validateSources } from '../../infra/validate.js'
 import { KNOWN_SOURCES, probeSources } from '../../services/preflight.js'
@@ -61,7 +62,7 @@ function newTaskId(): string {
   return `run-${stamp}-${rand}`
 }
 
-export function registerTasksRoutes(app: import('fastify').FastifyInstance, ctx: AppContext): void {
+export function registerTasksRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get('/tasks', async (req) => {
     const query = req.query as { status?: string }
     let statusFilter: RunStatus | undefined

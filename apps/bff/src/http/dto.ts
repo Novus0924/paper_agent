@@ -73,6 +73,10 @@ export function parseViewLevel(raw: unknown): ViewLevel {
  */
 export function stripAuditFields<T>(input: T, depth = 0): T {
   if (depth > 12) return input
+  // 双重断言是**投影**的本质，不是偷懒：函数收T、还T，但内部按结构重组对象，
+  // TS 无法证明"剥掉若干键之后剩下的仍是 T"。断言收在此处，不外泄给调用方。
+  // 有反例检验兜底（findLeakedAuditFields + 单测），不是"信我"。
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-return
   if (Array.isArray(input)) return input.map((v) => stripAuditFields(v, depth + 1)) as unknown as T
   if (input === null || typeof input !== 'object') return input
   const out: Record<string, unknown> = {}

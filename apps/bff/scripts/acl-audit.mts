@@ -88,6 +88,8 @@ async function daclOf(path: string): Promise<string> {
     // 嗅探 UTF-16LE：ASCII 文本在 UTF-16LE 下奇数字节为 0
     const isUtf16 = buf.length > 2 && buf[0] !== 0 && buf[1] === 0
     let text = isUtf16 ? buf.toString('utf16le') : buf.toString('utf8')
+    // 去 UTF-8 BOM。字面量里就是 U+FEFF 本身，属"有意包含不可见字符"。
+    // eslint-disable-next-line no-irregular-whitespace
     text = text.replace(/^﻿/, '')
     const i = text.indexOf('D:')
     return i >= 0 ? text.slice(i).split(/\r?\n/)[0]!.trim() : text.trim().slice(0, 200)

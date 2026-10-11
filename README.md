@@ -256,6 +256,62 @@ L2 路径实质改变 → `degraded=true` + 五要素（来源/原因/影响/可
   漏了不会报错，只会让前端**静默**拿到本不该有的字段，响应看起来完全正常。
   测试里同时有一条**反向用例**（故意注入泄漏，验证探测器能抓到），否则"没抓到"可能只是探测器坏了。
 
+### 5.9 Lint（§15/§16 明列，此前完全缺失）
+
+需求 §15 写「CI 质量门：类型检查 + **Lint** + 构建 + 测试」、§16 写「通过类型/**Lint**/构建」，
+但项目里**连一份 lint 配置都没有**（无 `.eslintrc*` / `biome.json`，`package.json` 无 `lint` 脚本）。
+我却在 M10 的 DoD 判定表里给这条打了 ✅——依据只是"quality-gate 全绿"，
+而 quality-gate 当时只跑类型和测试。**门禁里没有的东西，不能声称它通过了。**
+
+现为 ESLint 9 flat config（`eslint.config.mjs`），**类型感知**规则（`recommendedTypeChecked`）：
+
+```bash
+pnpm lint          # 0 error 才算通过（warning 不阻断）
+pnpm lint:fix      # 自动修（类型导入、不必要断言等）
+pnpm lint:strict   # --max-warnings 0（收紧用）
+```
+
+覆盖 `apps/bff/src` + `test` + `scripts` + `scripts/*.mjs`。分层策略：
+
+| 范围 | 处理 | 理由 |
+|---|---|---|
+| `src/` | 类型感知规则，**0 error 零豁免起步** | 真实缺陷都在这层 |
+| `test/`、`scripts/` | 关 `no-unsafe-*` / `no-explicit-any` / `require-await` | 测试的本质就是构造非法输入，必然大量断言 |
+| `scripts/*.mjs` | `tseslint.configs.disableTypeChecked` | 无类型上下文，用官方配置对象而非手搓规则清单 |
+
+**它抓到的真实问题**（不是走过场）：
+
+| 规则 | 数量 | 性质 |
+|---|---|---|
+| `no-base-to-string` | **39** | **真缺陷**：`String(账本unknown 字段)` 在值为对象时静默产出 `'[object Object]'`，污染报告与事件且**不报错**。修法：新增 `infra/coerce.ts` 的 `asText/asRecord/asArray/asNumber`，逐处替换（31 处批量 + 8 处手工） |
+| `no-unnecessary-type-assertion` | 11 | 多余断言（自动修） |
+| `no-floating-promises` / `await-thenable` | 2 | `await` 一个返回 `void` 的函数（会误导读者以为异步） |
+| `no-unused-vars` | 4 | 未用导入/变量 |
+
+`no-base-to-string` 里最值得说的是**错误信息本身**：
+`throw new ApiError('不支持的 action：${String(raw)}')`——用户传了对象时看到
+`不支持的 action：[object Object]`，等于没提示。同类修了 3 处（action / sources / enum）。
+
+**顺带发现一个更大的缺口**：`tsconfig.check.json` 的 `include` 只有 `src/**/*.ts`
+——**9 个测试文件与全部诊断脚本从未被 `tsc` 检查过**。
+纳入后立刻暴露两件事：
+
+1. **我自己写的 `sse.test.ts` 事件形状是错的**：用 `{task_id, at, step:{id,status}}` + `as RelayEvent`，
+   而真实类型是 `{ts, step: string, status: ...}`。测试当时能跑过，但它验证的是**错误形状的数据**。
+   已改为按每种事件的**最小合法载荷**构造（顺带发现 `report` 事件的载荷含 `task_id`，
+   与其他事件不同——这正是"逐个给真实形状"才能发现的）。
+   > **教训：契约测试自己写错类型时没人拦**，除非它也受类型检查。
+2. **`install-plugin.ts` 的 `AnyOp.error` 声明缺 `code`/`blockers`** —— 代码在打印它们，
+   但声明里没有。说明那份类型是"按印象写的"。
+   同时发现 `waitOp()` 会把 `undefined` 的 `operationId` 拿去轮询 →
+   **要么空等 2 分钟超时，要么误取到别的操作结果然后报"安装成功"**（最坏的失败：看起来成功、实际没装）。
+   已改为入口 Fail-fast。
+
+**给 `waitOp` 补 `unknown` 收窄的教训**：我先按 `string | undefined` 写，
+结果 `inspect()` 的回执声明是 `Record<string, unknown>`，取出来还是 unknown。
+正确做法是**接受 `unknown` 并在函数入口一次性做类型守卫**——一处校验覆盖所有调用点，
+比在 5 个调用点各写一遍断言更可靠。
+
 ### 5.8 「声明了但没实现」的两处收口（实测发现并修复）
 
 这是我在 DoD 后逐条对代码核查才发现的问题——**文档说支持，代码没实现**。
@@ -416,7 +472,10 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 > 本机裸 `node` 可能解析到 WorkBuddy 托管的 22.x，故统一走 `bash scripts/quality-gate.sh`（自动挑选合规 Node，
 > 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
 
-- `bash scripts/quality-gate.sh` → BFF **116/116 通过** + 内核 **45/45 通过**（连跑两次查抖动）+ `tsc` **零错误**
+- `bash scripts/quality-gate.sh` → **四道门禁全绿**（§15/§16 要求"类型 + **Lint** + 测试"）：
+  vitest **116/116** · 内核 **45/45**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**
+  （lint 为类型感知规则，覆盖 `src` + `test` + `scripts`；30 个 warning 是既有非空断言等，不阻断。
+  想收紧用 `pnpm lint:strict`（`--max-warnings 0`）。）
   （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/多轮消息队列/分层 DTO/AGH 接口契约）；
   > 注：`contract.test.ts` 的 scope 解析用例在本机依赖 AGH home 的 ACL 合规；
   > 该ACL 已于 2026-10-10 修复，用例**真正通过**（保留了「遇到 `CONFIG_CREDENTIAL_STORE`
@@ -713,3 +772,15 @@ node scripts/doctor.mjs [--json|--quiet]               # 环境自检（退出�
 
 > 注意：本项目沙箱/受限环境下每次调用为独立进程组，**后台进程不跨调用存活**。
 > 集成验证需在**同一次调用内**完成 `daemon start` → BFF → 断言。
+
+### 27. Lint/类型工具链的三处环境坑（本机 Windows）
+- **`node_modules/.bin/eslint` 是 shell 包装脚本**，不能用 `node` 直接跑
+  （会当 JS 解析报 `SyntaxError: missing ) after argument list`）。
+  必须走真实入口：`node node_modules/eslint/bin/eslint.js`。
+  同理 `vitest` 用 `node_modules/vitest/vitest.mjs`、`tsc` 用 `node_modules/typescript/bin/tsc`。
+- **ESLint 的 `projectService` 不会自动发现"检查期" tsconfig**：它默认读 `tsconfig.json`
+  （运行期那个，只含 `src`），于是 `test/`、`scripts/` 全报
+  "was not found by the project service"。必须**显式** `project: ['./apps/bff/tsconfig.check.json']`。
+- **`declare module 'x'` 写在带 `export` 的 `.d.ts` 里不生效**：那种文件是 *module*，
+  其中的 ambient 声明只有被 `include` 进 program 才加载（靠 `paths` 按需解析加载不到）。
+  AGH 内部模块的声明因此单独放在 `types/agnes-internal.d.ts` 并列入 `include`。

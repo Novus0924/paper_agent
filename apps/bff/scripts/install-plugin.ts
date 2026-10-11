@@ -40,7 +40,11 @@ type AnyOp = {
   progress?: number
   preview?: { id?: string; version?: string; integrity?: string; capabilityHash?: string; blockers?: unknown[] }
   installed?: { id?: string; version?: string; integrity?: string; capabilityHash?: string }
-  error?: { safeMessage?: string }
+  // ⚠️ error 里code/blockers 是**运行期确实存在**的字段（失败时就是这么打印的）。
+//    声明里原本只有 safeMessage，TS 因此认为 err.code 不可访问——
+//    说明这份 AnyOp 是"写的时候按印象写的"，没有被类型检查过
+//    （scripts/ 此前不在 tsconfig.include 里，做 ESLint 时才纳入）。
+  error?: { code?: string; safeMessage?: string; blockers?: unknown[] }
 }
 
 const log = (...a: unknown[]) => console.log('[install]', ...a)
@@ -50,7 +54,6 @@ async function connect(): Promise<Client> {
   const d = await readDaemonDiscovery(scope)
   if (!d) throw new Error('AGH daemon 未运行：请先执行 `bash agh.sh daemon start`（必须在项目根启动）')
   const path = d.socketPath
-  const owner = d.owner
   const client = createClient({
     transport: { kind: 'unix', path },
     auth: { kind: 'local' },
@@ -71,7 +74,18 @@ async function connect(): Promise<Client> {
   return client
 }
 
-async function waitOp(client: Client, operationId: string, label: string): Promise<AnyOp> {
+async function waitOp(client: Client, operationId: unknown, label: string): Promise<AnyOp> {
+  // Fail-fast：operationId 缺失时**绝不能**继续轮询。
+  // 否则会用 undefined 反复查operation.get → 要么空转到超时（2 分钟白等），
+  // 要么误取到别的操作结果，然后基于它报告"安装成功"——那是**最坏**的失败：
+  // 看起来成功，实际没装。
+  // 收窄类型：未知形状一律 Fail-fast（见上方注释：空轮询会误判成功）
+  if (typeof operationId !== 'string' || operationId === '') {
+    throw new Error(
+      `${label} 未返回 operationId（daemon 回执形状异常，实际类型 ${typeof operationId}）；` +
+        `已中止，避免空等超时或误判成功`,
+    )
+  }
   const deadline = Date.now() + 120_000
   let last: AnyOp | null = null
   while (Date.now() < deadline) {
@@ -79,7 +93,7 @@ async function waitOp(client: Client, operationId: string, label: string): Promi
     if (op.state !== last?.state) {
       log(`  ${label}: ${op.state}${op.progress !== undefined ? ` (${op.progress}%)` : ''}`)
       if (op.state === 'failed') {
-        const err = op.error as { code?: string; safeMessage?: string; blockers?: unknown[] } | undefined
+        const err = op.error
         log(`  ✗ ${label} 失败：code=${err?.code ?? '?'} message=${err?.safeMessage ?? '?'} blockers=${JSON.stringify(err?.blockers ?? [])}`)
       }
     }
@@ -111,7 +125,7 @@ async function main() {
   const cmd = (kind: string) => `paper-agent-${kind}-${Date.now()}`
   log('已连接 daemon，clientId =', clientId, '｜profile =', PROFILE)
 
-  const before = (await client.packages.list({ profile: PROFILE })) as unknown as {
+  const before = (await client.packages.list({ profile: PROFILE })) as {
     packages: Array<{ id: string; version: string; desired?: string; actual?: string; trusted?: boolean }>
   }
   log('安装前状态：')
@@ -178,7 +192,7 @@ async function main() {
   log('   → ', enableOp.state)
 
   log('5) 终验三字段（desired=enabled 且 actual=running 且 trusted=true）')
-  const after = (await client.packages.list({ profile: PROFILE })) as unknown as {
+  const after = (await client.packages.list({ profile: PROFILE })) as {
     packages: Array<{ id: string; version: string; desired?: string; actual?: string; trusted?: boolean }>
   }
   let okAll = false

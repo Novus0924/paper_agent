@@ -2,10 +2,19 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
+    // 测试代码同样必须过类型检查。
+    //
+    // 起因：做 ESLint 时发现 tsconfig 只 include 了 src/，
+    //    于是 **9 个测试文件从未被 tsc 检查过** —— 测试写错了类型也照样"通过"，
+    //    这让"契约测试保证 DTO 不漂移"打了折扣（契约本身写错时不会被发现）。
+    //    §15 要求契约测试与共享类型一致，那就得先保证契约测试本身类型正确。
+    "rootDir": ".",
     "paths": {
       "@agnes/sdk": ["./types/agnes-sdk.d.ts"],
       "@agnes/daemon": ["./types/agnes-daemon.d.ts"]
     }
   },
-  "include": ["src/**/*.ts"]
+  // 检查期覆盖 src + test + scripts（含 .mts）；
+  // **运行期** tsconfig（tsconfig.json）刻意不含 test —— 测试不参与 tsx 运行。
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "scripts/**/*.mts", "types/**/*.d.ts"]
 }

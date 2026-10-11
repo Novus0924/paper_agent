@@ -184,8 +184,9 @@ const auditExporter: Exporter = {
     }
     return { ok: true }
   },
+  // 注：这里刻意**不**预拼 runDir —— 各条目自己按需解析（readGate/run_dir等），
+  // 少一处推导就少一处"拼错却仍能跑"的隐患（Lint 也确实抓到它未被使用）。
   async export(task, ctx) {
-    const runDir = join(ctx.runsDir, task.task_id)
     const entries: ZipEntry[] = []
     const contents: string[] = []
 

@@ -33,7 +33,6 @@ function makeRelay(initial: RelayEvent[]) {
     since: (last: number) => [...bySeq.values()].filter((e) => e.seq > last).sort((a, b) => a.seq - b.seq),
     open: () => {
       let queue: RelayEvent[] = []
-      let done = false
       let wake: (() => void) | null = null
       handler = (e) => {
         if (bySeq.has(e.seq)) return // 幂等：已发过的不再发（真实 relay 同语义）
@@ -61,7 +60,7 @@ function makeRelay(initial: RelayEvent[]) {
           })
         },
         close() {
-          done = true
+          // 已关闭：真实 relay 会标记，此替身靠 cleanup 里的 writableEnded 判断
         },
       }
     },
@@ -89,7 +88,7 @@ function parseFrames(raw: string): Array<{ id: number; event: string; data: Rela
 async function makeApp(relay: ReturnType<typeof makeRelay>, withTask = true) {
   const app = Fastify({ logger: false })
   app.setErrorHandler((err, _req, reply) => {
-    const e = err as unknown as { code?: string; status?: number }
+    const e = err as { code?: string; status?: number }
     if (e && typeof e.code === 'string' && typeof e.status === 'number') {
       reply.code(e.status).send(errorBody(err as never))
       return
@@ -131,7 +130,7 @@ describe('SSE · 响应头与建连契约（§8.2）', () => {
     setTimeout(() => ac.abort(), 250)
     let res: { headers: Record<string, unknown> } | undefined
     try {
-      res = (await p) as never
+      res = (await p)
     } catch {
       /* 长连接被中断属预期 */
     }
@@ -161,9 +160,16 @@ describe('SSE · 响应头与建连契约（§8.2）', () => {
 })
 
 describe('SSE · 快照先发（§5.2 建连顺序）', () => {
+  // ⚠️ 这些事件按 **RelayEvent 的真实类型** 构造（`ts` 而非 task_id/at、
+  //    step 事件的 `step` 是字符串 id 而非对象）——不许用 `as RelayEvent` 硬转。
+  //
+  //    起因：做 ESLint 时把测试目录纳入 tsc 检查范围，立刻暴露我之前写的
+  //    `{task_id, at, step:{id,status}}` 与真实类型完全不兼容——测试当时能跑过，
+  //    但它验证的是**错误形状的数据**。
+  //    这正是不做类型检查的代价：契约测试自己写错类型时没人拦。
   const snapshot: RelayEvent[] = [
-    { seq: 1, type: 'step', task_id: TASK_ID, at: '2026-10-10T10:00:00Z', step: { id: 'R1', status: 'RUNNING' } } as RelayEvent,
-    { seq: 2, type: 'activity', task_id: TASK_ID, at: '2026-10-10T10:00:01Z', human_summary: '正在检索' } as RelayEvent,
+    { seq: 1, ts: '2026-10-10T10:00:00Z', type: 'step', step: 'R1', status: 'RUNNING' },
+    { seq: 2, ts: '2026-10-10T10:00:01Z', type: 'activity', step: 'R1', human_message: '正在检索' },
   ]
 
   it('连上即收到当前快照（先订阅→直写快照→drain）', async () => {
@@ -199,7 +205,7 @@ describe('SSE · 快照先发（§5.2 建连顺序）', () => {
 
 describe('SSE · 断线续传（Last-Event-ID，§8.2）', () => {
   const history: RelayEvent[] = [1, 2, 3, 4, 5].map(
-    (i) => ({ seq: i, type: 'activity', task_id: TASK_ID, at: `2026-10-10T10:00:0${i}Z`, human_summary: `消息${i}` }) as RelayEvent,
+    (i) => ({ seq: i, ts: `2026-10-10T10:00:0${i}Z`, type: 'activity', step: 'R1', human_message: `消息${i}` }),
   )
 
   it('带 Last-Event-ID 只补发其后的帧，不重发已收到的', async () => {
@@ -238,8 +244,9 @@ describe('SSE · 断线续传（Last-Event-ID，§8.2）', () => {
 describe('SSE · 终态必达（§5.2「done 先写 socket 再结束」）', () => {
   it('快照里含 done → 立即写出该帧并结束流（客户端不丢最后一帧）', async () => {
     const done: RelayEvent[] = [
-      { seq: 1, type: 'activity', task_id: TASK_ID, at: '2026-10-10T10:00:00Z', human_summary: '完成' } as RelayEvent,
-      { seq: 2, type: 'done', task_id: TASK_ID, at: '2026-10-10T10:00:01Z', run_status: 'DONE' } as RelayEvent,
+      { seq: 1, ts: '2026-10-10T10:00:00Z', type: 'activity', step: 'R6', human_message: '完成' },
+      // done 的真实必填字段是 report_ready（不是 task_id/at）
+      { seq: 2, ts: '2026-10-10T10:00:01Z', type: 'done', run_status: 'DONE', report_ready: true },
     ]
     const app = await makeApp(makeRelay(done))
     const body = await readSse(app, `/api/v1/tasks/${TASK_ID}/events`, 400)
@@ -251,17 +258,36 @@ describe('SSE · 终态必达（§5.2「done 先写 socket 再结束」）', () 
 })
 
 describe('SSE · 事件类型覆盖（附录 B：9 类）', () => {
-  it('帧的 event 名与事件类型一致', async () => {
-    const kinds: RelayEvent['type'][] = ['ping', 'step', 'activity', 'tool', 'degraded', 'conclusion', 'message', 'report']
-    const relay = makeRelay(
-      kinds.map(
-        (k, i) =>
-          ({ seq: i + 1, type: k, task_id: TASK_ID, at: `2026-10-10T10:00:${String(i).padStart(2, '0')}Z` }) as RelayEvent,
-      ),
-    )
-    const app = await makeApp(relay)
-    const frames = parseFrames(await readSse(app, `/api/v1/tasks/${TASK_ID}/events`, 300))
-    expect(frames.map((f) => f.event)).toEqual(kinds)
+// 每种事件的**最小合法载荷**（字段各不相同，故逐个给真实形状而非统一构造）。
+// 之前这里用统一 `{seq,type,task_id,at}` + `as RelayEvent`，测的是错误形状的数据。
+//
+// ⚠️ 用 `DistributiveOmit` 而非 `Omit`：RelayEvent 是**判别联合**，
+// 直接 Omit 会把各分支的专属字段抹掉（`step`/`level`/`cid` 全部报"未知属性"）。
+type Payload = RelayEvent extends infer T ? (T extends RelayEvent ? Omit<T, 'seq' | 'ts'> : never) : never
+const MINIMAL: Record<RelayEvent['type'], Payload> = {
+      ping: { type: 'ping' },
+      step: { type: 'step', step: 'R1', status: 'RUNNING' },
+      activity: { type: 'activity', step: 'R1', human_message: '检索中' },
+      tool: { type: 'tool', step: 'R1', tool: 'sciret_run_all', status: 'running' },
+      degraded: { type: 'degraded', level: 'info', source: 'crossref', reason: '限流', impact: '无', resumable: true, step: 'R1' },
+      conclusion: { type: 'conclusion', cid: 'C-001', text: '界面阻抗主要由 SEI 贡献', evidence_ids: ['EV-0001'] },
+      message: { type: 'message', turn_id: 'turn-1', role: 'assistant', text: '补充：…', status: 'done' },
+      // report 事件的载荷含 task_id（§5.1「report / task_id / status(ready/generating)」），
+// 与其他事件不同——这正是"逐个给真实形状"才能发现的地方。
+report: { type: 'report', task_id: TASK_ID, status: 'ready' },
+      done: { type: 'done', run_status: 'DONE', report_ready: true },
+    }
+
+    it('帧的 event 名与事件类型一致', async () => {
+      const kinds = Object.keys(MINIMAL) as RelayEvent['type'][]
+      const relay = makeRelay(
+        kinds.map(
+          (k, i) => ({ seq: i + 1, ts: `2026-10-10T10:00:${String(i).padStart(2, '0')}Z`, ...MINIMAL[k] }),
+        ),
+      )
+      const app = await makeApp(relay)
+      const frames = parseFrames(await readSse(app, `/api/v1/tasks/${TASK_ID}/events`, 300))
+      expect(frames.map((f) => f.event)).toEqual(kinds)
     await app.close()
   })
 })

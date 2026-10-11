@@ -309,7 +309,13 @@ export class MessageService {
     // 未指定时默认 ask（§8.2 示例即 ask）；显式非法值必须报错，不静默回退（§6）
     if (raw === undefined || raw === null || raw === '') return 'ask'
     if (raw !== 'ask' && raw !== 'revise') {
-      throw new ApiError('BAD_PARAM', `不支持的 action：${String(raw)}`, '允许：ask（追问）| revise（修订）。')
+      // 错误信息必须显示用户实际传的值；String(raw) 对对象会变成 '[object Object]'，
+      // 用户看到"不支持的 action：[object Object]"根本不知道该改什么。
+      throw new ApiError(
+        'BAD_PARAM',
+        `不支持的 action：${typeof raw === 'string' ? raw : JSON.stringify(raw)?.slice(0, 40) ?? typeof raw}`,
+        '允许：ask（追问）| revise（修订）。',
+      )
     }
     return raw
   }

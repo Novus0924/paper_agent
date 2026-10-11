@@ -70,12 +70,33 @@ gate "质量门(vitest+内核+tsc)" $? "$OUT/gate.log"
 
 # CI 配置存在性（§16「关键路径自动化测试在 CI 通过」）
 if [ -f ".github/workflows/ci.yml" ]; then
-  echo "  ✅ CI 配置存在                .github/workflows/ci.yml"
-  GATE_PASS=$((GATE_PASS+1))
+  # 必须**真的包含 Lint 步骤**才算通过——文件存在 ≠ 门禁齐全。
+  # （此前 CI 里只有 typecheck+test，§16 要求的 Lint 缺失，我却在 DoD 表里打了 ✅。）
+  if grep -qE "pnpm lint|eslint" .github/workflows/ci.yml; then
+    echo "  ✅ CI 配置含 Lint 步骤         .github/workflows/ci.yml"
+    GATE_PASS=$((GATE_PASS+1))
+  else
+    echo "  ❌ CI 缺 Lint 步骤（§15/§16 要求 类型+Lint+构建+测试）"
+    GATE_FAIL=$((GATE_FAIL+1)); RESULTS+=("❌ CI 缺 Lint")
+  fi
 else
   echo "  ❌ CI 配置缺失                需 .github/workflows/ci.yml"
   GATE_FAIL=$((GATE_FAIL+1))
   RESULTS+=("❌ CI 配置缺失")
+fi
+
+# Lint 必须真能跑通（§15/§16），且"存在配置"不等于"通过"
+if [ -f "eslint.config.mjs" ]; then
+  if "$NODE24" node_modules/eslint/bin/eslint.js apps/bff/src apps/bff/test apps/bff/scripts scripts >/dev/null 2>&1; then
+    echo "  ✅ ESLint 通过（0 error，类型感知）"
+    GATE_PASS=$((GATE_PASS+1))
+  else
+    echo "  ❌ ESLint 未通过（见 pnpm lint 输出）"
+    GATE_FAIL=$((GATE_FAIL+1)); RESULTS+=("❌ ESLint 未通过")
+  fi
+else
+  echo "  ❌ 无 eslint 配置（§15 要求 Lint）"
+  GATE_FAIL=$((GATE_FAIL+1)); RESULTS+=("❌ 无 ESLint 配置")
 fi
 echo ""
 
