@@ -233,6 +233,25 @@ else
 fi
 todd "安全合规：密钥不入库/环境白名单/输入校验/CORS" "OK" "静态核对（见上方第二节）"
 todd "通过类型/Lint/构建，自动化测试在 CI 通过" "$([ -f .github/workflows/ci.yml ] && echo OK || echo NO)" "quality-gate.sh + ci.yml"
+
+# §14 可扩展性：Source SPI 是否真的落地
+# 判据不是"有 sources.py"，而是**引擎不再认识具体源**——
+# 若fetch_corpus 里还有 `if src == "crossref"` 分派，那就是改了名字没改结构。
+if [ -f "kernel/sciret_kernel/sources.py" ]; then
+  # ⚠️ 匹配要覆盖 `src` 与 `src_name` 两种变量名：我第一版只写 `if src == "crossref"`，
+#    反向验证时注入的是 `if src_name ==` → 判定**没抓到，假通过**。
+#    假通过比没有检查更坏：它让人以为这条门禁在守着。
+if grep -qE 'if (src|src_name|name) == "(crossref|openalex)"' kernel/tools/fetch_corpus.py 2>/dev/null; then
+    todd "§14 Source SPI（新增源=实现一个 Source，不改引擎）" "NO" "fetch_corpus.py 仍有按源分派"
+  elif grep -q "TestSourceSPI" kernel/tests/test_kernel.py && [ -f apps/bff/test/source-contract.test.ts ]; then
+    # ⚠️ 判断跨边界契约测试要用 `-f` 判文件存在，**不能**在文件内容里 grep 文件名——
+    #    我第一版写错了（`grep -q source-contract <文件>`），导致明明有测试却判成 PARTIAL。
+    #    判据写成"自己都验错"的检查，等于没有检查。
+    todd "§14 Source SPI（新增源=实现一个 Source，不改引擎）" "OK" "sources.py（Protocol+注册表）+ TestSourceSPI + source-contract"
+  else
+    todd "§14 Source SPI（新增源=实现一个 Source，不改引擎）" "PARTIAL" "有 sources.py，但缺 SPI 测试或跨边界契约测试"
+  fi
+fi
 echo ""
 
 # ═══════════ 汇总 ═══════════

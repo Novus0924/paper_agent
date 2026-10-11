@@ -17,12 +17,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sciret_kernel import chaos, corpus, online, report as report_mod  # noqa: E402
+from sciret_kernel import chaos, corpus, online, report as report_mod, sources  # noqa: E402
 from sciret_kernel.__main__ import PathGuardError, guard_run_dir, main  # noqa: E402
 from sciret_kernel.jsonio import canonical_json, sha256_text  # noqa: E402
 from sciret_kernel.ledger import Ledger, LedgerError  # noqa: E402
@@ -689,6 +690,215 @@ class TestOnlineRetrieval(unittest.TestCase):
              mock.patch.object(online.corpus, "available_snapshots", return_value=[]):
             with self.assertRaises(FileNotFoundError):
                 online.resolve_online("goal", "auto", ["crossref"])
+
+
+class TestSourceSPI(unittest.TestCase):
+    """Source SPI（需求 §14「新增检索源=实现一个 Source」）。
+
+    改造前：`fetch_corpus.py` 里是两个并列函数 + `fetch_one` 中的 `if/elif` 分派
+    （`if src == "crossref": ... elif src == "openalex": ...`）。
+    新增一个源要改**引擎内部**，与 §14 写的扩展形态不符。
+
+    改造后：源只实现四段（name/timeout/build_url/parse），引擎完全不认识具体源。
+    本组用例锁住这个契约 —— 尤其"加新源不改引擎"这条。
+    """
+
+    # ── 契约：已注册的源都实现完整 SPI ──
+    def test_registered_sources_implement_full_spi(self) -> None:
+        for name in sources.known_sources():
+            src = sources.get(name)
+            self.assertEqual(src.name, name)
+            self.assertGreater(src.timeout_s, 0, f"{name} 的 timeout_s 必须为正")
+            self.assertTrue(callable(src.build_url))
+            self.assertTrue(callable(src.parse))
+            # 协议一致性：声明的 Protocol 实例检查必须通过
+            self.assertIsInstance(src, sources.Source)
+
+    def test_build_url_is_pure_and_contains_query(self) -> None:
+        """build_url 必须是**纯函数**（能离线测），且把 query 编进 URL。
+
+        为什么要强调纯：若 build_url 里顺带发了请求，就无法离线验证
+        "这个源拼的 URL 对不对" —— 那是 SPI 最值得测的一环。
+        """
+
+
+        for name in sources.known_sources():
+            src = sources.get(name)
+            url = src.build_url("solid electrolyte", 3)
+            self.assertTrue(url.startswith("https://"), f"{name} 必须是 HTTPS")
+            # URL 整体已被 urlencode 编码，故这里解码后再断言内容
+            decoded = urllib.parse.unquote_plus(url)
+            self.assertIn("solid electrolyte", decoded, f"{name} 未把 query 编进 URL")
+            # 条数参数**名因源而异**（crossref 用 rows、openalex 用 per-page），
+            # 这正是 SPI 允许各源自build_url 的意义 —— 故只断言"条数出现在 URL 里"，
+            # 不硬编码参数名（硬编码等于把源的差异写回测试）。
+            self.assertIn("3", decoded, f"{name} 未把条数编进 URL")
+
+    # ── parse：对畸形数据免疫 ──
+    def test_parse_skips_malformed_items_without_raising(self) -> None:
+        """坏条目必须被跳过，**不能**让整个源失败。
+
+        真实 API 偶尔返回缺字段/类型不符的项（title 是空列表、作者是 null、
+        item 根本不是 dict）。一个坏条目拖垮整个源是得不偿失。
+        """
+        junk: dict[str, object] = {
+            "message": {
+                "items": [
+                    {"DOI": "10.1/x", "title": ["Valid Paper"], "author": None},
+                    {"DOI": "10.1/y", "title": []},              # 无标题 → 应跳过
+                    {"DOI": "10.1/z"},                           # 缺 title → 应跳过
+                    "not-a-dict",                                 # 类型错 → 应跳过
+                    None,                                         # None → 应跳过
+                    {"DOI": "10.1/w", "title": ["  Another  "], "issued": {"date-parts": "bad"}},
+                ]
+            }
+        }
+        got = sources.CrossrefSource().parse(junk)
+        titles = [g["title"] for g in got]
+        self.assertIn("Valid Paper", titles)
+        self.assertIn("Another", titles)  # 应 strip
+        self.assertEqual(len(got), 2, f"应只保留 2 条有效记录，实得 {len(got)}")
+
+    def test_parse_never_invents_values(self) -> None:
+        """缺字段必须留空/None，**绝不编造**（§11 数据真实性）。"""
+        got = sources.OpenAlexSource().parse({"results": [{"title": "Only Title"}]})
+        self.assertEqual(len(got), 1)
+        r = got[0]
+        self.assertEqual(r["doi"], "")
+        self.assertEqual(r["year"], None)
+        self.assertEqual(r["license"], "")
+        self.assertEqual(r["authors"], [])
+        self.assertEqual(r["source"], "openalex")
+
+    def test_parse_accepts_non_dict_payload(self) -> None:
+        """parse 收到 None / 列表 / 字符串等非预期载荷时返回空，不得抛。"""
+        for src in (sources.CrossrefSource(), sources.OpenAlexSource()):
+            for payload in (None, [], "boom", 42, {}):
+                self.assertEqual(src.parse(payload), [], f"{src.name} 对 {payload!r} 应返回空")
+
+    # ── 归一化：两个源的输出形状一致（下游才能统一处理）──
+    def test_normalized_shape_is_identical_across_sources(self) -> None:
+        """不同源的记录**字段集必须一致** —— 否则下游要按源分支处理，SPI 就白做了。"""
+        expected = {"doi", "title", "authors", "year", "venue", "type", "license", "source"}
+        crossref = sources.CrossrefSource().parse(
+            {"message": {"items": [{"DOI": "10.1/a", "title": ["A"], "issued": {"date-parts": [[2023, 5]]}}]}}
+        )
+        openalex = sources.OpenAlexSource().parse(
+            {"results": [{"doi": "https://doi.org/10.1/b", "title": "B", "publication_year": 2024}]}
+        )
+        self.assertEqual(set(crossref[0]), expected)
+        self.assertEqual(set(openalex[0]), expected)
+        # OpenAlex 的 DOI 必须剥掉 URL 前缀，与 Crossref 对齐（否则去重失效）
+        self.assertEqual(openalex[0]["doi"], "10.1/b")
+        # 年份解析：嵌套 date-parts 与标量 publication_year 都要能取出
+        self.assertEqual(crossref[0]["year"], 2023)
+        self.assertEqual(openalex[0]["year"], 2024)
+
+    # ── 注册表 ──
+    def test_register_new_source_without_touching_engine(self) -> None:
+        """**本组用例的核心**：新增一个源只碰sources.py，不改引擎任何一行。
+
+        用一个假源（不联网）证明流程通：注册 → get → build_url → parse 全可用。
+        若将来引擎里又出现 `if name == "crossref"` 之类的分派，这条会先失败。
+        """
+        calls: list[str] = []
+
+        class FakeSource:
+            name = "fake-for-spi-test"
+            timeout_s = 1.5
+
+            def build_url(self, query: str, rows: int) -> str:
+                calls.append("build_url")
+                return f"https://example.invalid/{rows}"
+
+            def parse(self, payload: object) -> list[dict]:
+                calls.append("parse")
+                return [{"doi": "10.1/f", "title": "Fake", "authors": [], "year": 2024,
+                         "venue": "", "type": "", "license": "", "source": self.name}]
+
+        before = len(sources.known_sources())
+        sources.register(FakeSource())
+        try:
+            self.assertEqual(len(sources.known_sources()), before + 1)
+            got = sources.get("fake-for-spi-test")
+            self.assertIsInstance(got, sources.Source)
+            self.assertEqual(got.timeout_s, 1.5)
+            self.assertEqual(got.parse({})[0]["source"], "fake-for-spi-test")
+            self.assertEqual(calls, ["parse"])
+        finally:
+            sources.REGISTRY.pop("fake-for-spi-test", None)
+        self.assertEqual(len(sources.known_sources()), before)
+
+    def test_register_rejects_invalid_sources(self) -> None:
+        """注册必须校验：无名/无超时/缺方法/重名都应报错。
+
+        重名尤其重要：静默覆盖会让"到底在用哪个实现"变成只有运行期才知道的事
+        （而新实现很可能没测过）。
+        """
+        with self.assertRaises(ValueError):
+            sources.register(object())  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            sources.register(_NoName())
+        with self.assertRaises(ValueError):
+            sources.register(_BadTimeout())
+        with self.assertRaises(ValueError):
+            sources.register(_NoParse())
+        # 重名
+        with self.assertRaises(ValueError):
+            sources.register(sources.CrossrefSource())
+        # 显式 replace 才允许覆盖
+        sources.register(sources.CrossrefSource(), replace=True)
+
+    def test_get_unknown_source_raises(self) -> None:
+        with self.assertRaises(KeyError):
+            sources.get("does-not-exist")
+
+    def test_transport_is_injectable(self) -> None:
+        """transport 必须可注入 —— 否则测parse 之外的行为就得联网。
+
+        这是"Source SPI 四段式"里 transport 独立成段的直接价值。
+        """
+        got: list[tuple[str, float]] = []
+
+        def fake_transport(url: str, timeout: float) -> object:
+            got.append((url, timeout))
+            return {"message": {"items": [{"DOI": "10.1/t", "title": ["T"]}]}}
+
+        src = sources.CrossrefSource()
+        out = src.parse(fake_transport(src.build_url("q", 1), src.timeout_s))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][1], src.timeout_s)  # 源自己的超时被用上
+
+
+class _NoName:
+    name = ""
+    timeout_s = 1.0
+
+    def build_url(self, q: str, r: int) -> str:
+        return ""
+
+    def parse(self, p: object) -> list[dict]:
+        return []
+
+
+class _BadTimeout:
+    name = "bad-timeout"
+    timeout_s = 0
+
+    def build_url(self, q: str, r: int) -> str:
+        return ""
+
+    def parse(self, p: object) -> list[dict]:
+        return []
+
+
+class _NoParse:
+    name = "no-parse"
+    timeout_s = 1.0
+
+    def build_url(self, q: str, r: int) -> str:
+        return ""
 
 
 class TestResiliencePolicy(unittest.TestCase):

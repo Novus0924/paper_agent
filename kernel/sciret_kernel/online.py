@@ -24,7 +24,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from . import corpus
+from . import corpus, sources as source_spi
 
 # 抓取器与语料目录的定位（与 corpus.py 同源：内核靠自身位置定位，不依赖 cwd）
 _KERNEL_DIR = Path(__file__).resolve().parent
@@ -173,9 +173,12 @@ def resolve_online(
         return name, snap, attempt
 
     #在线模式：显式指定的 sources 优先；为空则用内核已知的两个远程源
-    fetch_sources = [s for s in sources if s in ("crossref", "openalex")]
+    # 只抓**已注册**的源。不再硬编码 ("crossref", "openalex") ——
+    # 那是又一处"声明与实现可能不一致"的地方：新增源忘了改这里就会被静默忽略。
+    # 问注册表则天然一致（§14：新增源只需注册一次）。
+    fetch_sources = [s for s in sources if s in source_spi.REGISTRY]
     if not fetch_sources:
-        fetch_sources = ["crossref", "openalex"]
+        fetch_sources = source_spi.known_sources()
 
     result = refresh_snapshot(goal, fetch_sources, per_source=per_source, timeout_s=timeout_s)
     if result.get("ok"):

@@ -45,7 +45,7 @@ paper-agent-2/
 │   │   ├── export/               # ★ zip.ts（零依赖 ZIP 写入器）+ service.ts（Exporter SPI）
 │   │   └── routes/               # health + /api/v1/{tasks,events,report,export,messages}
 │   ├── types/                   # AGH 最小类型声明（见 §6 说明）
-│   ├── test/                    # 单测 + 契约测试（116 个）
+│   ├── test/                    # 单测 + 契约测试（120 个）
 │   └── scripts/                 # 诊断脚本（spike-* / zip-probe / daemon-ready / *-probe）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
@@ -255,6 +255,55 @@ L2 路径实质改变 → `degraded=true` + 五要素（来源/原因/影响/可
 - **必须为"剥字段"配泄漏探测正向断言**（`findLeakedAuditFields`）：剥字段是**负向操作**，
   漏了不会报错，只会让前端**静默**拿到本不该有的字段，响应看起来完全正常。
   测试里同时有一条**反向用例**（故意注入泄漏，验证探测器能抓到），否则"没抓到"可能只是探测器坏了。
+
+### 5.10 Source SPI（§14「新增检索源 = 实现一个 Source」）
+
+**改造前**：`fetch_corpus.py` 里是两个并列函数 + `fetch_one` 中的分派：
+```python
+if src == "crossref":   fn = lambda: fetch_crossref(...)
+elif src == "openalex": fn = lambda: fetch_openalex(...)
+else: raise PermanentError(f"unsupported source: {src}")
+```
+新增一个源要改**引擎内部**，与 §14 写的扩展形态不符，也让"源的差异"和"抓取流程"缠在一起。
+
+**现在**：`kernel/sciret_kernel/sources.py` 定义 Source 协议（四段），
+`fetch_corpus.py` 只做编排、**不认识任何具体源**：
+
+| 段 | 职责 | 谁实现 |
+|---|---|---|
+| `name` / `timeout_s` | 标识与**独立超时**（§6「单源独立超时」） | 源自己 |
+| `build_url(query, rows)` | 拼请求 URL（**纯函数**，可离线测） | 源自己（唯一的接口差异） |
+| `parse(payload)` | 响应 JSON → 归一化记录 | 源自己（唯一的格式差异） |
+| `transport` | 发 HTTP + 错误分类（瞬时/永久） | 引擎默认实现，**可注入** |
+
+新增一个源 = 实现四个成员 + `sources.register(YourSource())`，**引擎不动一行**。
+
+设计约束：
+- **零第三方依赖**（§1 红线）：用 `typing.Protocol` 而非 ABC。
+- **`parse` 必须对畸形数据免疫**：真实 API 会返回缺 `title`、`author: null`、甚至非 dict 的条目。
+  实测我的第一版就因 `_first()` 签名写错而让 openalex 整个源失败 ——
+  但降级记录**如实工作**（标 `unavailable` 而非伪造成功），这正是 SPI 该有的行为。
+- **归一化字段固定**：`doi/title/authors/year/venue/type/license/source`，
+  不同源输出形状一致，下游无需按源分支（否则 SPI 白做）。
+  OpenAlex 的 DOI 是完整 URL，必须剥前缀才能与 Crossref 对齐 —— 否则跨源去重失效。
+- **注册即校验**：无名/超时非正/缺方法/重名都报错。重名**不静默覆盖** ——
+  覆盖会让"到底在用哪个实现"变成只有运行期才知道的事。
+- **未知源名在 CLI 直接报错**（退出码 2），不是静默跳过 ——
+  静默跳过会让"配了源却没抓"完全不可见。
+
+### ⚠️ 顺带修掉两处跨边界不一致（都是"声明了但没实现"）
+
+**① BFF 声明 4 个源，内核只实现 2 个。** `preflight.ts` 里有 `arxiv` 与 `semantic_scholar`，
+内核没有。后果：用户选 `arxiv` → 预检**通过**（BFF 探测得到）→ 抓取**静默无数据**（内核没实现）。
+"配了源却没数据、且不报错"是最难排查的一类问题。已把 BFF 清单收窄为内核真实实现的两个。
+
+**② `online.py` 硬编码了 `("crossref", "openalex")` 白名单** —— 又一处
+"新增源忘了改这里就会被静默忽略"的地方。现在改为问注册表。
+
+**防漂移靠测试，不靠 review**：`apps/bff/test/source-contract.test.ts` 校验两侧清单一致，
+两个方向都查（BFF 有而内核无 / 内核有而 BFF 无）。
+> BFF 与内核分属两个文件、两套语言，改一边时没人会去看另一边 —— **跨边界漂移必须由测试守**。
+> 我做了反向验证：往 BFF 注入 `fake_nonexistent` 源，测试立刻失败并指出修复动作（测试有牙齿）。
 
 ### 5.9 Lint（§15/§16 明列，此前完全缺失）
 
@@ -473,7 +522,7 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 > 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
 
 - `bash scripts/quality-gate.sh` → **四道门禁全绿**（§15/§16 要求"类型 + **Lint** + 测试"）：
-  vitest **116/116** · 内核 **45/45**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**
+  vitest **120/120** · 内核 **55/55**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**
   （lint 为类型感知规则，覆盖 `src` + `test` + `scripts`；30 个 warning 是既有非空断言等，不阻断。
   想收紧用 `pnpm lint:strict`（`--max-warnings 0`）。）
   （单测覆盖校验/错误模型/执行编排/事件总线/报告聚合/导出与 ZIP/降级三级语义/容错策略/多轮消息队列/分层 DTO/AGH 接口契约）；

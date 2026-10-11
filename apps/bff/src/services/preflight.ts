@@ -11,12 +11,21 @@ export type SourceProbe = {
   latency_ms?: number
 }
 
-/** 各源最小可达性探测端点（合规：仅元数据 API，不做全文抓取） */
+/**
+ * 各源最小可达性探测端点（合规：仅元数据 API，不做全文抓取）。
+ *
+ * ⚠️ 这份清单曾与内核**不一致**：BFF 声明 4 个源（含 arxiv、semantic_scholar），
+ * 而内核只实现了 2 个 → 用户选 arxiv 会「预检通过（探测得到）但抓不到（内核没实现）」，
+ * 表现为"配了源却静默没数据"，是**最难排查**的一类不一致。
+ *
+ * 现以**内核注册表为单一事实源**：由 doctor/契约测试校验两边一致
+ * （apps/bff/test/source-contract.test.ts），BFF 只保留探���端点这类"探测用"信息。
+ *
+ * 要新增源：内核 `sciret_kernel/sources.py` 注册 + 在此加探���端点，契约测试会校验。
+ */
 const PROBE_ENDPOINTS: Record<string, string> = {
-  arxiv: 'https://export.arxiv.org/api/query?search_query=all:electron&max_results=1',
   crossref: 'https://api.crossref.org/works?rows=1',
   openalex: 'https://api.openalex.org/works?per-page=1',
-  semantic_scholar: 'https://api.semanticscholar.org/graph/v1/paper/search?query=electron&limit=1',
 }
 
 export const KNOWN_SOURCES = Object.keys(PROBE_ENDPOINTS)
