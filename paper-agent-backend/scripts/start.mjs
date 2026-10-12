@@ -31,9 +31,9 @@
  *   node scripts/start.mjs --json# 机器可读的状态输出
  */
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, renameSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { resolve, join } from 'node:path'
+import { resolve, join, delimiter } from 'node:path'
 import { homedir } from 'node:os'
 import { AGH_MARKER, aghRootCandidates, resolveAghRoot } from './lib/paths.mjs'
 
@@ -115,6 +115,90 @@ function pickNode() {
     }
   }
   return process.execPath
+}
+
+/**
+ * 注入插件运行期环境变量（§12.3，与 agh.sh 的 export 同口径）。
+ *
+ * 为什么必须在启动器里做：AGH 会把插件**拷贝**到自己的 home 运行，插件无法靠
+ * 相对路径找内核，只能靠 daemon 进程环境里的三个变量（PAPER_AGENT_PYTHON /
+ * PAPER_AGENT_KERNEL_ROOT / PAPER_AGENT_RUNS_DIR）。此前本文件只在注释里承诺
+ * "必须注入"、实际并未传——daemon 照样就绪，但 sciret_* 全部 PLUGIN_ENV_MISSING，
+ * 表现为"内核未能启动、有效步数 0"（2026-10-12 用户实测踩坑，见 README §8）。
+ *
+ * 与 _env.sh pa_python 同序：显式环境变量永远优先（只校验、不覆盖）→ PATH 上的
+ * python/python3/py **实测可跑**（WindowsApps 的 0 字节假桩 existsSync 为真但
+ * 执行必败，必须真跑一次排除）→ WorkBuddy 托管安装通配。
+ */
+async function tryPython(cand) {
+  return new Promise((resolveOk) => {
+    let child
+    try {
+      child = spawn(cand, ['-c', 'import sys'], { stdio: 'ignore', timeout: 8000 })
+    } catch {
+      resolveOk(false)
+      return
+    }
+    child.on('error', () => resolveOk(false))
+    child.on('close', (code) => resolveOk(code === 0))
+  })
+}
+
+async function findPythonExecutable() {
+  // PATH 探测候选（python → python3 → py；Windows 按 PATHEXT 补后缀）
+  const exts =
+    process.platform === 'win32'
+      ? (process.env['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.toLowerCase())
+      : ['']
+  const found = []
+  for (const name of ['python', 'python3', 'py']) {
+    outer: for (const dir of (process.env['PATH'] ?? '').split(delimiter)) {
+      if (!dir) continue
+      for (const ext of exts) {
+        const cand = join(dir, name + ext)
+        if (existsSync(cand)) {
+          found.push(cand)
+          break outer
+        }
+      }
+    }
+  }
+  // WorkBuddy 托管安装：按当前机器用户通配（不写死某台开发机的路径），版本号降序
+  const wbRoot = join(homedir(), '.workbuddy', 'binaries', 'python', 'versions')
+  if (existsSync(wbRoot)) {
+    const versions = readdirSync(wbRoot)
+      .filter((d) => /^\d+\.\d+\.\d+$/.test(d))
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+    for (const v of versions) {
+      const exe =
+        process.platform === 'win32' ? join(wbRoot, v, 'python.exe') : join(wbRoot, v, 'bin', 'python3')
+      if (existsSync(exe)) found.push(exe)
+    }
+  }
+  for (const cand of found) {
+    if (await tryPython(cand)) return cand
+  }
+  return null
+}
+
+/** 计算并注入插件运行期环境变量；返回 null=成功，否则返回错误消息。 */
+async function injectPluginEnv() {
+  if (!process.env['PAPER_AGENT_PYTHON']) {
+    const py = await findPythonExecutable()
+    if (!py) {
+      return '未找到可用的 Python 解释器（内核需要 ≥3.10，零第三方依赖）'
+    }
+    process.env['PAPER_AGENT_PYTHON'] = py
+  } else if (!existsSync(process.env['PAPER_AGENT_PYTHON'])) {
+    return `PAPER_AGENT_PYTHON 指向的解释器不存在：${process.env['PAPER_AGENT_PYTHON']}`
+  }
+  // kernel/runs/根/AGH 根都从启动器已探测的 ROOT/AGH_ROOT 派生（机器无关）；
+  // 已显式设置的变量不覆盖（与 agh.sh 的 ${VAR:-default} 语义一致）。
+  if (!process.env['PAPER_AGENT_KERNEL_ROOT']) process.env['PAPER_AGENT_KERNEL_ROOT'] = resolve(ROOT, 'kernel')
+  if (!process.env['PAPER_AGENT_RUNS_DIR']) process.env['PAPER_AGENT_RUNS_DIR'] = resolve(ROOT, 'runs')
+  if (!process.env['PAPER_AGENT_ROOT']) process.env['PAPER_AGENT_ROOT'] = ROOT
+  if (!process.env['PAPER_AGENT_AGH_ROOT'] && AGH_ROOT) process.env['PAPER_AGENT_AGH_ROOT'] = AGH_ROOT
+  return null
 }
 
 /**
@@ -263,6 +347,21 @@ async function main() {
   log(`  项目根: ${ROOT}`)
   log(`  Node   : ${process.versions.node} (${node})`)
   log('')
+
+  // ---- 步骤 0：插件运行期环境注入（必须在 spawn daemon 之前，见 injectPluginEnv 注释）----
+  const envError = await injectPluginEnv()
+  if (envError) {
+    fail(
+      'plugin-env',
+      envError,
+      '设置 PAPER_AGENT_PYTHON 指向 python.exe 绝对路径后重试；或安装 Python ≥3.10（内核只用标准库）。',
+    )
+    return finish()
+  }
+  ok(
+    'plugin-env',
+    `插件运行期环境已注入：python=${process.env['PAPER_AGENT_PYTHON']} · kernel=${process.env['PAPER_AGENT_KERNEL_ROOT']} · runs=${process.env['PAPER_AGENT_RUNS_DIR']}`,
+  )
 
   // ---- 步骤 1/2：AGH 构建产物与 daemon ----
   if (bffOnly) {
