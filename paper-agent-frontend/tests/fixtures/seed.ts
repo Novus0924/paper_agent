@@ -522,7 +522,7 @@ const SOLID_EVIDENCE: RawEvidence[] = [
  * 钙钛矿（DONE，真降级）：8 条证据 = 4 文献条目（3 个唯一 DOI）+ 4 产物。
  * EV-0001 是跨任务借用的同一篇论文（与固态电解质任务共享 DOI，演示跨任务去重）；
  * EV-0003 与 EV-0002 同 DOI 同任务（核验阶段从另一来源再次命中，演示同任务去重）。
- * 步骤按 research 链路编号（后端 materials 工作流未实现，创建即 400）。
+ * 步骤按 research 链路编号（唯一已实现工作流）。
  */
 const PEROVSKITE_EVIDENCE: RawEvidence[] = [
   lit({
@@ -1768,10 +1768,6 @@ export const PREFLIGHT_SOURCES: Record<string, string> = {
   semantic_scholar: 'unavailable:429',
   local: 'ok',
 };
-
-/** materials 工作流未实现的 fail-fast 文案（routes/v1/tasks.ts WORKFLOWS_NOT_IMPLEMENTED） */
-export const WORKFLOWS_NOT_IMPLEMENTED_MATERIALS =
-  '材料发现工作流（候选生成/性质预测/条件搜索/多目标排序/报告汇总）尚未实现内核算子。MVP 请用 workflow=research。';
 
 /** 统一错误体（infra/errors.ts errorBody：恰好 error/code 两个字段） */
 export function errorBody(code: string, message: string, action?: string) {

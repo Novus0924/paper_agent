@@ -49,7 +49,7 @@ async function readKernelWorkflows(): Promise<Record<string, { id: string; label
 }
 
 describe('工作流规格契约（BFF ⟷ Python 内核）', () => {
-  it('步骤 id 与标签完全一致（research 六步、materials 五步）', async () => {
+  it('步骤 id 与标签完全一致（research 七步：R1–R6 + S1）', async () => {
     const kernel = await readKernelWorkflows()
     if (!kernel) {
       // 无 Python 环境时明确跳过，而非静默通过
@@ -66,16 +66,17 @@ describe('工作流规格契约（BFF ⟷ Python 内核）', () => {
   it('API 可选的工作流**必须都是已实现的**（不许声明了却跑不通）', async () => {
     // 这条防的是"契约声明了能力、后端没实现"——比缺功能更糟：
     // 用户建完任务、连 AGH 会话都建好了，才在执行某一步时被告知"尚未实现"，
-    // 白白消耗一次真实模型回合（我这次就踩到：materials 直到 pipeline 抛错才暴露）。
+    // 白白消耗一次真实模型回合（materials 伪选项即此病灶：2026-10-12 已全层删除，
+    // 防线保留，防未来新增工作流时重蹈覆辙）。
     //
     // 断言方式：直接问内核"这个工作流能不能真跑起来"，
-    // 而不是比对步骤表（步骤表定义了 ≠ 步骤有实现 —— 恰恰是这次的真实情况）。
+    // 而不是比对步骤表（步骤表定义了 ≠ 步骤有实现）。
     if (!existsSync(KERNEL_DIR)) {
       console.warn('[skip] 未找到 kernel/，跳过未实现工作流校验')
       return
     }
     // BFF 侧"接受创建"的白名单：与 tasks.ts 的 WORKFLOWS 同源
-    const API_ACCEPTS: Record<string, boolean> = { research: true, materials: false }
+    const API_ACCEPTS: Record<string, boolean> = { research: true }
 
     for (const [name, apiAccepts] of Object.entries(API_ACCEPTS)) {
       const probe = await runKernelPlanProbe(name)

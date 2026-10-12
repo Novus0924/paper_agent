@@ -202,10 +202,13 @@ describe('FE-04 新建任务向导', () => {
     );
   });
 
-  it('切换工作流同步步骤链与摘要', async () => {
+  it('新建页只提供 research 工作流（materials 伪选项已全层删除），步骤链默认渲染', async () => {
     renderApp('/new');
-    await userEvent.click(await screen.findByRole('radio', { name: /材料体系分析/ }));
-    expect(await screen.findByText(/P1 → P2 → P3 → P4 → P5/)).toBeInTheDocument();
+    expect(await screen.findByRole('radio', { name: /科研综述/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(await screen.findByText(/R1 → R2 → R3 → R4 → R5 → R6/)).toBeInTheDocument();
   });
 });
 

@@ -29,23 +29,12 @@ export const WORKFLOWS: Record<WorkflowName, WorkflowDef> = {
     defaultSources: ['arxiv', 'crossref', 'openalex', 'semantic_scholar'],
     outputNote: '结构化综述报告 + 证据清单 + 审计包',
   },
-  materials: {
-    name: 'materials',
-    label: '材料体系分析',
-    description: '面向具体材料体系：配方—工艺—性能关联分析，输出可比对的方案矩阵。',
-    steps: [
-      { id: 'P1', label: '界定材料体系与性能指标' },
-      { id: 'P2', label: '检索配方—工艺—性能数据' },
-      { id: 'P3', label: '建立性能对比矩阵' },
-      { id: 'P4', label: '一致性核验与异常标注' },
-      { id: 'P5', label: '撰写方案建议与结论' },
-    ],
-    defaultSources: ['arxiv', 'openalex', 'semantic_scholar', 'local'],
-    outputNote: '方案对比报告 + 数据证据 + 审计包',
-  },
 };
 
-export const WORKFLOW_ORDER: WorkflowName[] = ['research', 'materials'];
+// 历史注记：materials（材料体系分析）曾在此登记为可选工作流，但内核算子从未实现
+// ——用户可选、必然失败的三层伪选项（前端卡 → BFF 400 → 内核零算子），
+// 2026-10-12 经价值评估全层删除。未来新增工作流先落地内核算子，再在此登记。
+export const WORKFLOW_ORDER: WorkflowName[] = ['research'];
 
 export interface SourceDef {
   name: SourceName;

@@ -19,7 +19,7 @@ export type EvidenceKind =
   | 'review'
   | 'synthesis';
 
-export type WorkflowName = 'research' | 'materials';
+export type WorkflowName = 'research';
 export type SourceName = 'arxiv' | 'crossref' | 'openalex' | 'semantic_scholar' | 'local';
 export type LitSource = 'auto' | 'local' | 'arxiv';
 

@@ -8,7 +8,7 @@
 - __main__.py     CLI 入口（AGH 插件 sciret_* 工具的调用目标）
 - state.py        Run/Step 状态机（M3）
 - ledger.py       证据 append-only 哈希链账本（M2）
-- pipeline.py     research/materials 流水线（M2/M3）
+- pipeline.py     research 流水线（M2/M3）
 - report.py       报告装配与门禁（M6）
 """
 

@@ -18,20 +18,16 @@ import { resolve } from 'node:path'
 /**
  * 工作流白名单。
  *
- * ⚠️ `materials` 已从"声明可用"改为**显式未实现**（2026-10-11）。
- * 之前它和其他值一样被接受、步骤表也定义了，直到执行到某一步才抛
- * `PipelineError: 步骤 P1 尚未实现`——**失败点太晚**：用户建完任务、连会话都建好了、
- * 才发现自己选的工作流根本跑不通，白白消耗一次 AGH 回合。
+ * 历史教训（2026-10-11 → 12）：`materials` 曾以「规格已定义」形态存在——
+ * 步骤表也定义了，直到执行到某一步才抛 `PipelineError: 步骤 P1 尚未实现`
+ * （失败点太晚：用户建完任务、连会话都建好了，才发现根本跑不通）；
+ * 后改为创建时 400 显式未实现；2026-10-12 经价值评估**全层删除**——
+ * 内核零算子的规格对用户没有实际作用，只制造"这产品能做材料分析"的伪选项。
  *
- * 现在的行为：创建时即400，并说清"未实现 + 可用什么替代"。
+ * 现在的行为：任何非 research 取值在创建时即 400，说清可用工作流。
  * 这是 §11 Fail-fast 原则的直接应用：越早暴露��越省资源。
  */
 const WORKFLOWS = ['research'] as const
-
-/** 已声明但**尚未实现**的工作流（入口即拒绝，附替代方案）。 */
-const WORKFLOWS_NOT_IMPLEMENTED: Record<string, string> = {
-  materials: '材料发现工作流（候选生成/性质预测/条件搜索/多目标排序/报告汇总）尚未实现内核算子。MVP 请用 workflow=research。',
-}
 
 const LIT_SOURCES = ['local', 'arxiv', 'auto'] as const
 
@@ -46,13 +42,6 @@ export const WORKFLOW_STEPS: Record<string, { id: string; label: string }[]> = {
     { id: 'R5', label: '综述写作' },
     { id: 'R6', label: '自评审' },
     { id: 'S1', label: '综合回答' },
-  ],
-  materials: [
-    { id: 'P1', label: '候选生成' },
-    { id: 'P2', label: '性质预测' },
-    { id: 'P3', label: '条件搜索' },
-    { id: 'P4', label: '多目标排序' },
-    { id: 'P5', label: '报告汇总' },
   ],
 }
 
@@ -126,18 +115,14 @@ export function registerTasksRoutes(app: FastifyInstance, ctx: AppContext): void
     const body = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>
     const goal = validateGoal(body['goal'])
 
-    // ⚠️ 顺序要紧：先判"未实现"再走 validateEnum。
-    // 反过来的话，materials 会先被 validateEnum 拦下，抛通用错误，
-    // 我写的"未实现 + 替代方案"说明永远轮不到执行（等于白写）。
+    // ⚠️ Fail-fast：白名单外的 workflow 在创建时即 400（不建任务、不开会话、不耗模型回合）。
     const wfRaw = typeof body['workflow'] === 'string' ? body['workflow'].trim() : ''
     if (wfRaw && !WORKFLOWS.includes(wfRaw as (typeof WORKFLOWS)[number])) {
-      const why = WORKFLOWS_NOT_IMPLEMENTED[wfRaw]
       throw new ApiError(
         'BAD_PARAM',
         `workflow=${wfRaw} 暂不可用`,
-        why ??
-          `支持的工作流：${WORKFLOWS.join(' / ')}。` +
-            `注：白名单按实现情况收紧——新增工作流须先落地内核算子，不能只在 API 层声明。`,
+        `支持的工作流：${WORKFLOWS.join(' / ')}。` +
+          `注：白名单按实现情况收紧——新增工作流须先落地内核算子，不能只在 API 层声明。`,
       )
     }
     const workflow = validateEnum(body['workflow'], WORKFLOWS, 'research', 'workflow')

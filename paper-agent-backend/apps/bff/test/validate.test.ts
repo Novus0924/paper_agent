@@ -37,9 +37,9 @@ describe('validateTaskId（防目录穿越白名单）', () => {
 })
 
 describe('validateEnum（非法回退默认并显式告知）', () => {
-  const allowed = ['research', 'materials'] as const
+  const allowed = ['research'] as const
   it('合法值原样返回', () => {
-    expect(validateEnum('materials', allowed, 'research', 'workflow')).toEqual({ value: 'materials', fellBack: false })
+    expect(validateEnum('research', allowed, 'research', 'workflow')).toEqual({ value: 'research', fellBack: false })
   })
   it('缺省用默认且不算回退', () => {
     expect(validateEnum(undefined, allowed, 'research', 'workflow')).toEqual({ value: 'research', fellBack: false })

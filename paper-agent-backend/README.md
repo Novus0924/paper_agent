@@ -13,8 +13,9 @@
 > | DoD 总验收 | `pnpm dod` | 11 项门禁 + 13 条逐条判定全绿 |
 > | 端到端 | `bash scripts/verify-*.sh` | 六段合计 **179 项**断言全绿 |
 >
-> 已知未实现项（需求已列、边界如实标注）：`materials` 工作流算子、
-> AGH 集成一致性校验、OCR、容器化（§12.4 标为"建议"）。逐条说明见 §9.5。
+> 已知未实现项（需求已列、边界如实标注）：AGH 集成一致性校验、OCR、
+> 容器化（§12.4 标为"建议"）。逐条说明见 §9.5。
+> （`materials` 工作流已于 2026-10-12 经价值评估全层删除，演进记录见 §5.8。）
 >
 > **v2.2 变更摘要**：
 > ① 终态追问打通——DONE/FAILED 任务允许 ask/revise（同一 AGH 会话发起新回合，终态产物不可变，回复经既有 message SSE 事件流呈现）；
@@ -436,26 +437,28 @@ pnpm lint:strict   # --max-warnings 0（收紧用）
 
 这是我在 DoD 后逐条对代码核查才发现的问题——**文档说支持，代码没实现**。
 
-####① `workflow=materials`：从"跑到一半才炸"改为"入口即拒"
+####① `workflow=materials`：三次演进——"跑到一半才炸" → "入口即拒" → "全层删除"
 
 **原状**：API 的 `WORKFLOWS` 含 `materials`、步骤表也定义了P1–P5，
 但内核 `execute_step` 只注册了 R1–R6 → 一路跑到 P1 才抛「步骤 P1 尚未实现」。
 **失败点太晚**：任务已建、AGH 会话已开、模型回合已跑，才告知选的工作流跑不通。
 
-**现在**：
-```
-POST /api/v1/tasks {"workflow":"materials"}
-→ 400 {"code":"BAD_PARAM","error":"workflow=materials 暂不可用（材料发现工作流…尚未实现内核算子。MVP 请用 workflow=research。）"}
-```
-内核侧同步在 `plan` 就拦（`workflow.is_implemented`），**两侧口径一致**，
-并由 `workflow-contract.test.ts` 断言"API 口径 == 内核口径"。
+**第一次收口（2026-10-11）**：创建时即 400，内核 `plan` 同步拦
+（`workflow.is_implemented`），两侧口径一致，由 `workflow-contract.test.ts` 锁定。
+
+**第二次收口（2026-10-12，终态）**：价值评估认定内核零算子的规格对用户没有
+实际作用——前端仍把它渲染成可选工作流卡（伪选项），用户可选、必然失败。
+全层删除：内核 `workflow.WORKFLOWS`、BFF `WORKFLOW_STEPS` 与白名单、
+前端 registry 卡片与 `WorkflowName` 类型（收窄为 `'research'`）。
+历史任务快照带 materials 值时，重跑预填保 goal、工作流回退 research。
 
 **顺带修掉一个更隐蔽的问题**：原先 `plan` 对**完全未知**的工作流会**静默回退**research，
-只在返回值里写一行 `workflow_fallback`。用户以为跑的是 materials、实际跑的是 research，
-产物结构与预期不符却毫无拦截。**工作流决定步骤集与产物结构，跑错就是错的** → 改为报错。
+只在返回值里写一行 `workflow_fallback`。产物结构与预期不符却毫无拦截。
+**工作流决定步骤集与产物结构，跑错就是错的** → 改为报错（保留至今）。
 
 - 术语区分（`kernel/sciret_kernel/workflow.py`）：`is_known()`（规格已定义）
-  vs `is_implemented()`（算子齐备）。**规格存在 ≠ 可执行**，两者必须分开声明。
+  vs `is_implemented()`（算子齐备）。**规格存在 ≠ 可执行**，两者必须分开声明；
+  新增工作流时先落算子、再声明规格，两处同步后才对用户可见。
 
 #### ② `lit_source=arxiv/auto`：现在真联网抓取
 

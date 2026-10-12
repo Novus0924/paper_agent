@@ -26,7 +26,6 @@ import {
   REPORTS,
   SEED_TASKS,
   TASK_IDS,
-  WORKFLOWS_NOT_IMPLEMENTED_MATERIALS,
   bibtexOf,
   libraryQuery,
   libraryRefOf,
@@ -179,13 +178,13 @@ describe('创建任务', () => {
     ).rejects.toMatchObject({ status: 400, code: 'BAD_GOAL' });
   });
 
-  it('workflow=materials → 400 BAD_PARAM，文案即后端 fail-fast 原文', async () => {
+  it('workflow=materials → 400 BAD_PARAM（materials 已下线，白名单外一律 fail-fast）', async () => {
     backend = useLiveBackend();
     await expect(
       api.createTask({ goal: 'x', workflow: 'materials' as never, lit_source: 'auto', sources: [] }),
     ).rejects.toMatchObject({
       code: 'BAD_PARAM',
-      message: expect.stringContaining(WORKFLOWS_NOT_IMPLEMENTED_MATERIALS),
+      message: expect.stringContaining('支持的工作流：research'),
     });
   });
 

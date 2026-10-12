@@ -31,11 +31,13 @@ export interface RerunPrefill {
 function readRerunPrefill(state: unknown): RerunPrefill | null {
   const rerun = (state as { rerun?: RerunPrefill } | null)?.rerun;
   if (!rerun || typeof rerun.goal !== 'string' || !rerun.goal.trim()) return null;
-  if (!(rerun.workflow in WORKFLOWS)) return null;
+  // navigate state 是运行时数据，TS 类型不可信：历史任务可能带已下线的
+  // 工作流值（如 materials，2026-10-12 已删除）——保 goal，工作流回退 research。
+  const wf: WorkflowName = rerun.workflow === 'research' ? rerun.workflow : 'research';
   const sources = Array.isArray(rerun.sources)
     ? rerun.sources.filter((s) => SOURCES.some((x) => x.name === s))
     : [];
-  return { ...rerun, sources };
+  return { ...rerun, workflow: wf, sources };
 }
 
 /** FE-04 新建任务向导：目标 → 工作流 → 数据源（含连通性预检）→ 提交即建会话并运行 */

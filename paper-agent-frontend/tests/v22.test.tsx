@@ -130,7 +130,9 @@ describe('v2.2 一键重跑（P1）', () => {
         task_id: TASK,
         run_status: 'DONE',
         goal: '检索并综述固态电解质界面阻抗的表征方法',
-        workflow: 'materials',
+        // 故意用已下线的工作流值（materials 于 2026-10-12 删除）：
+        // 验证旧任务快照经 navigate state 预填时的回退——goal 保留、workflow 回退 research
+        workflow: 'materials' as never,
         sources: ['crossref', 'openalex'],
       }),
     );
@@ -157,8 +159,8 @@ describe('v2.2 一键重跑（P1）', () => {
     await userEvent.click(await screen.findByRole('button', { name: '再次研究' }));
     const ta = await screen.findByRole('textbox', { name: /你想研究什么/ });
     expect(ta).toHaveValue('检索并综述固态电解质界面阻抗的表征方法');
-    // workflow 预填为原任务的 materials，用户可改后提交
-    expect(screen.getByRole('radio', { name: /材料体系分析/ })).toHaveAttribute(
+    // 旧任务快照带已下线的 workflow=materials：goal 保留，工作流回退 research（防漂移）
+    expect(screen.getByRole('radio', { name: /科研综述/ })).toHaveAttribute(
       'aria-checked',
       'true',
     );

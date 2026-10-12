@@ -52,7 +52,6 @@ import {
   SESSION_EXPORT_CONTENTS,
   SSE_CONTINUATION,
   SSE_FRAMES,
-  WORKFLOWS_NOT_IMPLEMENTED_MATERIALS,
   bibtexOf,
   citationOf,
   errorBody,
@@ -1401,15 +1400,14 @@ if __name__ == "__main__":
   const createTask = (body: Record<string, unknown>): ResSpec => {
     const goal = validateGoal(body['goal']);
     if (typeof goal !== 'string') return goal;
-    // 顺序要紧：先判"未实现"再走枚举回退（反过来的话说明文案永远轮不到执行）
+    // Fail-fast：白名单外的 workflow 创建时即 400（镜像 routes/v1/tasks.ts；
+    // materials 已于 2026-10-12 全层删除，任何非 research 一律通用文案）
     const wfRaw = typeof body['workflow'] === 'string' ? body['workflow'].trim() : '';
     if (wfRaw && wfRaw !== 'research') {
-      const why = wfRaw === 'materials' ? WORKFLOWS_NOT_IMPLEMENTED_MATERIALS : undefined;
       return err(
         'BAD_PARAM',
         `workflow=${wfRaw} 暂不可用`,
-        why ??
-          `支持的工作流：research。注：白名单按实现情况收紧——新增工作流须先落地内核算子，不能只在 API 层声明。`,
+        `支持的工作流：research。注：白名单按实现情况收紧——新增工作流须先落地内核算子，不能只在 API 层声明。`,
       );
     }
     const workflow = validateEnum(body['workflow'], ['research'] as const, 'research', 'workflow');

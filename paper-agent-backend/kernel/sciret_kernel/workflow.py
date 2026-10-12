@@ -1,14 +1,20 @@
 """工作流规格（需求文档 §14 Workflow SPI：新增工作流=声明规格，复用状态机）。
 
-research：六步确定性步骤 R1~R6（**已实现**，MVP 唯一可执行工作流）
-          + 尾部一个受控模型步骤 S1（综合回答，**不由 run_all 执行**）；
-materials：五步 P1~P5（README 术语表已定义，但**算子尚未实现**）。
+research：六步确定性步骤 R1~R6（**已实现**，唯一工作流）
+          + 尾部一个受控模型步骤 S1（综合回答，**不由 run_all 执行**）。
 
 ⚠️ 「规格存在」≠「可执行」。两者必须分开声明，否则就会出现
 "API 收下了、建了任务、连 AGH 会话都开好了，才在第 3 步被告知尚未实现"——
 白白消耗一次真实模型回合，用户的观感是"这产品半成品"。
 故本模块同时提供 `is_known`（规格存在）与 `is_implemented`（算子齐备），
 并让 plan / execute 两条路径都按 Fail-fast 拒绝未实现者。
+
+历史注记：materials（材料发现五步 P1~P5）曾以「规格已定义、算子未实现」的
+形态挂在规格表里，API/BFF/前端各留一份未实现提示——构成三层伪选项，
+用户在新建任务页可选它、必然失败。2026-10-12 经价值评估后全层删除：
+内核零算子的规格对用户没有任何实际作用，只制造"这产品能做材料分析"的假象。
+未来新增工作流时按 §14 SPI 在此声明规格、在 pipeline.STEP_FUNCS 落算子，
+两处同步后才对用户可见。
 """
 
 from __future__ import annotations
@@ -22,13 +28,6 @@ WORKFLOWS: dict[str, list[tuple[str, str]]] = {
         ("R5", "综述写作"),
         ("R6", "自评审"),
         ("S1", "综合回答"),
-    ],
-    "materials": [
-        ("P1", "候选生成"),
-        ("P2", "性质预测"),
-        ("P3", "条件搜索"),
-        ("P4", "多目标排序"),
-        ("P5", "报告汇总"),
     ],
 }
 
@@ -47,14 +46,6 @@ MODEL_STEPS: frozenset[str] = frozenset({"S1"})
 #: 算子已实现的工作流白名单（**规格已定义但算子未齐备**的不得列入）。
 #: 增删工作流时必须同步 pipeline.STEP_FUNCS，否则 plan/execute 会拒绝。
 IMPLEMENTED: frozenset[str] = frozenset({"research"})
-
-#: 未实现工作流的人话说明（供 API 层直接透传给用户，别只丢一个错误码）
-NOT_IMPLEMENTED_REASON: dict[str, str] = {
-    "materials": (
-        "材料发现工作流（候选生成/性质预测/条件搜索/多目标排序/报告汇总）的算子尚未实现。"
-        "MVP 请用 workflow=research（多源检索→精读→拆解→验证→写作→自评审）。"
-    ),
-}
 
 
 def steps_for(workflow: str) -> list[tuple[str, str]]:
