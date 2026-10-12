@@ -9,6 +9,11 @@ rem
 rem AGH Web (default http://127.0.0.1:4177) lets you observe the real
 rem AGH invocations. Override the port with the AGH_WEB_PORT env var.
 rem
+rem Before spawning any service, start.mjs pre-releases the ports this run
+rem needs (BFF / AGH Web / frontend) by terminating processes LISTENING on
+rem them (netstat+taskkill on Windows), so a stale process from a previous
+rem run no longer aborts the launch.
+rem
 rem ASCII-only on purpose: all paths are resolved at RUNTIME via %~dp0,
 rem so this file stays safe for non-ASCII project paths (CJK etc.).
 rem

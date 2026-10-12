@@ -301,6 +301,137 @@ function portFree(port) {
   })
 }
 
+/** 运行外部命令收集 stdout（异步 spawn；本机 spawnSync 一律 EBUSY，见 processAlive 注释）。 */
+function capture(cmd, argv, timeoutMs = 8000) {
+  return new Promise((resolveOut, rejectErr) => {
+    let child
+    try {
+      child = spawn(cmd, argv, { stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (e) {
+      rejectErr(e)
+      return
+    }
+    let out = ''
+    const timer = setTimeout(() => {
+      try {
+        child.kill()
+      } catch {
+        /* ignore */
+      }
+      rejectErr(new Error(`${cmd} 超时`))
+    }, timeoutMs)
+    child.stdout?.on('data', (d) => (out += d))
+    child.on('error', (e) => {
+      clearTimeout(timer)
+      rejectErr(e)
+    })
+    child.on('close', () => {
+      clearTimeout(timer)
+      resolveOut(out)
+    })
+  })
+}
+
+/**
+ * 列出 LISTENING 在指定 TCP 端口上的 PID（端口预释放步骤 0.5 的查找层）。
+ * Windows 用 netstat -ano（不依赖第三方工具，与 processAlive 的 tasklist 同哲学）；
+ * POSIX 用 lsof -ti tcp:PORT。查找失败按「无占用」处理——预释放是尽力而为，
+ * 后续各步骤的 portFree 探测才是最终裁决。
+ */
+async function listListenPids(port) {
+  if (process.platform !== 'win32') {
+    try {
+      const out = await capture('lsof', ['-ti', `tcp:${port}`])
+      return [...new Set(out.split(/\s+/).map((s) => Number(s)).filter((n) => Number.isFinite(n) && n > 0))]
+    } catch {
+      return []
+    }
+  }
+  let out = ''
+  try {
+    out = await capture('netstat.exe', ['-ano', '-p', 'tcp'])
+  } catch {
+    return []
+  }
+  const pids = new Set()
+  for (const line of out.split(/\r?\n/)) {
+    const cols = line.trim().split(/\s+/)
+    // 数据行形如：TCP  0.0.0.0:4177  0.0.0.0:0  LISTENING  12345
+    // （IPv6 本地地址为 [::]:4177，同样被 endsWith 命中；表头/无 PID 行被列数与数字校验挡掉）
+    if (cols.length >= 5 && cols[0] === 'TCP' && cols[3] === 'LISTENING' && cols[1].endsWith(`:${port}`)) {
+      const pid = Number(cols[4])
+      if (Number.isFinite(pid) && pid > 0) pids.add(pid)
+    }
+  }
+  return [...pids]
+}
+
+/** 终止进程（Windows taskkill 连树杀；POSIX 先 SIGTERM 后 SIGKILL 兜底）。 */
+async function killPid(pid) {
+  if (process.platform === 'win32') {
+    try {
+      await capture('taskkill.exe', ['/F', '/T', '/PID', String(pid)])
+      return true
+    } catch {
+      return false
+    }
+  }
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch {
+    return false
+  }
+  await new Promise((r) => setTimeout(r, 300))
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {
+    /* 已退出 */
+  }
+  return true
+}
+
+/**
+ * 步骤 0.5 核心：释放单个端口——找到 LISTENING 的进程并终止。
+ *
+ * 设计边界（确保不影响启动器其余功能）：
+ * - 无占用进程 → 记一条"空闲"即返回，不报错（常态路径）；
+ * - 绝不终止启动器自身（process.pid）与 PID 0/4（System/Idle）；
+ * - 终止失败只警告、不阻断——BFF/AGH Web/前端各步骤原有的占用探测
+ *   （portFree/健康检查）仍是最终兜底，不会出现"释放失败却静默假成功"；
+ * - 释放后复核一次，仍被占用则 info 提示，交给对应步骤的原有分支处理。
+ */
+async function releasePort({ port, label }) {
+  const pids = await listListenPids(port)
+  if (pids.length === 0) {
+    ok('release-ports', `${label} 端口 ${port} 空闲，无需释放`)
+    return
+  }
+  for (const pid of pids) {
+    if (pid === process.pid) {
+      log(`    [跳过] PID ${pid} 是启动器自身，不终止`)
+      continue
+    }
+    if (pid === 0 || pid === 4) {
+      log(`    [跳过] PID ${pid} 是系统进程（System/Idle），不终止；端口 ${port} 若仍冲突请用环境变量换端口`)
+      continue
+    }
+    log(`    终止占用 ${label} 端口 ${port} 的进程（pid=${pid}）…`)
+    const done = await killPid(pid)
+    if (!done) log(`    [警告] 终止 pid=${pid} 失败（可能权限不足）`)
+  }
+  // 监听句柄回收需要一小会；复核仍占用则交给后续步骤的原有占用分支兜底
+  await new Promise((r) => setTimeout(r, 500))
+  const still = await listListenPids(port)
+  if (still.length > 0) {
+    info(
+      'release-ports',
+      `端口 ${port}（${label}）释放后仍被占用（pid=${still.join(', ')}）——对应步骤将按占用分支处理`,
+    )
+  } else {
+    ok('release-ports', `端口 ${port}（${label}）已释放（此前占用：pid=${pids.join(', ')}）`)
+  }
+}
+
 async function waitFor(fn, { timeoutMs, intervalMs = 500, what }) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -364,6 +495,24 @@ async function main() {
     'plugin-env',
     `插件运行期环境已注入：python=${process.env['PAPER_AGENT_PYTHON']} · kernel=${process.env['PAPER_AGENT_KERNEL_ROOT']} · runs=${process.env['PAPER_AGENT_RUNS_DIR']}`,
   )
+
+  // ---- 步骤 0.5：端口预释放（spawn 任何服务之前；2026-10-12 用户需求）----
+  // 上次启动未正常退出（崩溃/关机/孤儿进程）会残留监听进程，让本次启动撞上
+  // "端口占用 → fail 中止 / info 跳过"。此处按**本次要启动的服务集合**逐一释放：
+  // --bff-only 只释放 BFF 端口（避免误杀正在跑的全栈中的 AGH Web/前端）；
+  // 无占用静默通过；释放细节与安全边界见 releasePort 注释。
+  // 前端探测提前到此处（只读文件系统，不 spawn）：释放清单需要前端端口；
+  // 它仍位于 BFF spawn 之前，满足下方 CORS 白名单注入的前置要求。
+  const frontend = resolveFrontend()
+  const releaseTargets = [{ port: BFF_PORT, label: 'BFF' }]
+  if (!bffOnly) {
+    releaseTargets.push({ port: AGH_WEB_PORT, label: 'AGH Web' })
+    if (frontend) releaseTargets.push({ port: frontend.port, label: '前端' })
+  }
+  log(`预释放端口：${releaseTargets.map((t) => `${t.label}:${t.port}`).join('、')}`)
+  for (const t of releaseTargets) {
+    await releasePort(t)
+  }
 
   // ---- 步骤 1/2：AGH 构建产物与 daemon ----
   if (bffOnly) {
@@ -481,10 +630,10 @@ async function main() {
     fail('bff-deps', `未找到 tsx: ${tsxCli}`, '先安装依赖：pnpm install')
     return finish()
   }
-  // 前端探测必须在 BFF **之前**：启动器把自己托管前端的 Origin 追加进 CORS 白名单。
+  // 前端探测（已在步骤 0.5 提前执行，见 releaseTargets 注释）：
+  // 启动器把自己托管前端的 Origin 追加进 CORS 白名单。
   // 漏掉它的症状是"JSON 接口正常、SSE 一帧都收不到"（换过 PAPER_AGENT_WEB_PORT +
   // 直连模式 VITE_API_BASE_URL=http://127.0.0.1:8787 时必现），排查成本极高。
-  const frontend = resolveFrontend()
   if (frontend && !bffOnly) {
     const feOrigin = `http://127.0.0.1:${frontend.port}`
     const extra = (process.env['PAPER_AGENT_CORS_EXTRA_ORIGINS'] ?? '')
