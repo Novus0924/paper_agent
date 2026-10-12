@@ -188,4 +188,38 @@ export default tseslint.config(
       'no-empty': 'off',
     },
   },
+
+  // ── 同步 spawn 垫片（.cjs，CommonJS 预载）──
+  // `node --require` 预载的 CommonJS 垫片（scripts/sync-spawn-shim.cjs）：
+  // require/module 等是 CommonJS 注入的全局，上面的 globals 段只覆盖 ESM，
+  // 不补此段会误报 no-undef（TD-01，2026-10-12 多视角验收发现）。
+  // 类型感知规则已被上方 disableTypeChecked 关闭，此处只补语言全局与同口径豁免。
+  {
+    files: ['scripts/**/*.cjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'readonly',
+        exports: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        process: 'readonly',
+        console: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        AbortController: 'readonly',
+      },
+    },
+    rules: {
+      'no-console': 'off',
+      // 垫片里空 catch 是"探测本机 spawn 是否损坏/清理路径"的有意行为，与 .mjs 同口径
+      'no-empty': 'off',
+    },
+  },
 )

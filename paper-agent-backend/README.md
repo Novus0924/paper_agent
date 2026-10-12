@@ -578,7 +578,7 @@ node scripts/start.mjs --bff-only   # 只起 BFF
 
 ```jsonc
 // GET /api/health
-{"status":"ok","service":"paper-agent-bff","version":"2.0.0-mvp","tasks":1,
+{"status":"ok","service":"paper-agent-bff","version":"2.5.0","tasks":1,
  "agh":{"connected":true,"agnes_version":"0.0.0","socket":"\\.\pipe\agnes-...","sessions_open":0}}
 
 // POST /api/v1/tasks → 201

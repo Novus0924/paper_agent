@@ -2,7 +2,7 @@
   "name": "paper-agent",
   "private": true,
   "type": "module",
-  "version": "2.0.0-mvp",
+  "version": "2.5.0",
   "description": "paper-agent 2.0 — 可审计、可复现、证据可溯源的科研智能体工作台（黑客松 U046 你说的都队）",
   "packageManager": "pnpm@10.34.5",
   "engines": {

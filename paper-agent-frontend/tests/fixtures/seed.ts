@@ -892,7 +892,7 @@ export interface RawReport {
   degraded_statement?: string;
   ledger_digest?: string;
   ledger_head?: string;
-  gate?: { passed: boolean; bypass?: string };
+  gate?: { passed: boolean; bypass?: boolean };
   run_status?: string;
   generated_at?: string;
 }

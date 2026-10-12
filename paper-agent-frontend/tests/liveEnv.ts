@@ -31,7 +31,7 @@
 
 import { createHash } from 'node:crypto';
 import { vi } from 'vitest';
-import { LiveApiClient } from '@/api/httpClient';
+import type { LiveApiClient } from '@/api/httpClient';
 import { applyEnvelope, emptyRuntime } from '@/api/normalize';
 import type { SseEnvelope } from '@/api/types';
 import { snapshot } from './helpers';

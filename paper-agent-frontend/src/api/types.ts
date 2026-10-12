@@ -116,6 +116,8 @@ export interface Conclusion {
   cid: string;
   text: string;
   evidence_ids: string[];
+  /** 结论置信度（内核实发 high/medium/low；界面当前未消费，仅保真声明） */
+  confidence?: string;
 }
 
 export interface ReportSection {
@@ -125,31 +127,41 @@ export interface ReportSection {
   body: string;
 }
 
+/** 报告门禁结论（kernel report.py 顶层实发；dto.ts 刻意保留给界面做可观测） */
+export interface ReportGate {
+  /** 门禁是否通过；passed=false 且 bypass=true 时报告以调试旁路输出 */
+  passed: boolean;
+  bypass?: boolean;
+}
+
+/**
+ * 结构化报告（对齐 kernel report.py 装配形状，seed RawReport 为其镜像）：
+ * 无 meta / verdict——那是 mock 世代残留，后端从不发送。
+ * 审计字段（ledger_digest/ledger_head）被 BFF dto.ts 剥离，前端不应声明。
+ */
 export interface Report {
   task_id: string;
   title: string;
   abstract: string;
   sections: ReportSection[];
   conclusions: Conclusion[];
+  /** 证据总数（内核顶层实发；历史视图缺失时界面回退 evidence.length） */
+  evidence_count?: number;
+  /** 本次运行是否发生过降级 */
+  degraded?: boolean;
   degraded_statement?: string;
   generated_at?: string;
-  meta?: {
-    model?: string;
-    session_id?: string;
-    evidence_count?: number;
-    citation_count?: number;
-  };
-  verdict?: {
-    passed: boolean;
-    text: string;
-  };
+  /** 门禁结论：passed=false 时报告为旁路产物，界面必须可见（dto.ts「门禁可观测」承诺） */
+  gate?: ReportGate;
+  run_status?: string;
 }
 
 export interface ReportResponse {
   status: 'ready' | 'generating';
   report?: Report;
-  /** 未就绪时说明需要完成的步骤，而不是报错 */
-  pending_note?: string;
+  /** generating 时同步下发运行状态与门禁（就绪前 gate 为 null） */
+  gate?: ReportGate | null;
+  run_status?: string;
 }
 
 export interface EvidenceItem {

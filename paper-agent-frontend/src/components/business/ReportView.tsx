@@ -22,8 +22,8 @@ export interface ReportViewProps {
 }
 
 /**
- * FE-07 报告中心（P-02/P-04）：元信息 chips + 章节目录 + 每条结论绑定证据与引用复制
- * + 结果验证 + 降级声明。会话标识与账本链等机器细节收进「审计信息」折叠，
+ * FE-07 报告中心（P-02/P-04）：元信息 chips（含门禁状态）+ 章节目录 + 每条结论绑定证据与引用复制
+ * + 门禁未通过警示 + 降级声明。会话标识与账本链等机器细节收进「审计信息」折叠，
  * 引用列表由证据账本回填（系统不伪造 DOI）。
  */
 export function ReportView({ taskId, report: doc, evidence, sessionId }: ReportViewProps) {
@@ -92,9 +92,16 @@ export function ReportView({ taskId, report: doc, evidence, sessionId }: ReportV
         <span className={ui.badge}>
           <Icon name="evidence" size={12} />
           {t('report.metaEvidenceCount', {
-            n: doc.meta?.evidence_count ?? evidence.length,
+            n: doc.evidence_count ?? evidence.length,
           })}
         </span>
+        {/* 门禁状态 chip（TD-02）：dto.ts 刻意保留下发的 gate 必须可观测 */}
+        {doc.gate && (
+          <span className={ui.badge}>
+            <Icon name={doc.gate.passed ? 'check' : 'warn'} size={12} />
+            {t(doc.gate.passed ? 'report.gatePassed' : 'report.gateFailed')}
+          </span>
+        )}
         <span className={ui.badge}>
           <Icon name="check" size={12} />
           {t('report.metaConclusionsCount', { n: doc.conclusions.length })}
@@ -231,17 +238,15 @@ export function ReportView({ taskId, report: doc, evidence, sessionId }: ReportV
         </div>
       )}
 
-      {doc.verdict && (
+      {/* 门禁未通过（bypass 旁路产物）：必须可见，不能让用户把未过门禁的报告当结论（TD-02） */}
+      {doc.gate && !doc.gate.passed && (
         <div className={report.section}>
-          <div
-            className={cx(report.verdict, !doc.verdict.passed && report.verdictFail)}
-            role="status"
-          >
+          <div className={cx(report.verdict, report.verdictFail)} role="alert">
             <p className={report.verdictHead}>
-              <Icon name={doc.verdict.passed ? 'check' : 'warn'} />
-              {t('report.verdictTitle')}
+              <Icon name="warn" />
+              {t('report.gateFailTitle')}
             </p>
-            {doc.verdict.text}
+            {t('report.gateFailBody')}
           </div>
         </div>
       )}
@@ -267,12 +272,10 @@ export function ReportView({ taskId, report: doc, evidence, sessionId }: ReportV
         hint={t('report.auditLead')}
       >
         <div className={report.auditGrid}>
-          {(doc.meta?.session_id ?? sessionId) && (
+          {sessionId && (
             <div>
               <p className={ui.kvLabel}>{t('report.auditSession')}</p>
-              <p className={report.auditValue}>
-                {doc.meta?.session_id ?? sessionId}
-              </p>
+              <p className={report.auditValue}>{sessionId}</p>
             </div>
           )}
           {ledger.length > 0 && (

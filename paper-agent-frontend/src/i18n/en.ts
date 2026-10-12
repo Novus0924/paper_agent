@@ -85,7 +85,14 @@ export const en: DeepPartial<typeof zhCN> = {
     colAction: 'Action',
   },
   monitor: { title: 'Monitor' },
-  report: { title: 'Report' },
+  report: {
+    title: 'Report',
+    gatePassed: 'Gate passed',
+    gateFailed: 'Gate failed',
+    gateFailTitle: 'Report gate failed',
+    gateFailBody:
+      'This report did not pass the integrity gate and is a debug-bypass artifact; conclusions may be incomplete. Resolve ledger issues and re-run to produce a gate-passed report.',
+  },
   evidence: { title: 'Evidence', kindSynthesis: 'Synthesized answer' },
   settings: { title: 'Settings' },
   export: {

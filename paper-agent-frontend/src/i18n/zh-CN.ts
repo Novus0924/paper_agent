@@ -326,7 +326,11 @@ export const zhCN = {
     notReadyLead: '需要先完成检索、分析与验证步骤，系统才会产出报告。',
     notReadyAction: '去看运行进度',
     evidenceBadgeTitle: '查看支撑证据 {ev}',
-    verdictTitle: '结果验证',
+    gatePassed: '门禁通过',
+    gateFailed: '门禁未通过',
+    gateFailTitle: '报告门禁未通过',
+    gateFailBody:
+      '本报告未通过完整性门禁，当前为调试旁路产物，结论可能不完整。建议排查账本问题后重新运行，以生成通过门禁的报告。',
     degradedStatement: '降级声明',
     citationNote: '说明：真实运行时文献与 DOI 由检索结果回填，系统不会伪造引用。',
     exportTitle: '导出与交付',

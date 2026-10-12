@@ -74,7 +74,7 @@ export class ExecutionService {
     this.syncFromKernel(task)
     this.assertNotBusy(taskId)
     const instruction = this.buildInstruction(task, 'run-all')
-    this.spawn(task, 'run-all', instruction)
+    this.dispatchViaSession(task,'run-all', instruction)
     return { task_id: taskId, run_status: 'RUNNING' }
   }
 
@@ -86,7 +86,7 @@ export class ExecutionService {
     const stepId = this.validateStep(task, rawStep)
     this.assertNotBusy(taskId)
     const instruction = this.buildInstruction(task, 'step', { step: stepId })
-    this.spawn(task, 'step', instruction)
+    this.dispatchViaSession(task,'step', instruction)
     return { task_id: taskId, step: stepId, run_status: 'RUNNING' }
   }
 
@@ -104,7 +104,7 @@ export class ExecutionService {
       throw new ApiError('BAD_STATE', `任务 ${taskId} 已完成（无待续跑步骤）`, '如需重新执行，请新建任务。')
     }
     const instruction = this.buildInstruction(task, 'resume')
-    this.spawn(task, 'resume', instruction)
+    this.dispatchViaSession(task,'resume', instruction)
     return { task_id: taskId, from_step: fromStep, run_status: 'RUNNING' }
   }
 
@@ -285,8 +285,10 @@ export class ExecutionService {
     return existsSync(resolve(this.runDir(taskId), 'report.json'))
   }
 
-  /** 启动后台执行：立即返回（202 语义），锁持有到回合结束 */
-  private spawn(task: TaskRecord, action: ExecutionAction, instruction: string): void {
+  /** 启动后台执行：立即返回（202 语义），锁持有到回合结束。
+   * 命名为 dispatch 而非 spawn：这里经 AGH 会话下发指令（gateway.prompt），
+   * 不创建任何 OS 进程——避免与「BFF 不 spawn 内核」红线的字面语义混淆（TD-11）。 */
+  private dispatchViaSession(task: TaskRecord, action: ExecutionAction, instruction: string): void {
     const taskId = task.task_id
     this.locks.set(taskId, { action, startedAt: new Date().toISOString(), sessionId: task.session_id })
     const fresh = this.index.get(taskId) ?? task
@@ -326,7 +328,7 @@ export class ExecutionService {
         // T4：run-all 主链路成功到达 DONE 且报告就绪 → 同一会话追加受控模型综合回合。
         // 锁保持持有（消息队列不会在综合回答期间并发投递）；综合回合失败不回滚主链路。
         if (!firstTurnFailed && action === 'run-all') {
-          // 先以内核产物为准同步状态：spawn 时索引里是 RUNNING，不同步就判断会漏
+          // 先以内核产物为准同步状态：下发时索引里是 RUNNING，不同步就判断会漏
           this.syncFromKernel(this.index.get(taskId))
           if (this.synthesisEligible(taskId)) {
             const after = this.index.get(taskId)

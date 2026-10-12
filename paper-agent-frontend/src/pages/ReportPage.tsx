@@ -189,7 +189,7 @@ export function ReportPage() {
               lead={
                 entry.snapshot?.run_status === 'FAILED'
                   ? t('monitor.failed')
-                  : (entry.report?.pending_note ?? t('report.notReadyLead'))
+                  : t('report.notReadyLead')
               }
               action={
                 <>

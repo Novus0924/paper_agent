@@ -18,10 +18,12 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { api } from '@/api/client';
+import type { Report, ReportResponse } from '@/api/types';
 import { LIVE_BASE, collect, useLiveBackend, type LiveBackend } from './liveEnv';
 import {
   AUDIT_EXPORT_CONTENTS,
   HARD_CARBON_DELTA,
+  REPORTS,
   SEED_TASKS,
   TASK_IDS,
   WORKFLOWS_NOT_IMPLEMENTED_MATERIALS,
@@ -232,7 +234,7 @@ describe('执行控制', () => {
 
     const report = await api.getReport(created.task_id);
     expect(report.status).toBe('ready');
-    // gate/run_status 是后端实发字段（前端 Report 类型未声明）——契约断言走裸查
+    // gate/run_status 已在前端 Report 类型声明（TD-02 防漂移）；裸查保留以锁死线形本身
     const bareReport = (await raw(`/api/v1/tasks/${created.task_id}/report`)).body as {
       report?: { gate?: { passed?: boolean }; run_status?: string };
     };
@@ -672,11 +674,57 @@ describe('报告', () => {
     const ready = await api.getReport(created.task_id);
     expect(ready.status).toBe('ready');
     expect(ready.report?.conclusions?.length).toBe(2);
-    // evidence_count 是后端实发字段（前端 Report 类型未声明）——契约断言走裸查
+    // evidence_count 已在前端 Report 类型声明（TD-02 防漂移）；裸查保留以锁死线形本身
     const bareReady = (await raw(`/api/v1/tasks/${created.task_id}/report`)).body as {
       report?: { evidence_count?: number };
     };
     expect(bareReady.report?.evidence_count).toBe(8);
+  });
+
+  it('契约防漂移：后端实发字段（seed 镜像）必须已在前端 Report 类型声明；mock 世代死字段不得复活', () => {
+    // 编译期守卫：本表与 src/api/types.ts 的 Report 键一一对应。
+    // Report 增删键而未同步本表 → satisfies 编译期即红（键缺失/多余都报错），
+    // 防止「后端实发、前端漏声明」的 mock 世代病根复发（TD-02，2026-10-12 验收）。
+    const declaredReportKeys = Object.keys({
+      task_id: true,
+      title: true,
+      abstract: true,
+      sections: true,
+      conclusions: true,
+      evidence_count: true,
+      degraded: true,
+      degraded_statement: true,
+      generated_at: true,
+      gate: true,
+      run_status: true,
+    } satisfies Record<keyof Report, boolean>);
+
+    // ReportResponse 同锁（generating 响应携带 gate/run_status）
+    expect(
+      Object.keys({
+        status: true,
+        report: true,
+        gate: true,
+        run_status: true,
+      } satisfies Record<keyof ReportResponse, boolean>),
+    ).toEqual(['status', 'report', 'gate', 'run_status']);
+
+    // dto.ts 剥离的审计键（前端类型不应声明）
+    const auditOnly = new Set(['ledger_digest', 'ledger_head']);
+    // mock 世代死字段：后端从不发送，类型/实现/种子都不得复活
+    const deadFields = ['verdict', 'meta', 'pending_note'];
+
+    for (const [taskId, report] of Object.entries(REPORTS)) {
+      const keys = Object.keys(report);
+      expect(
+        keys.filter((k) => deadFields.includes(k)),
+        `${taskId} 出现 mock 世代死字段`,
+      ).toEqual([]);
+      const undeclared = keys
+        .filter((k) => !auditOnly.has(k))
+        .filter((k) => !declaredReportKeys.includes(k));
+      expect(undeclared, `${taskId} 实发字段未在前端 Report 类型声明`).toEqual([]);
+    }
   });
 
   it('report.md：未就绪 404 NO_REPORT；就绪返回 markdown 与 Disposition inline', async () => {
