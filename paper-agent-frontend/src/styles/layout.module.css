@@ -1,9 +1,174 @@
-/* 应用外壳与页面骨架（FE-01 / §4.2）：尺寸全部来自 tokens，无硬编码 */
+/* 应用外壳与页面骨架（FE-01 / §4.2）：「深色科研控制台」
+   顶部栏 56px（品牌 | 页面标题 | 全局搜索占位 | 模式切换器）+ 左侧 240/64 导航 + 内容区 */
 
 .app {
   display: flex;
   height: 100vh;
   overflow: hidden;
+  background: var(--bg);
+}
+
+/* ---------------- 顶部栏：品牌 + 上下文标题 + 搜索 + 模式 ---------------- */
+.topbar {
+  height: var(--topbar-h);
+  flex: 0 0 var(--topbar-h);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 0 var(--s4);
+  background: var(--surface);
+}
+
+/* 品牌区：图标 + 名称 + 副标（点击回总览） */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  text-decoration: none;
+  color: inherit;
+}
+.mark {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  display: grid;
+  place-items: center;
+  color: var(--accent-fg);
+  flex: 0 0 auto;
+}
+.brandText {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+.brandName {
+  font-weight: 650;
+  font-size: 13.5px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+.brandSub {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* 顶部栏标题左侧的分隔线，把品牌与上下文标题分开 */
+.tbDivider {
+  width: 1px;
+  height: 22px;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+.tbTitle {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 26vw;
+  color: var(--ink);
+}
+
+/* 全局搜索占位框：本波仅占位，禁用态并注明 Cmd+K 即将支持 */
+.tbSearch {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 34px;
+  padding: 0 var(--s3);
+  margin: 0 auto;
+  min-width: 200px;
+  max-width: 420px;
+  width: 32vw;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12.5px;
+  user-select: none;
+}
+.tbSearchText {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tbKbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2xs);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+.tbRight {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: 0 0 auto;
+}
+.tbSpacer {
+  flex: 1;
+}
+.taskIdChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  padding: 3px var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  max-width: 260px;
+}
+.taskIdText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 数据来源状态徽章（live 单态，四态健康点） ---------------- */
+.modeSwitch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  height: 30px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.modeStatusText {
+  white-space: nowrap;
+}
+.modeDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--idle);
+}
+.modeDotOk {
+  background: var(--ok);
+}
+.modeDotWarn {
+  background: var(--warn);
+}
+.modeDotFail {
+  background: var(--fail);
 }
 
 /* ---------------- 左侧持久导航 ---------------- */
@@ -23,58 +188,24 @@
   width: var(--nav-w-collapsed);
   flex-basis: var(--nav-w-collapsed);
 }
-/* 收起后只剩 64px 轨道：图标是这一列唯一的内容，必须落在中轴上，
-   否则沿用的左内边距会让整列看起来偏左（用户第 3 点） */
-.sidebarCollapsed .brand,
 .sidebarCollapsed .navItem,
+.sidebarCollapsed .newTaskBtn,
 .sidebarCollapsed .collapseBtn {
   justify-content: center;
   padding-left: 0;
   padding-right: 0;
 }
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 17px var(--s4) var(--s3);
-}
-.mark {
-  width: 27px;
-  height: 27px;
-  border-radius: var(--r-sm);
-  background: var(--ink);
-  display: grid;
-  place-items: center;
-  color: var(--accent-fg);
-  flex: 0 0 auto;
-}
-.brandText {
-  min-width: 0;
-}
-.brandName {
-  font-weight: 650;
-  font-size: 14.5px;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-}
-.brandSub {
-  font-size: 11px;
-  color: var(--ink-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .newTaskBtn {
-  margin: var(--s1) var(--s3) var(--s3);
+  margin: var(--s3) var(--s3) var(--s2);
   display: flex;
   align-items: center;
   justify-content: center;
   gap: var(--s2);
   height: 36px;
-  border-radius: var(--r-sm);
+  border-radius: var(--r);
   background: var(--accent);
   color: var(--accent-fg);
-  font-weight: 560;
+  font-weight: 600;
   font-size: 13.5px;
   text-decoration: none;
   transition: background var(--dur) var(--ease);
@@ -95,7 +226,7 @@
   padding: 0 var(--s2);
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 .navItem {
   display: flex;
@@ -117,12 +248,12 @@
     color var(--dur) var(--ease);
 }
 .navItem:hover {
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  background: var(--surface-2);
   color: var(--ink);
 }
 .navItemActive {
-  background: var(--raised);
-  color: var(--ink);
+  background: var(--accent-dim);
+  color: var(--accent);
   font-weight: 600;
   /* 选中态左侧竖条：3px 强调色，是"当前页"最稳的非文字提示 */
   box-shadow: inset 3px 0 0 var(--accent);
@@ -133,9 +264,11 @@
   display: grid;
   place-items: center;
 }
-.navItem:hover .navIcon,
-.navItemActive .navIcon {
+.navItem:hover .navIcon {
   color: var(--ink);
+}
+.navItemActive .navIcon {
+  color: var(--accent);
 }
 .navLabel {
   flex: 1;
@@ -168,7 +301,7 @@
   border: 1px solid transparent;
 }
 .histItem:hover {
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  background: var(--surface-2);
 }
 .histItemActive {
   background: var(--raised);
@@ -208,99 +341,17 @@
   font-size: 12px;
 }
 .collapseBtn:hover {
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  background: var(--surface-2);
   color: var(--ink);
 }
 
-/* ---------------- 主区与顶部上下文栏 ---------------- */
+/* ---------------- 主区 ---------------- */
 .main {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
   background: var(--bg);
-}
-.topbar {
-  height: var(--topbar-h);
-  flex: 0 0 var(--topbar-h);
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  padding: 0 var(--s4);
-  background: var(--surface);
-}
-.tbTitle {
-  font-size: 13.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 32vw;
-}
-.tbSpacer {
-  flex: 1;
-}
-.taskIdChip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s1);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--ink-3);
-  padding: 3px var(--s2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-  max-width: 320px;
-}
-.taskIdText {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ---------------- 窄屏（≤900px）替代导航（DR-13） ---------------- */
-/* 侧栏在这一档整体 display:none，主导航改由顶栏右侧承担；断点与 app/nav.ts 的 NARROW_QUERY 同值 */
-.narrowNav {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: var(--s1);
-  min-width: 0;
-}
-.narrowItem {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s1);
-  flex: 0 0 auto;
-  height: 30px;
-  padding: 0 var(--s2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 12.5px;
-  white-space: nowrap;
-  text-decoration: none;
-}
-.narrowItem:hover {
-  border-color: var(--line-2);
-  color: var(--ink);
-  text-decoration: none;
-}
-.narrowItemActive {
-  border-color: var(--ink);
-  color: var(--ink);
-  font-weight: 600;
-}
-.narrowSelect {
-  flex: 0 1 auto;
-  min-width: 0;
-  width: auto;
-  max-width: 168px;
-  padding: 5px var(--s2);
-  font-size: 12.5px;
 }
 .scrollArea {
   flex: 1;
@@ -309,8 +360,7 @@
   flex-direction: column;
 }
 
-/* 页面容器：短内容时把 Composer 推到底部，长内容时粘在视口底部。
-   用 flex 撑满剩余空间而不是 min-height:100%，否则上方有自检横幅时必然多出一屏滚动。 */
+/* 页面容器：短内容时把 Composer 推到底部，长内容时粘在视口底部 */
 .page {
   display: flex;
   flex-direction: column;
@@ -322,7 +372,6 @@
   /* 留白节奏统一：页面四周 32px，与卡片内 16px 内边距形成 2:1 的稳定比例 */
   padding: var(--s6);
 }
-/* 环境自检横幅：与页面同宽的一行提示，绝不能套 .page（min-height:100% 会把正文推到第二屏） */
 .bannerSlot {
   width: 100%;
   max-width: var(--content-max);
@@ -334,11 +383,12 @@
   gap: var(--s2);
 }
 .pageTitle {
-  /* 页面主标题：24–28px/600 梯度头部，与 16px 区块标题、14px 正文拉开层次 */
+  /* 页面主标题：26/620 梯度头部，与 16px 区块标题、14px 正文拉开层次 */
   font-size: 26px;
   font-weight: 620;
   letter-spacing: -0.2px;
   line-height: 1.25;
+  color: var(--ink);
 }
 .pageLead {
   color: var(--ink-3);
@@ -431,27 +481,48 @@
   margin-top: 2px;
 }
 
-@media (max-width: 900px) {
-  .sidebar {
-    display: none;
-  }
-  .page {
-    padding: var(--s5) var(--s4);
-  }
-  .bannerSlot {
-    margin: var(--s3) var(--s3) 0;
-  }
-  .tbTitle {
-    max-width: 46vw;
-  }
-  /* 顶栏要给窄屏导航留位置：标识胶囊先截断，不挤掉导航 */
-  .taskIdChip {
-    max-width: 150px;
-  }
+/* ---------------- 窄屏（≤900px）替代导航（DR-13） ---------------- */
+.narrowNav {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  min-width: 0;
+}
+.narrowItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.narrowItem:hover {
+  border-color: var(--line-2);
+  color: var(--ink);
+  text-decoration: none;
+}
+.narrowItemActive {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.narrowSelect {
+  flex: 0 1 auto;
+  min-width: 0;
+  width: auto;
+  max-width: 168px;
+  padding: 5px var(--s2);
+  font-size: 12.5px;
 }
 
 /* ---------------- 运行监控：agent 控制台（正文 + 右侧常驻面板） ---------------- */
-/* 阅读类页面保持 840px 单栏；监控页要同时放执行过程与常驻面板，容器放宽 */
 .pageAgent {
   max-width: 1160px;
 }
@@ -469,6 +540,31 @@
 }
 @media (min-width: 1280px) {
   .agentGrid {
-    grid-template-columns: minmax(0, 1fr) 330px;
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+}
+
+/* ---------------- 响应式 ---------------- */
+@media (max-width: 900px) {
+  .sidebar {
+    display: none;
+  }
+  .page {
+    padding: var(--s5) var(--s4);
+  }
+  .bannerSlot {
+    margin: var(--s3) var(--s3) 0;
+  }
+  .tbTitle {
+    display: none;
+  }
+  .tbSearch {
+    display: none;
+  }
+  .brandSub {
+    display: none;
+  }
+  .taskIdChip {
+    max-width: 140px;
   }
 }

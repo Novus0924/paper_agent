@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -403,5 +403,92 @@ describe('参数校验', () => {
     expect(res.statusCode).toBe(409)
     expect(res.json().error).toContain('上限')
     expect(res.json().error).toContain('DELETE')
+  })
+})
+
+// ------------------------------------------------------------------ 问答历史持久化（v2.4）
+
+describe('问答历史持久化（v2.4：刷新后对话可恢复）', () => {
+  const messagesFile = (taskId: string): string => join(tmp, 'runs', taskId, 'messages.jsonl')
+  const readLines = (taskId: string): Array<Record<string, unknown>> =>
+    readFileSync(messagesFile(taskId), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+
+  it('每个消息轮次落盘：user + assistant 两行（字段 turn_id/role/text/status/ts/action）', async () => {
+    seedTask({ run_status: 'PLANNED' })
+    const res = await post({ text: '请补充最新进展', action: 'ask' })
+    const turnId = res.json().turn_id as string
+    // 回合进行中注入 assistant 回复（生产环境由 relay.onAssistantReply → recordAssistant 送达）
+    messages.recordAssistant(TASK_ID, '这是助手回复')
+    for (const r of gate) r()
+    await new Promise((r) => setTimeout(r, 20))
+
+    const lines = readLines(TASK_ID)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatchObject({ turn_id: turnId, role: 'user', text: '请补充最新进展', status: 'done', action: 'ask' })
+    expect(lines[1]).toMatchObject({ turn_id: turnId, role: 'assistant', text: '这是助手回复', status: 'done' })
+    for (const l of lines) expect(typeof l.ts).toBe('string')
+  })
+
+  it('重启后 GET 恢复（新服务实例、内存为空，读同一目录仍拿到 user+assistant）', async () => {
+    seedTask({ run_status: 'PLANNED' })
+    await post({ text: '问题一', action: 'ask' })
+    messages.recordAssistant(TASK_ID, '答案一')
+    for (const r of gate) r()
+    await new Promise((r) => setTimeout(r, 20))
+
+    // 模拟重启：全新 MessageService（内存队列为空）读同一 runsDir
+    const fresh = new MessageService(makeGateway(), index, join(tmp, 'runs'), log, () => false)
+    const list = fresh.list(TASK_ID)
+    expect(list.history.map((h) => h.role)).toEqual(['user', 'assistant'])
+    expect(list.history.find((h) => h.role === 'assistant')!.text).toBe('答案一')
+    expect(list.history.find((h) => h.role === 'user')!.text).toBe('问题一')
+  })
+
+  it('history 合并内存与持久化并去重：同一轮 user 只出现一次', async () => {
+    seedTask({ run_status: 'PLANNED' })
+    await post({ text: '一次', action: 'ask' })
+    messages.recordAssistant(TASK_ID, '答复')
+    for (const r of gate) r()
+    await new Promise((r) => setTimeout(r, 20))
+
+    const list = messages.list(TASK_ID)
+    expect(list.history.filter((h) => h.role === 'user')).toHaveLength(1)
+    expect(list.history.filter((h) => h.role === 'assistant')).toHaveLength(1)
+  })
+
+  it('失败回合落盘 status=failed（不静默吞掉）', async () => {
+    seedTask({ run_status: 'PLANNED' })
+    const failing = {
+      prompt: async () => {
+        throw new Error('会话不可用')
+      },
+    } as never
+    const svc = new MessageService(failing, index, join(tmp, 'runs'), log, () => false)
+    svc.send(TASK_ID, '会失败的一条', 'ask')
+    await new Promise((r) => setTimeout(r, 20))
+
+    const lines = readLines(TASK_ID)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ role: 'user', status: 'failed' })
+    expect(String(lines[0]!.error)).toContain('会话不可用')
+  })
+
+  it('轮次结束后再发一条：追加而非覆盖（append-only）', async () => {
+    seedTask({ run_status: 'PLANNED' })
+    await post({ text: '第一问', action: 'ask' })
+    messages.recordAssistant(TASK_ID, '第一答')
+    for (const r of gate) r()
+    await new Promise((r) => setTimeout(r, 20))
+    await post({ text: '第二问', action: 'ask' })
+    messages.recordAssistant(TASK_ID, '第二答')
+    for (const r of gate) r()
+    await new Promise((r) => setTimeout(r, 20))
+
+    const lines = readLines(TASK_ID)
+    expect(lines).toHaveLength(4)
+    expect(lines.map((l) => l.text)).toEqual(['第一问', '第一答', '第二问', '第二答'])
   })
 })

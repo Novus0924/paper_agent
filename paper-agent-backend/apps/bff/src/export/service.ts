@@ -2,7 +2,8 @@ import type { Logger } from '../infra/logger.js'
 import type { TaskRecord } from '../store/task-index.js'
 import type { ReportService, LedgerRecordView } from '../services/report.js'
 import { ApiError } from '../infra/errors.js'
-import { asArray, asRecord, asText } from '../infra/coerce.js'
+import { asRecord, asText } from '../infra/coerce.js'
+import { renderBibtex } from './bibtex.js'
 import { buildZip, type ZipEntry } from './zip.js'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -359,61 +360,6 @@ function r1Literature(records: LedgerRecordView[]): LedgerRecordView[] {
   return records.filter((r) => r.record_type === 'evidence' && asText(r.data['producer_step']) === 'R1')
 }
 
-/**
- * BibTeX 特殊字符转义（BibTeX 惯例）。
- * 单次扫描映射，避免「先转义反斜杠、后转义 `{}`」把 `\textbackslash{}` 中的花括号二次转义。
- */
-const BIB_ESCAPE: Record<string, string> = {
-  '&': '\\&',
-  '%': '\\%',
-  $: '\\$',
-  '#': '\\#',
-  _: '\\_',
-  '{': '\\{',
-  '}': '\\}',
-  '~': '\\textasciitilde{}',
-  '^': '\\textasciicircum{}',
-  '\\': '\\textbackslash{}',
-}
-
-function escapeBib(value: string): string {
-  return value.replace(/[&%$#_{}~^\\]/g, (c) => BIB_ESCAPE[c] ?? c)
-}
-
-/** 第一作者姓（取末段词并去非字母数字/中文）；取不到回退 Anon */
-function surnameOf(author: string): string {
-  const parts = author.trim().split(/\s+/).filter(Boolean)
-  const last = parts[parts.length - 1] ?? ''
-  return last.replace(/[^0-9A-Za-z\u4e00-\u9fff]/g, '') || 'Anon'
-}
-
-/** BibTeX 引用键：第一作者姓 + 年份 + 序号（序号防碰撞） */
-function bibKey(ref: Record<string, unknown>, index: number): string {
-  const authors = asArray(ref['authors']).map((a) => asText(a)).filter(Boolean)
-  const first = authors[0]
-  const surname = first ? surnameOf(first) : 'Anon'
-  const yearRaw = ref['year']
-  const year = yearRaw === null || yearRaw === undefined || yearRaw === '' ? 'nd' : String(yearRaw).replace(/[^0-9]/g, '') || 'nd'
-  return `${surname}${year}${index}`
-}
-
-/** 单条 BibTeX 条目：字段 author/title/journal/year/doi，缺失的字段**跳过该行** */
-function toBibEntry(ref: Record<string, unknown>, index: number): string {
-  const author = asArray(ref['authors']).map((a) => asText(a)).filter(Boolean).join(', ')
-  const title = asText(ref['title'])
-  const journal = asText(ref['venue'])
-  const year = ref['year']
-  const doi = asText(ref['doi'])
-  const fields: Array<[string, string]> = []
-  if (author) fields.push(['author', author])
-  if (title) fields.push(['title', title])
-  if (journal) fields.push(['journal', journal])
-  if (year !== null && year !== undefined && year !== '') fields.push(['year', String(year)])
-  if (doi) fields.push(['doi', doi])
-  const body = fields.map(([k, v]) => `  ${k} = {${escapeBib(v)}}`).join(',\n')
-  return `@article{${bibKey(ref, index)},\n${body}\n}\n`
-}
-
 const bibtexExporter: Exporter = {
   kind: 'bibtex',
   available(task, ctx) {
@@ -432,7 +378,7 @@ const bibtexExporter: Exporter = {
         '请先完成 R1 多源检索，或改用其他导出类型。',
       )
     }
-    const body = lit.map((rec, i) => toBibEntry(asRecord(rec.data['ref']), i + 1)).join('\n')
+    const body = renderBibtex(lit.map((rec) => asRecord(rec.data['ref'])))
     return {
       kind: 'bibtex',
       contentType: 'text/plain; charset=utf-8',

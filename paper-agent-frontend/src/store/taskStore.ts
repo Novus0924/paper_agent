@@ -17,6 +17,7 @@ import type {
   TaskSnapshot,
 } from '@/api/types';
 import { useToastStore } from './toastStore';
+import { useNotificationStore } from './notificationStore';
 
 interface TaskEntry extends TaskRuntimeState {
   loaded: boolean;
@@ -72,14 +73,11 @@ interface TaskStoreState {
   listParams: ListTasksParams & { degraded?: boolean };
   listCounts: TaskListCounts | null;
   byId: Record<string, TaskEntry>;
+  /** 来源连通性实测值：随创建任务返回（后端 probeSources），不在前端单独探测 */
   preflight: SourcePreflight[] | null;
-  preflightLoading: boolean;
 
   loadTasks: (params?: ListTasksParams & { degraded?: boolean }) => Promise<void>;
   archiveTask: (taskId: string, archived: boolean) => Promise<boolean>;
-  checkPreflight: (
-    input: Pick<CreateTaskInput, 'sources' | 'lit_source'>,
-  ) => Promise<SourcePreflight[]>;
   createTask: (
     input: CreateTaskInput,
   ) => Promise<{ ok: true; taskId: string } | { ok: false; error: ApiError }>;
@@ -93,14 +91,11 @@ interface TaskStoreState {
   reloadReport: (taskId: string) => Promise<void>;
   reloadEvidence: (taskId: string) => Promise<void>;
   sendMessage: (taskId: string, text: string, action: 'ask' | 'revise') => Promise<void>;
-  sendNow: (taskId: string, turnId: string) => Promise<void>;
   removeQueued: (taskId: string, turnId: string) => Promise<void>;
   /** 从后端消息队列恢复排队/历史消息（刷新、重连后调用） */
   restoreMessages: (taskId: string) => Promise<void>;
   exportArtifact: (taskId: string, kind: ExportKind) => Promise<ExportResult>;
   downloadReportMd: (taskId: string) => Promise<ExportResult>;
-  dropConnection: (taskId: string) => void;
-  restoreConnection: (taskId: string) => void;
 }
 
 /** 订阅句柄放在模块作用域：store 状态保持可序列化，便于测试与时间旅行 */
@@ -115,7 +110,6 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   listCounts: null,
   byId: {},
   preflight: null,
-  preflightLoading: false,
 
   async loadTasks(params) {
     // "已降级"是前端特有视图（后端 ?status= 不支持 degraded）：全量拉取后客户端过滤
@@ -157,24 +151,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       useToastStore
         .getState()
         .push(archived ? 'overview.archivedDone' : 'overview.restoredDone', 'ok');
+      if (archived) {
+        useNotificationStore
+          .getState()
+          .push({ kind: 'archived', titleKey: 'notify.taskArchived' });
+      }
       await get().loadTasks();
       return true;
     } catch (err) {
       useToastStore.getState().pushError(toApiError(err));
       return false;
-    }
-  },
-
-  async checkPreflight(input) {
-    set({ preflightLoading: true });
-    try {
-      const preflight = await api.preflight(input);
-      // live 模式后端无独立预检接口，返回空集：如实回到"未检测"，不显示伪造结果
-      set({ preflight: preflight.length > 0 ? preflight : null, preflightLoading: false });
-      return preflight;
-    } catch (err) {
-      set({ preflightLoading: false, listError: toApiError(err).code });
-      return [];
     }
   },
 
@@ -190,6 +176,11 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         tasks: [res.state, ...s.tasks],
         ...(probed.length > 0 ? { preflight: probed } : {}),
       }));
+      useNotificationStore.getState().push({
+        kind: 'created',
+        titleKey: 'notify.taskCreated',
+        to: `/monitor/${res.task_id}`,
+      });
       return { ok: true, taskId: res.task_id };
     } catch (err) {
       return { ok: false, error: toApiError(err) };
@@ -295,17 +286,27 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       void get().reloadEvidence(taskId);
       void get().loadTasks();
       const toast = useToastStore.getState().push;
+      const notify = useNotificationStore.getState().push;
+      const degraded = entry.snapshot?.degraded === true;
       if (evt.data.run_status === 'DONE') {
-        toast(
-          entry.snapshot?.degraded ? 'toast.taskDegraded' : 'toast.taskDone',
-          entry.snapshot?.degraded ? 'warn' : 'ok',
-        );
+        toast(degraded ? 'toast.taskDegraded' : 'toast.taskDone', degraded ? 'warn' : 'ok');
+        notify({
+          kind: 'done',
+          titleKey: degraded ? 'notify.taskDegraded' : 'notify.taskDone',
+          to: `/report/${taskId}`,
+        });
       } else {
         toast('toast.taskFailed', 'fail');
+        notify({ kind: 'failed', titleKey: 'notify.taskFailed', to: `/monitor/${taskId}` });
       }
     }
     if (evt.event === 'degraded' && evt.data.level === 'degraded') {
       useToastStore.getState().push('status.degraded', 'warn');
+      useNotificationStore.getState().push({
+        kind: 'degraded',
+        titleKey: 'notify.degraded',
+        to: `/monitor/${taskId}`,
+      });
     }
   },
 
@@ -457,16 +458,6 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     }
   },
 
-  async sendNow(taskId, turnId) {
-    // live 模式不提供该能力（见 ApiClient.sendNow 注释）；界面此时也不会渲染此按钮
-    if (!api.sendNow) return;
-    try {
-      await api.sendNow(taskId, turnId);
-    } catch (err) {
-      useToastStore.getState().pushError(toApiError(err));
-    }
-  },
-
   async removeQueued(taskId, turnId) {
     try {
       await api.removeQueued(taskId, turnId);
@@ -497,11 +488,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         if (!cur) return {};
         const restored: TaskRuntimeState['messages'][number][] = [];
         for (const m of [...(res.active ? [res.active] : []), ...res.pending, ...res.history]) {
+          // 角色必须是 m.role，不能一律当 user：history 里 assistant 回复若被当成 user
+          // 会渲染到用户侧，且 id 与 SSE 路径（turn-agent）不一致 → React duplicate key。
+          // 后端词表 assistant → 前端 agent，映射后两路径同键、同一条。
+          const role: TaskRuntimeState['messages'][number]['role'] =
+            m.role === 'assistant' ? 'agent' : 'user';
           restored.push({
             // 与 SSE message 帧同键（turn_id-role），幂等合并靠它去重
-            id: `${m.turn_id}-user`,
+            id: `${m.turn_id}-${role}`,
             turn_id: m.turn_id,
-            role: 'user',
+            role,
             text: m.text,
             status:
               m.status === 'queued'
@@ -545,14 +541,6 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const e = toApiError(err);
       return { ok: false, kind: 'report', code: e.code, error: e.message };
     }
-  },
-
-  dropConnection(taskId) {
-    api.demo?.dropConnection(taskId);
-  },
-
-  restoreConnection(taskId) {
-    api.demo?.restoreConnection(taskId);
   },
 }));
 

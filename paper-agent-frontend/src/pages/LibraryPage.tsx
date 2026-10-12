@@ -26,7 +26,7 @@ import { Icon } from '@/components/ui/Icon';
 
 /**
  * 一次取回过滤后的全量（上限 200），统计条与分页都在这一份数据上做；
- * mock 与真实数据规模都在这个量级，避免统计随分页跳变。超出上限时仍以后端分页为准。
+ * 文献库规模在这个量级，避免统计随分页跳变。超出上限时仍以后端分页为准。
  */
 const LIBRARY_FETCH_LIMIT = 200;
 
@@ -220,8 +220,10 @@ export function LibraryPage() {
           <>
             <ul className={lib.rowList}>
               {view.items.map((item) => {
+                // byline 三段都可能缺：产物条目 authors 归一后为空串、year 为 null（后端契约），
+                // venue 空串——只过滤空串不够，null 会渲染成 "null" 或留下游离分隔符。
                 const byline = [item.ref.authors, item.ref.year, item.ref.venue]
-                  .filter((s) => s !== '')
+                  .filter((s) => s !== '' && s !== null && s !== undefined)
                   .join(' · ');
                 return (
                   <li key={`${item.task_id}:${item.ev_id}`} className={lib.row}>

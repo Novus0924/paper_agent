@@ -11,14 +11,27 @@ import { I18nProvider } from '@/i18n';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { renderAt, resetStores, seedTask } from './harness';
 import { snapshot } from './helpers';
+import { useLiveBackend, type LiveBackend } from './liveEnv';
 import { useTaskStore } from '@/store/taskStore';
 import { useToastStore } from '@/store/toastStore';
 import { useHealthStore } from '@/store/healthStore';
 import type { HealthInfo } from '@/api/types';
 
+let backend: LiveBackend;
+
+beforeEach(() => {
+  // v2.5：唯一数据通道是 LiveApiClient。大部分用例用 spyOn 覆盖具体方法（spy 优先），
+  // fake backend 提供底座：openTask 的 subscribe 走 EventSource 桩（jsdom 无原生实现）
+  backend = useLiveBackend();
+});
+
+afterEach(() => {
+  backend?.unstub();
+});
+
 const HEALTH_OK: HealthInfo = {
   status: 'ok',
-  mode: 'mock',
+  mode: 'live',
   task_count: 1,
   session_ready: true,
   bff_reachable: true,
@@ -28,7 +41,7 @@ const HEALTH_OK: HealthInfo = {
 
 const HEALTH_DEGRADED: HealthInfo = {
   status: 'degraded',
-  mode: 'mock',
+  mode: 'live',
   task_count: 0,
   session_ready: false,
   bff_reachable: true,

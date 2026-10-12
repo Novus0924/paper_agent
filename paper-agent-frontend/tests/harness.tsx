@@ -44,9 +44,10 @@ export function resetStores(): void {
     tasks: [],
     listLoading: false,
     listError: null,
+    listParams: {},
+    listCounts: null,
     byId: {},
     preflight: null,
-    preflightLoading: false,
   });
   useToastStore.setState({ toasts: [] });
   useUiStore.setState({ currentTaskId: null });

@@ -11,6 +11,19 @@ import type {
 } from './types';
 
 /**
+ * 一条按 step 聚合后的思考流条目（SSE `thinking`）。
+ * 同一步的多帧思考累加去重为一条，供时间线整体渲染；时间序仍由 seq/ts 决定。
+ */
+export interface ThinkingEntry {
+  /** `think-<step>`：同一步只有一条，随帧累加 */
+  id: string;
+  step?: string;
+  text: string;
+  ts: string;
+  seq?: number;
+}
+
+/**
  * SSE 归一层（§6.2）：把后端事件统一映射为前端状态动作。
  * 实时路径与刷新后的快照重建走同一个 reducer，因此形状必然一致（P-03 旧缺陷消除）。
  */
@@ -19,6 +32,7 @@ export interface TaskRuntimeState {
   lastSeq: number;
   activities: Activity[];
   tools: ToolCall[];
+  thinkings: ThinkingEntry[];
   degraded: DegradedInfo[];
   conclusions: Conclusion[];
   messages: ChatMessage[];
@@ -31,12 +45,26 @@ export const emptyRuntime = (snapshot: TaskSnapshot | null = null): TaskRuntimeS
   lastSeq: 0,
   activities: [],
   tools: [],
+  thinkings: [],
   degraded: [],
   conclusions: [],
   messages: [],
   reportStatus: snapshot?.report_ready ? 'ready' : 'unknown',
   done: null,
 });
+
+/**
+ * 思考片段拼接：整段重复丢弃；新帧是更完整的整段则覆盖；否则按行增量累加。
+ * 契约允许 text 既可能是增量 token，也可能是整段（"增量或整段"）。
+ */
+export function appendThinking(prev: string, chunk: string): string {
+  const next = chunk.trim();
+  if (!next) return prev;
+  if (!prev) return next;
+  if (prev === next || prev.includes(next)) return prev;
+  if (next.startsWith(prev)) return next;
+  return `${prev}\n${next}`;
+}
 
 const mergeById = <T extends { id: string }>(list: T[], item: T): T[] => {
   const idx = list.findIndex((x) => x.id === item.id);
@@ -98,6 +126,19 @@ export function applyEnvelope(
         ...base,
         activities: mergeById(base.activities, activity).sort(bySeq),
       };
+    }
+
+    case 'thinking': {
+      const id = `think-${evt.data.step ?? 'run'}`;
+      const prev = base.thinkings.find((x) => x.id === id);
+      const entry: ThinkingEntry = {
+        id,
+        step: evt.data.step,
+        text: appendThinking(prev?.text ?? '', evt.data.text),
+        ts: evt.ts,
+        seq: evt.seq,
+      };
+      return { ...base, thinkings: mergeById(base.thinkings, entry).sort(bySeq) };
     }
 
     case 'tool': {

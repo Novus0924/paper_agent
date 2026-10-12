@@ -14,6 +14,8 @@ import type {
   ExportResult,
   HealthInfo,
   LibraryEvidenceResponse,
+  LibraryExportKind,
+  LibraryExportResult,
   ListLibraryParams,
   MessageQueueResponse,
   ReportResponse,
@@ -117,7 +119,7 @@ export class LiveApiClient implements ApiClient {
             id: 'bff-unreachable',
             title: '无法连接后端服务',
             guidance:
-              '请先用一键启动器启动 AGH 与 BFF（前端无需单独启动服务）；若只想看演示数据，可在 URL 后加 ?mode=mock。',
+              '请先用一键启动器启动 AGH 与 BFF（前端无需单独启动服务），然后刷新页面重试。',
             blocking: true,
             action_label: '查看启动指引',
             action_href: '#/settings',
@@ -206,6 +208,7 @@ export class LiveApiClient implements ApiClient {
       'ping',
       'step',
       'activity',
+      'thinking',
       'tool',
       'degraded',
       'conclusion',
@@ -254,8 +257,13 @@ export class LiveApiClient implements ApiClient {
    * 文献库（GET /library/evidence，契约 v1）。
    * dedupe 用 on/off 表达（契约给的默认值是 on）；limit/offset 始终显式下发，
    * 让后端分页口径只此一处，不依赖服务端的隐式默认。
+   *
+   * ref.authors 归一：后端 services/library.ts 实发 `string[]`（与证据接口一致），
+   * 前端 LibraryRef 声明为 string、LibraryPage 直接 join 渲染。数组原样进界面会渲染成
+   * "A, B"（Array.toString），多作者时与单作者的 "A、B" 口径不一致——这里按证据接口
+   * 同一种方式（顿号连接）归一，不把形状差异漏给渲染层。
    */
-  listLibraryEvidence(params?: ListLibraryParams): Promise<LibraryEvidenceResponse> {
+  async listLibraryEvidence(params?: ListLibraryParams): Promise<LibraryEvidenceResponse> {
     const query = new URLSearchParams();
     if (params?.q) query.set('q', params.q);
     if (params?.kind) query.set('kind', params.kind);
@@ -265,9 +273,28 @@ export class LiveApiClient implements ApiClient {
     query.set('dedupe', params?.dedupe === false ? 'off' : 'on');
     query.set('limit', String(params?.limit ?? 50));
     query.set('offset', String(params?.offset ?? 0));
-    return this.request<LibraryEvidenceResponse>(
+    const res = await this.request<Record<string, unknown>>(
       `/library/evidence?${query.toString()}`,
     );
+    const items = asList(res.items).map((raw) => {
+      const ref = asRecord(raw.ref);
+      const authors = Array.isArray(ref.authors)
+        ? ref.authors.map((a) => text(a)).filter((a) => a !== '')
+        : [];
+      return {
+        ...raw,
+        // 无条件归一：空数组也要变成空串，否则 [] 会带着数组形状进渲染层
+        // （Array.toString 得 ''，与单作者 "A、B" 口径不一致，还会绕过过滤条件）。
+        ref: { ...ref, authors: authors.join('、') },
+      };
+    });
+    return {
+      total: typeof res.total === 'number' ? res.total : 0,
+      tasks_scanned: typeof res.tasks_scanned === 'number' ? res.tasks_scanned : 0,
+      items: items as unknown as LibraryEvidenceResponse['items'],
+      offset: typeof res.offset === 'number' ? res.offset : 0,
+      limit: typeof res.limit === 'number' ? res.limit : 50,
+    };
   }
 
   async cite(
@@ -322,7 +349,7 @@ export class LiveApiClient implements ApiClient {
    * （services/message.ts validateAction/validateText），没有 flush 这类强制投递口；
    * 运行中的消息按序排队、回合结束由 onTaskIdle 自动放行（§8.2）。
    * 旧实现先试 {action:'flush'} 必然 400，再回落到 POST /stop —— 那会中断整轮执行，
-   * 把"提前发一条消息"做成了"停掉任务"，故删除。接口里 sendNow 为可选，live 不提供。
+   * 把"提前发一条消息"做成了"停掉任务"，故删除。
    */
 
   listMessages(taskId: string): Promise<MessageQueueResponse> {
@@ -393,6 +420,36 @@ export class LiveApiClient implements ApiClient {
       manifest: splitExportContents(res.headers.get('X-Export-Contents')),
     };
   }
+
+  /**
+   * 跨任务全部文献库导出（GET /library/export?kind=bibtex）。
+   * 与 exportArtifact 同样走文件流；空库时后端 409，这里原样映射成可读错误而不抛。
+   */
+  async exportLibrary(kind: LibraryExportKind): Promise<LibraryExportResult> {
+    const path = `/library/export?kind=${encodeURIComponent(kind)}`;
+    let res: Response;
+    try {
+      res = await fetch(this.url(path));
+    } catch (err) {
+      throw toApiError(err);
+    }
+    if (!res.ok) {
+      const err = await parseErrorBody(res);
+      return { ok: false, kind, code: err.code, error: err.message };
+    }
+    const disposition = res.headers.get('Content-Disposition') ?? '';
+    const filename =
+      /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1] ??
+      'paper-agent-library.bib';
+    const blob = await res.blob();
+    return {
+      ok: true,
+      kind,
+      filename: decodeURIComponent(filename),
+      mime: blob.type || 'application/x-bibtex;charset=utf-8',
+      blobUrl: URL.createObjectURL(blob),
+    };
+  }
 }
 
 /** 后端 JSON 字段宽松取值：缺字段一律空串，不猜值 */
@@ -413,6 +470,8 @@ function asList(v: unknown): Record<string, unknown>[] {
 }
 
 const EVIDENCE_TIERS = new Set<string>(['fact', 'artifact']);
+// 与内核 kernel/sciret_kernel/ledger.py EVIDENCE_KINDS 逐项对齐（含 synthesis）：
+// S1「综合回答」产出 synthesis 证据，漏登记会被降级成 note，审计页看不出它是模型产物。
 const EVIDENCE_KINDS = new Set<string>([
   'literature',
   'data',
@@ -421,6 +480,7 @@ const EVIDENCE_KINDS = new Set<string>([
   'factcheck',
   'draft',
   'review',
+  'synthesis',
 ]);
 
 /**

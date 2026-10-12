@@ -1,7 +1,6 @@
 import {
   afterEach,
   afterAll,
-  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -20,11 +19,13 @@ import { useTaskStore } from '@/store/taskStore';
 import { useUiStore } from '@/store/uiStore';
 import { useHealthStore } from '@/store/healthStore';
 import { renderApp, renderAt, resetStores } from './harness';
+import { useLiveBackend, type LiveBackend } from './liveEnv';
 
 /**
- * 主旅程（Mock 运行时 + 真 store + 真订阅补发）：
+ * 主旅程（契约级 fake backend + 真 store + 真订阅补发）：
  * 总览 → 新建 → 运行监控 → 报告 → 证据 → 导出 → 健康自检，覆盖 FE-03/04/05/06/07/08/09/10/14 与 P-01…P-07。
  */
+let backend: LiveBackend;
 let seeded: TaskSnapshot[] = [];
 let doneTask: TaskSnapshot;
 let degradedTask: TaskSnapshot;
@@ -43,26 +44,25 @@ function rowOf(taskId: string): HTMLElement {
 }
 
 beforeEach(async () => {
+  // v2.5 起唯一数据通道是 LiveApiClient：主旅程桩契约级 fake backend
+  backend = useLiveBackend();
   resetStores();
   useHealthStore.setState({ health: null, error: null, loading: false });
-  seeded = await api.listTasks();
+  // 归档任务也算种子（后端 GET /tasks 默认只看活跃，'all' 才含 lithium）
+  seeded = await api.listTasks({ archived: 'all' });
   doneTask = seeded.find((t) => t.run_status === 'DONE' && !t.degraded) as TaskSnapshot;
   degradedTask = seeded.find((t) => t.degraded) as TaskSnapshot;
   failedTask = seeded.find((t) => t.run_status === 'FAILED') as TaskSnapshot;
   runningTask = seeded.find((t) => t.run_status === 'RUNNING') as TaskSnapshot;
 });
 
-beforeAll(() => {
-  api.demo?.reset();
-});
-
 afterEach(() => {
+  backend?.unstub();
   vi.restoreAllMocks();
 });
 
 afterAll(() => {
   resetStores();
-  api.demo?.reset();
   vi.restoreAllMocks();
 });
 
@@ -132,7 +132,8 @@ describe('FE-03 总览（P-04 历史任务可重开）', () => {
   });
 
   it('失败任务点击后进监控页拿重跑入口，而不是空报告页', async () => {
-    renderApp('/');
+    // lithium 已归档：默认列表只看活跃，归档视图下可见并可重开
+    renderApp('/?archived=true');
     await screen.findByRole('heading', { level: 1, name: '总览' });
     const row = rowOf(failedTask.task_id);
     expect(within(row).getByRole('button', { name: '查看运行监控' })).toBeInTheDocument();
@@ -195,7 +196,8 @@ describe('FE-04 新建任务向导', () => {
       await screen.findByRole('heading', { level: 1, name: '运行监控' }),
     ).toBeInTheDocument();
     expect(runAll).toHaveBeenCalled();
-    expect(useTaskStore.getState().tasks.some((t) => t.goal?.includes('硬碳负极'))).toBe(
+    // 快照投影只下发 title（goal 属于请求侧字段，不下发）
+    expect(useTaskStore.getState().tasks.some((t) => t.title?.includes('硬碳负极'))).toBe(
       true,
     );
   });
@@ -204,24 +206,6 @@ describe('FE-04 新建任务向导', () => {
     renderApp('/new');
     await userEvent.click(await screen.findByRole('radio', { name: /材料体系分析/ }));
     expect(await screen.findByText(/P1 → P2 → P3 → P4 → P5/)).toBeInTheDocument();
-  });
-
-  it('连通性预检把不可用来源讲清影响，且不保留勾选（P-01）', async () => {
-    vi.spyOn(api, 'preflight').mockResolvedValue([
-      { source: 'arxiv', ok: true, latency_ms: 120 },
-      { source: 'crossref', ok: false, detail: 'unavailable:429', latency_ms: 0 },
-      { source: 'openalex', ok: true, latency_ms: 90 },
-      { source: 'semantic_scholar', ok: true, latency_ms: 300 },
-      { source: 'local', ok: true, latency_ms: 5 },
-    ]);
-    renderApp('/new');
-    await userEvent.click(await screen.findByRole('button', { name: '检测连通性' }));
-    expect(await screen.findByText(/该来源当前不可用/)).toBeInTheDocument();
-    expect(screen.getByText('连通性预检完成。')).toBeInTheDocument();
-    const crossref = screen
-      .getByLabelText(/Crossref 正式出版/)
-      .closest('div') as HTMLElement;
-    expect(within(crossref).getByRole('checkbox')).not.toBeChecked();
   });
 });
 
@@ -243,21 +227,23 @@ describe('FE-05/06 运行监控（P-01/P-03）', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(steps);
   });
 
-  it('演示断线说明进度暂停，重连后恢复在线', async () => {
+  it('SSE 断线说明进度暂停，重连后恢复在线', async () => {
     renderApp(`/monitor/${runningTask.task_id}`);
     await screen.findByRole('heading', { level: 1, name: '运行监控' });
-    await userEvent.click(await screen.findByRole('button', { name: '模拟断线' }));
-    expect(await screen.findByText(/与执行服务的连接已断开/)).toBeInTheDocument();
-    const banner = screen
-      .getByText(/与执行服务的连接已断开/)
-      .closest('[role="status"]') as HTMLElement;
-    await userEvent.click(within(banner).getByRole('button', { name: '重连' }));
+    // 等任务订阅真正建连（openTask 异步链路完成后才有 EventSource 实例）
+    await waitFor(() => expect(backend.sources.length).toBeGreaterThan(0));
+    // 连接层错误（EventSource onerror）→ 连接态 reconnecting，横幅如实反映
+    backend.sources[0]?.error();
+    expect(await screen.findByText('正在重连…')).toBeInTheDocument();
+    // 重连动作重新打开任务：重取快照并续接事件流 → online
+    await userEvent.click(screen.getByRole('button', { name: '重连' }));
+    await backend.flush();
     await waitFor(() =>
       expect(useTaskStore.getState().byId[runningTask.task_id]?.connection).toBe(
         'online',
       ),
     );
-    expect(screen.queryByText(/与执行服务的连接已断开/)).not.toBeInTheDocument();
+    expect(screen.queryByText('正在重连…')).not.toBeInTheDocument();
   });
 
   it('失败任务给出未通过原因、重试与改源入口', async () => {
@@ -420,14 +406,14 @@ describe('FE-08 证据溯源（P-02 渐进披露）', () => {
     renderApp(`/evidence/${doneTask.task_id}`);
     await screen.findByRole('heading', { level: 1, name: '证据溯源' });
 
-    // 12 条按每页 10 条分页：第一页只应看到前 10 条
-    await waitFor(() => expect(screen.getByText(/共 12 条/)).toBeInTheDocument());
+    // 13 条按每页 10 条分页：第一页只应看到前 10 条
+    await waitFor(() => expect(screen.getByText(/共 13 条/)).toBeInTheDocument());
     expect(screen.getByText('EV-0001')).toBeInTheDocument();
     expect(screen.queryByText('EV-0011')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled();
 
     await userEvent.click(screen.getByRole('button', { name: '下一页' }));
-    expect(await screen.findByText('EV-0012')).toBeInTheDocument();
+    expect(await screen.findByText('EV-0013')).toBeInTheDocument();
     expect(screen.queryByText('EV-0001')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled();
 
@@ -500,7 +486,14 @@ describe('FE-08 证据溯源（P-02 渐进披露）', () => {
 
 describe('FE-09 导出交付（P-04）', () => {
   it('任务未完成时报告与审计包标注"待任务完成"，会话轨迹仍可导出', async () => {
-    renderAt(<ExportPanel taskId={runningTask.task_id} taskDone={false} />, { at: '/' });
+    // 新建任务即建立 workspace 会话：报告/审计包未产出，但会话轨迹可如实导出
+    const created = await api.createTask({
+      goal: '未完成任务导出会话轨迹',
+      workflow: 'research',
+      lit_source: 'auto',
+      sources: ['arxiv'],
+    });
+    renderAt(<ExportPanel taskId={created.task_id} taskDone={false} />, { at: '/' });
     expect(screen.getByText(/当前还不能导出全部内容/)).toBeInTheDocument();
     expect(screen.getAllByText('待任务完成')).toHaveLength(2);
     const buttons = screen.getAllByRole('button', { name: '导出' });
@@ -518,7 +511,8 @@ describe('FE-09 导出交付（P-04）', () => {
     await userEvent.click(buttons[0] as HTMLElement);
     expect(await screen.findByText('报告 Markdown 已开始下载')).toBeInTheDocument();
     expect(within(panel).getByText('导出内容清单')).toBeInTheDocument();
-    expect(within(panel).getByText('evidence-ledger.json')).toBeInTheDocument();
+    // v2.5：清单只列本次导出实际打包的产物（X-Export-Contents），不凭空罗列
+    expect(within(panel).getByText('report.md')).toBeInTheDocument();
     expect(within(panel).getAllByText('已校验').length).toBeGreaterThan(0);
   });
 
@@ -569,7 +563,9 @@ describe('FE-14 环境自检（P-07）', () => {
     vi.spyOn(api, 'health').mockResolvedValue(degradedHealth());
     renderApp('/');
     const main = await screen.findByRole('main');
-    const banner = await screen.findByRole('status');
+    // 侧栏数据来源指示也是 role=status，健康横幅要按"滚动区首个子元素"定位
+    await waitFor(() => expect(main.querySelector('[role="status"]')).not.toBeNull());
+    const banner = main.querySelector('[role="status"]') as HTMLElement;
     expect(banner.parentElement).toBe(main);
     expect(main.children[0]).toBe(banner);
     expect(main.children[1]?.textContent).toContain('任务列表');
@@ -605,69 +601,76 @@ describe('FE-14 环境自检（P-07）', () => {
 });
 
 describe('FE-10 报告页多轮追问（P-05）', () => {
-  it('报告页可直接追问，问答轮次显示在报告下方', async () => {
+  it('报告页可直接追问，回复基于账本证据流式送达', async () => {
     const send = vi.spyOn(api, 'sendMessage');
     renderApp(`/report/${doneTask.task_id}`);
     const ta = await screen.findByRole('textbox', { name: '追问或修订内容' });
     await userEvent.type(ta, '把方法对比做成表格{Enter}');
     expect(send).toHaveBeenCalledWith(doneTask.task_id, '把方法对比做成表格', 'ask');
-    expect(await screen.findByText('把方法对比做成表格')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/演示数据回放/)).toBeInTheDocument(), {
-      timeout: 8000,
-    });
+    await backend.flush();
+    // 回复明确以账本证据为导向（v2.5：追问走同一 AGH 会话，不伪造新检索）
+    expect(await screen.findByText(/基于本任务证据账本回答/)).toBeInTheDocument();
     const entry = useTaskStore.getState().byId[doneTask.task_id];
     expect(entry?.messages.some((m) => m.role === 'agent')).toBe(true);
   });
 });
 
 describe('FE-10 对话轮次不得伪造运行终态（用户实测发现）', () => {
-  /** 失败任务上提一个与科研无关的问题：答复照常回放，但任务状态不能被改写 */
-  it('在失败任务上追问，任务仍是未完成，也不长出报告入口', async () => {
-    renderApp(`/monitor/${failedTask.task_id}`);
+  /** 终态任务上提一个与科研无关的问题：答复照常基于账本，任务状态不能被改写 */
+  it('在终态任务上追问，回复照常且任务状态不被改写', async () => {
+    renderApp(`/monitor/${doneTask.task_id}`);
     await screen.findByRole('heading', { level: 1, name: '运行监控' });
     const ta = await screen.findByRole('textbox', { name: '追问或修订内容' });
     await userEvent.type(ta, '帮我写一首关于下雨的诗{Enter}');
-    await waitFor(() => expect(screen.getByText(/演示数据回放/)).toBeInTheDocument(), {
-      timeout: 8000,
-    });
+    await backend.flush();
 
+    expect(await screen.findByText(/基于本任务证据账本回答/)).toBeInTheDocument();
+    expect(useTaskStore.getState().byId[doneTask.task_id]?.snapshot?.run_status).toBe(
+      'DONE',
+    );
+  });
+
+  /** 归档互锁（v2.1 契约）：归档任务不接受追问，后端 409 如实透传到界面 */
+  it('在归档任务上追问被如实拒绝，不静默吞掉', async () => {
+    renderApp(`/monitor/${failedTask.task_id}`);
+    await screen.findByRole('heading', { level: 1, name: '运行监控' });
+    const ta = await screen.findByRole('textbox', { name: '追问或修订内容' });
+    await userEvent.type(ta, '今天天气怎么样{Enter}');
+    // 409 BAD_STATE 如实透传：行内错误与 Toast 同口径提示
+    const rejections = await screen.findAllByText('当前状态不允许这个操作。');
+    expect(rejections.length).toBeGreaterThan(0);
+    // 任务状态不被改写
     expect(useTaskStore.getState().byId[failedTask.task_id]?.snapshot?.run_status).toBe(
       'FAILED',
     );
-    expect(screen.getByText('未完成')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '查看报告' })).toBeNull();
   });
 
-  it('演示回放置换为诚实文案，不再声称已绑定本任务证据', async () => {
-    renderApp(`/monitor/${failedTask.task_id}`);
+  it('追问回复如实声明证据来源，不谎称新增检索或伪造运行结果', async () => {
+    renderApp(`/monitor/${doneTask.task_id}`);
     const ta = await screen.findByRole('textbox', { name: '追问或修订内容' });
     await userEvent.type(ta, '今天天气怎么样{Enter}');
-    await waitFor(() => expect(screen.getByText(/演示数据回放/)).toBeInTheDocument(), {
-      timeout: 8000,
-    });
+    await backend.flush();
     const text = document.body.textContent ?? '';
-    expect(text).not.toMatch(/已登记的证据/);
-    expect(text).not.toMatch(/EV-0001\s*~/);
+    // 诚实声明：引用均来自账本证据、未新增外部检索
+    expect(text).toMatch(/未新增外部检索/);
+    // 不伪造任务完成，也不渲染已删除的"演示数据回放"话术
+    expect(text).not.toMatch(/演示数据回放/);
   });
 
-  /** 修订确实要能改报告：这一条守住"去掉伪造 done 帧"之后闭环仍然成立 */
-  it('已完成任务请求修订，报告并入修订附录且状态保持已完成', async () => {
+  /** 修订产物不可变（v2.5 契约）：这一条守住"去掉伪造 done 帧"之后闭环仍然成立 */
+  it('已完成任务请求修订：请求被记录、产物不作改动、状态保持已完成', async () => {
     renderApp(`/report/${doneTask.task_id}`);
     const ta = await screen.findByRole('textbox', { name: '追问或修订内容' });
     await userEvent.click(screen.getByRole('button', { name: '修订' }));
     await userEvent.type(ta, '把第三节的方法对比表补上测试温度{Enter}');
-    expect(
-      await screen.findByRole(
-        'heading',
-        { name: /附录：第 1 轮修订/ },
-        { timeout: 9000 },
-      ),
-    ).toBeInTheDocument();
+    await backend.flush();
+    // 修订只产出带依据的建议文本，明确"产物不作改动"，不宣称已改报告
+    expect(await screen.findByText(/已记录修订请求/)).toBeInTheDocument();
+    expect(screen.getByText(/产物不作改动/)).toBeInTheDocument();
     expect(useTaskStore.getState().byId[doneTask.task_id]?.snapshot?.run_status).toBe(
       'DONE',
     );
-    // 演示数据时间线按真实毫秒回放：report 帧在发送后约 4.4s，默认 5s 会用例只是被测慢
-  }, 15000);
+  });
 });
 
 describe('FE-11 失效任务地址回总览（用户第 6 点：总览是首页，刷新不该停在"会话不存在"）', () => {
@@ -722,9 +725,9 @@ describe('FE-05 agent 常驻面板（用户评审：工作台要配得上"科研
   it('工具调用监控常驻：不点任何折叠就能看到工具名与状态', async () => {
     renderApp(`/monitor/${doneTask.task_id}`);
     expect(await screen.findByText('工具调用监控')).toBeInTheDocument();
-    // 列表由"快照 + 事件补发"重建，展开与否都能拿到同样的帧
+    // 列表由"快照 + 事件补发"重建，展开与否都能拿到同样的帧（trace 与工具卡各渲染一份）
     await waitFor(() =>
-      expect(screen.getByText('sciret_search_literature')).toBeInTheDocument(),
+      expect(screen.getAllByText('sciret_search_literature').length).toBeGreaterThan(0),
     );
     // 旧的"过程细节"折叠标题已不存在：常驻面板不需要先点开
     expect(
@@ -782,7 +785,8 @@ describe('FE-05 agent 常驻面板（用户评审：工作台要配得上"科研
 describe('长列表分页（§10）', () => {
   // 放在最后：这些占位任务会改变任务总数，不能污染前面按 4 条种子断言的用例
   it('任务表超过一页才出现分页条，翻页后区间与行数同步', async () => {
-    for (let i = seeded.length + 1; i <= PAGE_SIZE + 1; i += 1) {
+    // 默认列表不含归档种子：活跃任务 = 3 种子 + 新建；补到 PAGE_SIZE + 1 才出现分页
+    for (let i = seeded.length + 1; i <= PAGE_SIZE + 2; i += 1) {
       await api.createTask({
         goal: `分页占位任务 ${i}`,
         workflow: 'research',

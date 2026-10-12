@@ -135,6 +135,12 @@ function q0(e: RelayEvent): RelayEvent {
 export class EventBus {
   private readonly channels = new Map<string, TaskChannel>()
 
+  /**
+   * 发布钩子：每次 **publish**（实时下发）后回调（快照 `reserve` 不触发）。
+   * 供 EventRelay 落盘过程帧（trace.jsonl）；集中在此避免各发布点各写一遍。
+   */
+  onEvent: ((taskId: string, event: RelayEvent) => void) | undefined
+
   private channel(taskId: string): TaskChannel {
     let ch = this.channels.get(taskId)
     if (!ch) {
@@ -183,7 +189,9 @@ export class EventBus {
   }
 
   publish(taskId: string, e: RelayEventInput, opts: { dedupe?: boolean } = {}): RelayEvent | undefined {
-    return this.channel(taskId).publish(e, opts)
+    const ev = this.channel(taskId).publish(e, opts)
+    if (ev) this.onEvent?.(taskId, ev)
+    return ev
   }
 
   /** 快照直写用：只入缓冲（供 Last-Event-ID 续传），不下发给其他订阅者 */

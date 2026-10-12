@@ -374,7 +374,7 @@ describe('SSE · 终态追问（v2.2：终态连接保持，message 事件可达
   })
 })
 
-describe('SSE · 事件类型覆盖（附录 B：9 类）', () => {
+describe('SSE · 事件类型覆盖（附录 B：9 类 + v2.4 thinking）', () => {
 // 每种事件的**最小合法载荷**（字段各不相同，故逐个给真实形状而非统一构造）。
 // 之前这里用统一 `{seq,type,task_id,at}` + `as RelayEvent`，测的是错误形状的数据。
 //
@@ -385,6 +385,7 @@ const MINIMAL: Record<RelayEvent['type'], Payload> = {
       ping: { type: 'ping' },
       step: { type: 'step', step: 'R1', status: 'RUNNING' },
       activity: { type: 'activity', step: 'R1', human_message: '检索中' },
+      thinking: { type: 'thinking', text: '先看研究目标' },
       tool: { type: 'tool', step: 'R1', tool: 'sciret_run_all', status: 'running' },
       degraded: { type: 'degraded', level: 'info', source: 'crossref', reason: '限流', impact: '无', resumable: true, step: 'R1' },
       conclusion: { type: 'conclusion', cid: 'C-001', text: '界面阻抗主要由 SEI 贡献', evidence_ids: ['EV-0001'] },

@@ -1,3 +1,4 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ApiError } from '../infra/errors.js'
 import type { Logger } from '../infra/logger.js'
@@ -48,6 +49,23 @@ export type SendResult =
   | { queued: false; turn_id: string; status: 'running' }
   | { queued: true; order: number; turn_id: string; status: 'queued' }
 
+/**
+ * 落盘的消息轮次记录（append-only `runs/<task_id>/messages.jsonl` 一行）。
+ * 字段与 v2.4 契约一致：turn_id/role/text/status/ts/action（error 仅失败回合有）。
+ */
+export type MessageRecord = {
+  turn_id: string
+  role: 'user' | 'assistant'
+  text: string
+  status: 'queued' | 'running' | 'done' | 'failed'
+  ts: string
+  action: MessageAction
+  error?: string
+}
+
+/** GET /messages 的 history 单条：与 QueuedMessage 字段兼容，另加 role（v2.4）。 */
+export type HistoryEntry = QueuedMessage & { role: 'user' | 'assistant' }
+
 type TaskQueue = {
   /** 按order 升序的待发消息 */
   pending: QueuedMessage[]
@@ -55,6 +73,8 @@ type TaskQueue = {
   active: QueuedMessage | undefined
   /** 已完成的消息（供前端回看历史，含失败原因） */
   history: QueuedMessage[]
+  /** 当前投递回合期间 relay 送达的 assistant 回复文本（回合结束与 turn_id 一起落盘） */
+  assistantText: string[]
   seq: number
 }
 
@@ -65,6 +85,8 @@ export class MessageService {
   private readonly queues = new Map<string, TaskQueue>()
   /** 终态/消息事件回调（M4 Event Relay：消息需经 SSE 推送） */
   onMessageEvent: ((taskId: string, event: { turn_id: string; role: 'user' | 'assistant'; status: 'running' | 'done'; text?: string; queued_order?: number }) => void) | undefined
+  /** 投递前回调（v2.4：确保事件泵在跑，否则回合内的 assistant 回复取不到） */
+  onBeforeDrain: ((taskId: string) => void) | undefined
 
   constructor(
     private readonly gateway: AgnesGateway,
@@ -83,7 +105,7 @@ export class MessageService {
   private queue(taskId: string): TaskQueue {
     let q = this.queues.get(taskId)
     if (!q) {
-      q = { pending: [], active: undefined, history: [], seq: 0 }
+      q = { pending: [], active: undefined, history: [], assistantText: [], seq: 0 }
       this.queues.set(taskId, q)
     }
     return q
@@ -187,7 +209,7 @@ export class MessageService {
     busy: boolean
     pending: QueuedMessage[]
     active: QueuedMessage | undefined
-    history: QueuedMessage[]
+    history: HistoryEntry[]
   } {
     this.mustGet(taskId)
     const q = this.queue(taskId)
@@ -196,7 +218,94 @@ export class MessageService {
       busy: this.isExecBusy(taskId) || this.isActive(taskId),
       pending: [...q.pending],
       active: q.active,
-      history: [...q.history],
+      // v2.4：history = 内存队列 ∪ 持久化 jsonl（去重、按时间排序），含 role（刷新后可恢复）
+      history: this.mergeHistory(taskId, q.history),
+    }
+  }
+
+  /**
+   * 回合内 assistant 回复文本入口（v2.4）。
+   * 由 EventRelay 的 `assistant/message` 事件经 `index.ts` 装配 → 本方法送达，
+   * 与当前正在投递的消息轮次（`active`）关联；无消息回合在跑时忽略（如主流水线回合）。
+   */
+  recordAssistant(taskId: string, text: string): void {
+    const q = this.queues.get(taskId)
+    if (!q?.active) return
+    const t = text.trim()
+    if (!t) return
+    q.assistantText.push(t)
+  }
+
+  /** 合并内存历史与持久化记录（去重键 turn_id+role；按时间排序；order 归一到 1..N） */
+  private mergeHistory(taskId: string, memory: QueuedMessage[]): HistoryEntry[] {
+    const byKey = new Map<string, HistoryEntry>()
+    // 内存在前：字段完整（含 error/order/queued_at），代表同一轮的最新状态
+    for (const m of memory) byKey.set(`${m.turn_id}:user`, { ...m, role: 'user' })
+    for (const r of this.readRecords(taskId)) {
+      const key = `${r.turn_id}:${r.role}`
+      if (byKey.has(key)) continue
+      byKey.set(key, {
+        turn_id: r.turn_id,
+        task_id: taskId,
+        role: r.role,
+        action: r.action,
+        text: r.text,
+        order: 0, // 下面统一赋值
+        queued_at: r.ts,
+        status: r.status,
+        ...(r.error ? { error: r.error } : {}),
+      })
+    }
+    const out = [...byKey.values()].sort((a, b) => {
+      if (a.queued_at !== b.queued_at) return a.queued_at < b.queued_at ? -1 : 1
+      // 同一时刻：user 先于 assistant（提问在回复之前）
+      return a.role === b.role ? 0 : a.role === 'user' ? -1 : 1
+    })
+    out.forEach((e, i) => {
+      e.order = i + 1
+    })
+    return out
+  }
+
+  /** 读取持久化消息轮次（append-only jsonl；坏行跳过，不让一行脏数据毁掉整个历史） */
+  private readRecords(taskId: string): MessageRecord[] {
+    const file = resolve(this.runDir(taskId), 'messages.jsonl')
+    if (!existsSync(file)) return []
+    const out: MessageRecord[] = []
+    try {
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        const t = line.trim()
+        if (!t) continue
+        try {
+          const r = JSON.parse(t) as MessageRecord
+          if (
+            r &&
+            typeof r.turn_id === 'string' &&
+            (r.role === 'user' || r.role === 'assistant') &&
+            typeof r.text === 'string' &&
+            typeof r.ts === 'string'
+          ) {
+            out.push(r)
+          }
+        } catch {
+          /* 跳过坏行 */
+        }
+      }
+    } catch (e) {
+      this.log.warn('读取消息历史失败', { taskId, reason: e instanceof Error ? e.message : String(e) })
+      return []
+    }
+    return out
+  }
+
+  /** 追加一条消息轮次（append-only；失败只告警，不影响消息投递本身） */
+  private appendRecord(taskId: string, rec: MessageRecord): void {
+    try {
+      const dir = this.runDir(taskId)
+      mkdirSync(dir, { recursive: true })
+      appendFileSync(resolve(dir, 'messages.jsonl'), `${JSON.stringify(rec)}\n`, 'utf8')
+    } catch (e) {
+      this.log.warn('消息轮次落盘失败', { taskId, turnId: rec.turn_id, reason: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -225,6 +334,8 @@ export class MessageService {
 
     q.active = next
     next.status = 'running'
+    q.assistantText = [] // 新回合：清空上一轮的 assistant 文本缓冲
+    this.onBeforeDrain?.(taskId) // 确保事件泵在跑（否则取不到本回合的 assistant 回复）
     this.onMessageEvent?.(taskId, { turn_id: next.turn_id, role: 'user', status: 'running', text: next.text, queued_order: next.order })
     this.log.info('开始投递消息', { taskId, turnId: next.turn_id, action: next.action })
 
@@ -254,12 +365,39 @@ export class MessageService {
         this.index.put(t)
       }
     } finally {
+      // v2.4 轮次落盘：user 提交 + assistant 回复文本（append-only，回合结束一并写；失败回合 status=failed）
+      this.persistTurn(taskId, next, q.assistantText)
+      q.assistantText = []
       q.active = undefined
       q.history.push(next)
       // 队列还有下一条 → 继续（每条之间重新检查执行锁，避免与新触发的执行回合竞争）
       if (q.pending.length > 0 && !this.isExecBusy(taskId)) {
         void this.drain(taskId)
       }
+    }
+  }
+
+  /** 一个消息轮次落盘两行：user（提交）+ assistant（回复，若有）——同 turn_id 关联 */
+  private persistTurn(taskId: string, msg: QueuedMessage, assistantText: string[]): void {
+    this.appendRecord(taskId, {
+      turn_id: msg.turn_id,
+      role: 'user',
+      text: msg.text,
+      status: msg.status === 'done' ? 'done' : 'failed',
+      ts: new Date().toISOString(),
+      action: msg.action,
+      ...(msg.error ? { error: msg.error } : {}),
+    })
+    const reply = assistantText.join('\n').trim()
+    if (msg.status === 'done' && reply) {
+      this.appendRecord(taskId, {
+        turn_id: msg.turn_id,
+        role: 'assistant',
+        text: reply,
+        status: 'done',
+        ts: new Date().toISOString(),
+        action: msg.action,
+      })
     }
   }
 

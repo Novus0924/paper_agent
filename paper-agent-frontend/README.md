@@ -3,10 +3,10 @@
 paper-agent 2.0 的前端部分：React 18 + TypeScript（strict）+ Vite 5 + React Router 6 + Zustand，
 按《前端需求文档.md》实现 FE-01 ~ FE-15 全部条目，视觉与交互参照《前端Demo/index.html》（浅色令牌为唯一真源）。
 
-默认由 **演示数据适配器**（`api/mock/`，业内叫 Mock）驱动，断网可完整走通「新建 → 监控 → 报告 → 证据 → 导出 → 追问」主旅程；
-加 `?mode=live` 即切到真实 BFF/SSE，**视图代码一行不改**。
-它不是产品意义上的「离线模式」：只是后端接入前的演示适配器，Live 跑通后整个 `api/mock/` 目录可以删掉
-（用户第 1 点；文案口径与守门测试见 §3「Mock 不是产品里的离线模式」）。
+v2.5 起数据通道**只有一个**：`api/client.ts` 导出的 `LiveApiClient`（真实 AGH 研究平台经 BFF 中转）。
+演示数据适配器（`api/mock/` 双模架构）已整体移除——"后端真实返回 vs 前端类型声明"的差异
+不再被按前端类型编造的 mock 掩盖；测试改由**契约级 fake backend**（`tests/liveEnv.ts`，
+逐条镜像后端路由/SSE 帧序/错误文案）驱动，页面上不再有模式切换、水印与演示控件。
 
 ---
 
@@ -28,16 +28,13 @@ node scripts/check-css-refs.mjs   # 校验 css-module 类名引用无悬空
 
 | 变量                    | 作用                                                                 |
 | ----------------------- | -------------------------------------------------------------------- |
-| `VITE_API_MODE`         | `mock`（默认）/ `live`；URL 上的 `?mode=` 优先级更高                 |
-| `VITE_API_BASE_URL`     | Live 模式 BFF 根地址，默认 `http://127.0.0.1:8787`；**留空 = 同源**，走 dev server 的 `/api` 代理 |
+| `VITE_API_BASE_URL`     | BFF 根地址，默认 `http://127.0.0.1:8787`；**留空 = 同源**，走 dev server 的 `/api` 代理 |
 | `VITE_AGH_SETTINGS_URL` | AGH 原生设置入口；留空时设置页给出可读说明而不是禁用死按钮           |
-| `VITE_FLAG_DEMO_TOOLS`  | `off` 时隐藏监控页「模拟断线/重新演示/快进」验证控件（仅 mock 生效） |
 
 本机真后端联调（2026-10-11 走过，取证见 §4）：后端按 `paper-agent-backend/README.md` 起 AGH daemon 与 BFF（`127.0.0.1:8787`），
 前端只要一份 `.env.local`（gitignore，绝不提交）：
 
 ```bash
-VITE_API_MODE=live
 VITE_API_BASE_URL=          # 留空：请求发同源，由 vite 的 server.proxy['/api'] 转给 8787
 ```
 
@@ -49,7 +46,6 @@ VITE_API_BASE_URL=          # 留空：请求发同源，由 vite 的 server.pro
 `Access-Control-Allow-Origin` 与 `Vary: Origin`；不在白名单的 Origin → 200 但**无** ACAO（浏览器拦死）。
 > 历史的坑是"JSON 跨源能用、SSE 一帧不到"：同一个白名单写了两遍、漏了 hijack 那一处，
 > 界面表现为"连上了但没有进度"。当初改用同源代理把它绕开了，所以没人发现它坏着。
-临时演示想切回假数据不用改文件，`?mode=mock` 即可。
 
 ---
 
@@ -74,22 +70,21 @@ src/
     common/           HealthBanner、HealthCard（首屏健康与自检）
   api/
     types.ts          后端文档 §5/附录 A 的 DTO 契约
-    client.ts         双模适配器出口（按 env.apiMode 选 mock / live）
-    httpClient.ts     Live：REST + SSE（Last-Event-ID 补发）
+    client.ts         唯一数据出口：LiveApiClient（真实 AGH 研究平台，v2.5 移除双模适配）
+    httpClient.ts     REST + SSE（Last-Event-ID 补发）
     normalize.ts      SSE 归一层：seq 单调去重、按实体合并、rebuildRuntime
     errors.ts         错误码 → 人类可读文案 + 下一步
-    mock/             fixtures（脚本与种子）、runtime（localStorage 时间线）、mockClient
-                      —— 演示数据适配器，与 Live 同接口同 DTO 形状；Live 跑通后整个目录删掉
-  store/              taskStore / uiStore / healthStore / toastStore
+  store/              taskStore / uiStore / healthStore / toastStore / notificationStore / paletteStore
   i18n/               zh-CN（全量）、en（部分，缺失自动回退）
-  styles/             tokens.css（含 :root[data-theme='dark'] 预留块）、base.css、*.module.css
+  styles/             tokens.css（含 :root[data-theme='dark'] 深色块）、base.css、*.module.css
   lib/                utils / status（状态色语义）/ labels / paginate（长列表统一分页尺度）
                       / hooks（含 useMediaQuery，响应式走 JS 而非只靠媒体查询）/ errors
+                      / trace（AgentTrace 时间线装配）/ commands（命令面板登记）/ libraryExport（BibTeX 拼装）
   config/             env.ts flags.ts meta.ts registry.ts（数据源与工作流登记表）
-tests/                10 个用例文件（另含 harness 真路由渲染、helpers、setup 三个非用例文件）：
-                      normalize、lib、components、shell、journey、
-                      a11y（标题大纲 / 可访问名 / 焦点顺序全站扫描）、evidence-binding（结论↔证据不变量）、
-                      mock-runtime、mock-script、tokens（令牌唯一真源与视觉标记的三组锁）
+tests/                契约级 fake backend（liveEnv.ts 镜像后端路由/SSE/错误文案 + fixtures/seed.ts 冻结种子）
+                      之上跑 15 个用例文件：liveEnv（fake 自校验 51 例）、live-contract（实测形状翻译）、
+                      journey（主旅程）、library、components、shell、a11y、evidence-binding（结论↔证据不变量，
+                      种子与合成账本双口径）、v21/v22/v23（迭代回归）、normalize、lib、tokens
 e2e/                  Playwright 真浏览器用例：breakpoints.spec（四档断点取证 / 降级横幅跟正文列对齐 / Toast 不遮控件）、
                       journey.spec（真旅程）、a11y.spec（大纲 / 跳转链接 / 折叠可达 / AA 文字对比度 / 状态点相对合成底达非文本 3:1 / 真 Enter 激活原生按钮 / 侧栏状态点带可读名）、
                       axe.spec（axe-core 整页审计六个视图，零违规档位）、

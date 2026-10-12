@@ -1,7 +1,7 @@
 {
   "name": "paper-agent-frontend",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.5.0",
   "type": "module",
   "description": "paper-agent 2.0 科研工作台 Workbench 前端（React 18 + TypeScript + Vite）",
   "scripts": {

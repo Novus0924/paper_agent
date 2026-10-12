@@ -58,6 +58,10 @@ async function main(): Promise<void> {
   exec.externalBusy = (taskId: string) => messages.isActive(taskId)
   // 用户消息经SSE 推送（§5.3 事件表 message 类型）
   messages.onMessageEvent = (taskId, ev) => relay.publishMessage(taskId, ev)
+  // v2.4 问答复盘：回合内 assistant 回复文本 → 消息服务关联 turn_id 落盘（刷新后可恢复）
+  relay.onAssistantReply = (taskId, text) => messages.recordAssistant(taskId, text)
+  // 投递前确保事件泵在跑（否则回合内的 assistant/message 事件收不到 → 回复取不到）
+  messages.onBeforeDrain = (taskId) => relay.ensure(taskId)
 
   // 启动即恢复：凭映射同步各任务的内核状态（BFF 重启后可恢复，§9.2）
   for (const task of index.allWithSessions()) {

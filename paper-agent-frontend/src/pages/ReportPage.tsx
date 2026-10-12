@@ -8,7 +8,9 @@ import { visibleMessages } from '@/api/normalize';
 import { useTaskStore } from '@/store/taskStore';
 import { useUiStore } from '@/store/uiStore';
 import { useTaskGoneRedirect } from '@/app/useTaskGoneRedirect';
+import monitor from '@/styles/monitor.module.css';
 import { Card } from '@/components/ui/Card';
+import { Collapse } from '@/components/ui/Collapse';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { EmptyState, ErrorState, SkeletonList } from '@/components/ui/Feedback';
@@ -16,6 +18,7 @@ import { ReportView } from '@/components/business/ReportView';
 import { ExportPanel } from '@/components/business/ExportPanel';
 import { MessageList } from '@/components/business/MessageList';
 import { Composer } from '@/components/business/Composer';
+import { AgentTrace } from '@/components/business/AgentTrace';
 
 /**
  * FE-07 报告中心 + FE-09 导出交付（P-02/P-04）
@@ -123,6 +126,35 @@ export function ReportPage() {
                 sessionId={entry.snapshot?.session_id}
               />
             </div>
+          </Card>
+
+          {/* 研究过程：本次任务的 Trace 摘要 + 可展开的完整时间线（复用监控页同一组件） */}
+          <Card className={layout.block} title={t('report.processTitle')} icon="brain">
+            <div className={monitor.processSummary}>
+              <span className={monitor.processChip}>
+                <Icon name="brain" size={12} />
+                {t('report.processThink', { n: entry.thinkings.length })}
+              </span>
+              <span className={monitor.processChip}>
+                <Icon name="chain" size={12} />
+                {t('report.processTools', { n: entry.tools.length })}
+              </span>
+              <span className={monitor.processChip}>
+                <Icon name="list" size={12} />
+                {t('report.processActivities', { n: entry.activities.length })}
+              </span>
+            </div>
+            <p className={ui.muted}>{t('report.processLead')}</p>
+            <Collapse className={layout.block} title={t('report.processTrace')} defaultOpen>
+              <AgentTrace
+                activities={entry.activities}
+                tools={entry.tools}
+                thinkings={entry.thinkings}
+                running={isRunning(entry.snapshot?.run_status ?? 'PLANNED')}
+                currentStepId={entry.snapshot?.steps.find((s) => s.is_current)?.id ?? null}
+                withControls={false}
+              />
+            </Collapse>
           </Card>
 
           <Card className={layout.block} title={t('report.exportTitle')} icon="download">

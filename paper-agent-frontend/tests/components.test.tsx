@@ -6,7 +6,7 @@ import { DegradedBanner } from '@/components/business/DegradedBanner';
 import { Composer } from '@/components/business/Composer';
 import { EvidenceCard } from '@/components/business/EvidenceCard';
 import { ArtifactList } from '@/components/business/ArtifactList';
-import { api, type ApiClient } from '@/api/client';
+import { api } from '@/api/client';
 import { useTaskStore } from '@/store/taskStore';
 import { renderAt, resetStores, seedTask } from './harness';
 import { step } from './helpers';
@@ -207,10 +207,7 @@ describe('FE-10 Composer 与消息排队（P-05）', () => {
     expect(screen.getAllByText('已排队，当前任务结束后按序执行。')).toHaveLength(2);
   });
 
-  it('排队消息按顺序展示，可立即发送或删除', async () => {
-    // sendNow 是 mock 独有能力（live 后端无强制投递口），本用例跑在 mock 模式下故必然存在
-    const client = api as Required<ApiClient>;
-    const sendNow = vi.spyOn(client, 'sendNow').mockResolvedValue(undefined);
+  it('排队消息按顺序展示、可删除；live 后端无强制投递口，不渲染"立即发送"', async () => {
     const removeQueued = vi.spyOn(api, 'removeQueued').mockResolvedValue(undefined);
     seedTask(taskId, {
       messages: [queued('t2', 2, '第二条提问'), queued('t1', 1, '第一条提问')],
@@ -226,10 +223,10 @@ describe('FE-10 Composer 与消息排队（P-05）', () => {
         .compareDocumentPosition(screen.getByText('第二条提问')),
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
-    await userEvent.click(
-      screen.getAllByRole('button', { name: '立即发送' })[1] as HTMLElement,
-    );
-    expect(sendNow).toHaveBeenCalledWith(taskId, 't2');
+    // v2.5：live 后端的消息契约只有 ask|revise（validateAction 白名单），没有 flush
+    // 强制投递口——组件不得渲染"立即发送"这类必然 400 的伪动作；运行中消息按序
+    // 排队、回合结束由 onTurnSettled 自动放行
+    expect(screen.queryByRole('button', { name: '立即发送' })).toBeNull();
 
     await userEvent.click(
       screen.getAllByRole('button', { name: /删除/ })[0] as HTMLElement,

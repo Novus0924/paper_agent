@@ -5,6 +5,7 @@ import { api } from '@/api/client';
 import { LiveApiClient } from '@/api/httpClient';
 import type { LibraryEvidenceResponse } from '@/api/types';
 import { renderApp, resetStores } from './harness';
+import { useLiveBackend, type LiveBackend } from './liveEnv';
 
 /**
  * FE-14 文献库：跨任务证据汇总。
@@ -18,24 +19,29 @@ import { renderApp, resetStores } from './harness';
 const UI_KEY = 'paper-agent-frontend.ui';
 const LOCALE_KEY = 'paper-agent-frontend.locale';
 
+let backend: LiveBackend;
+
 beforeEach(() => {
+  // v2.5：唯一数据通道是 LiveApiClient，契约数字断言基于 fake backend 种子
+  backend = useLiveBackend();
   resetStores();
   localStorage.removeItem(UI_KEY);
   localStorage.removeItem(LOCALE_KEY);
 });
 
 afterEach(() => {
+  backend?.unstub();
   vi.restoreAllMocks();
 });
 
-/* ============================================================ mock 契约 */
+/* ============================================================ 契约数学 */
 
-describe('文献库 mock 契约同形', () => {
+describe('文献库契约同形（fake backend 种子）', () => {
   it('默认按 DOI 去重：合并同 DOI 记录并累加 duplicates_count', async () => {
     const res = await api.listLibraryEvidence();
-    expect(res.tasks_scanned).toBe(3);
-    // 23 条原始证据 → 去重后 19 条（同一 DOI 被多个任务/同任务多次检索到；synthesis 无 DOI 独立成条）
-    expect(res.total).toBe(19);
+    expect(res.tasks_scanned).toBe(4);
+    // 28 条原始证据 → 去重后 24 条（同一 DOI 被多个任务/同任务多次检索到；产物无 DOI 独立成条）
+    expect(res.total).toBe(24);
 
     const merged = res.items.find(
       (it) => it.ref.doi === '10.1039/d2ee01234a',
@@ -44,9 +50,9 @@ describe('文献库 mock 契约同形', () => {
     expect(merged?.duplicates_count).toBe(2);
   });
 
-  it('dedupe=false 时不做合并，条数回到原始 23 条', async () => {
+  it('dedupe=false 时不做合并，条数回到原始 28 条', async () => {
     const res = await api.listLibraryEvidence({ dedupe: false });
-    expect(res.total).toBe(23);
+    expect(res.total).toBe(28);
     expect(res.items.every((it) => it.duplicates_count === 0)).toBe(true);
     expect(
       res.items.filter((it) => it.ref.doi === '10.1039/d2ee01234a'),
@@ -85,7 +91,7 @@ describe('文献库 mock 契约同形', () => {
   it('无 DOI 证据跨任务不聚合：ev_id 冲突也各自保留、duplicates_count=0', async () => {
     const res = await api.listLibraryEvidence({ limit: 100 });
     const noDoi = res.items.filter((it) => it.ref.doi === '');
-    expect(noDoi).toHaveLength(11);
+    expect(noDoi).toHaveLength(14);
     expect(noDoi.every((it) => it.duplicates_count === 0)).toBe(true);
 
     // 每个 ev_id 归属到哪些任务：必须存在"同一 ev_id 横跨多个任务"的情形（否则该用例失去意义）
@@ -121,7 +127,7 @@ describe('文献库 mock 契约同形', () => {
   it('无 DOI 的产物永不合并（键带 task_id，跨任务重名也不吃）', async () => {
     const res = await api.listLibraryEvidence({ limit: 100 });
     const artifacts = res.items.filter((it) => it.ref.doi === '');
-    expect(artifacts).toHaveLength(11);
+    expect(artifacts).toHaveLength(14);
     expect(artifacts.every((it) => it.duplicates_count === 0)).toBe(true);
   });
 
@@ -147,7 +153,7 @@ describe('文献库 mock 契约同形', () => {
     expect(first.items).toHaveLength(5);
     expect(second.items).toHaveLength(5);
     expect(first.items[0]?.ev_id).not.toBe(second.items[0]?.ev_id);
-    expect(first.total).toBe(19);
+    expect(first.total).toBe(24);
   });
 });
 
@@ -233,12 +239,12 @@ describe('FE-14 文献库界面', () => {
     expect(stats.textContent).toContain('收录文献');
     expect(stats.textContent).toContain('覆盖任务');
     expect(stats.textContent).toContain('去重合并');
-    expect(stats.textContent).toContain('19');
-    expect(stats.textContent).toContain('3');
+    expect(stats.textContent).toContain('24');
+    expect(stats.textContent).toContain('4');
 
-    // 首屏作者 / 年份 / 来源徽标可读
-    expect(screen.getByText('N. Kumar 等 · 2022 · Energy & Environmental Science')).toBeInTheDocument();
-    expect(screen.getAllByText('Crossref').length).toBeGreaterThan(0);
+    // 首屏作者 / 年份 / 来源徽标可读（fake 种子首条是硬碳任务的 R1 文献）
+    expect(screen.getByText('K. Sato、T. Yamamoto · 2023 · Nature Energy')).toBeInTheDocument();
+    expect(screen.getAllByText('arXiv').length).toBeGreaterThan(0);
   });
 
   it('同 DOI 记录带「合并 N 条」徽标，来源任务链接指向 /report/:task_id', async () => {
@@ -294,12 +300,12 @@ describe('FE-14 文献库界面', () => {
   it('客户端分页：翻到第二页给出后一半条目', async () => {
     renderApp('/library');
     await screen.findByText('固态电解质界面阻抗 EIS 建模综述');
-    // 首屏分页信息（19 条 / 每页 10）
-    expect(screen.getByText('第 1–10 条 / 共 19 条')).toBeInTheDocument();
+    // 首屏分页信息（24 条 / 每页 10）
+    expect(screen.getByText('第 1–10 条 / 共 24 条')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: '下一页' }));
     await waitFor(() =>
-      expect(screen.getByText('分子钝化剂对钙钛矿界面缺陷的钝化机理')).toBeInTheDocument(),
+      expect(screen.getByText('钙钛矿太阳能电池缺陷钝化策略综述')).toBeInTheDocument(),
     );
     expect(
       screen.queryByText('固态电解质界面阻抗 EIS 建模综述'),

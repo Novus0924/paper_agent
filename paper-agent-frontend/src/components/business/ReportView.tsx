@@ -31,9 +31,12 @@ export function ReportView({ taskId, report: doc, evidence, sessionId }: ReportV
   const toast = useToastStore((s) => s.push);
   const evidenceByEv = new Map(evidence.map((e) => [e.ev_id, e] as const));
   const tierByEv = new Map(evidence.map((e) => [e.ev_id, e.tier] as const));
+  // 参考文献从账本确定性派生：文献类证据（kind=literature 且带回真实 DOI/来源标识）按 ev_id
+  // 升序编号。后端证据契约没有 cite_no 字段（实测 GET /evidence?view=audit 无该键），
+  // 编号由前端按同一规则算出，不依赖任何后端伪造值——换任务、换刷新结果都一致。
   const references = evidence
-    .filter((e) => typeof e.cite_no === 'number')
-    .sort((a, b) => (a.cite_no ?? 0) - (b.cite_no ?? 0));
+    .filter((e) => e.kind === 'literature' && e.ref !== '')
+    .sort((a, b) => (a.ev_id < b.ev_id ? -1 : a.ev_id > b.ev_id ? 1 : 0));
 
   const ledger = evidence.filter((e) => e.chain_hash);
 
@@ -142,7 +145,7 @@ export function ReportView({ taskId, report: doc, evidence, sessionId }: ReportV
                 .find((e): e is EvidenceItem => Boolean(e));
               return (
                 <div key={c.cid} className={report.conclLi}>
-                  <span className={report.conclNo}>{c.cite_no ?? i + 1}</span>
+                  <span className={report.conclNo}>{i + 1}</span>
                   <span className={report.conclBody}>
                     {c.text}
                     <span className={report.evRow}>

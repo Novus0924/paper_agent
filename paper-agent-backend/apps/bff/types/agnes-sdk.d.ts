@@ -14,6 +14,31 @@ export type SessionEventRecord = {
   [k: string]: unknown
 }
 
+/** 预览流载荷（`_agnes/v1/session.preview`）：流式文本增量，无 seq、只有 offset。 */
+export type SessionPreviewParams = {
+  sessionId: string
+  lane: string
+  effectId: string
+  stream: 'text' | 'thinking'
+  offset: number
+  delta: string
+}
+
+/** `PreviewMerger.add` 接受的形状（sessionId 可省）。 */
+export type Preview = Omit<SessionPreviewParams, 'sessionId'> & { sessionId?: string }
+
+/**
+ * 思考/正文预览的增量合并器（官方实现，见 AGH preview-merger.ts）：
+ * 按 offset 裁剪重复/重叠、缓存乱序片段，只暴露单调增长的文本。
+ */
+export declare class PreviewMerger {
+  add(p: Preview): boolean
+  text(effectId: string): { text: string; thinking: string; capped: boolean } | undefined
+  finish(effectId: string): void
+  reset(): void
+  apply<T extends { nodes: unknown[] }>(timeline: T): T
+}
+
 export type TurnResult = {
   stopReason: string
   reason: string
@@ -21,7 +46,7 @@ export type TurnResult = {
   credits?: { used: number; source: string }
 }
 
-export interface Session {
+export declare class Session {
   readonly id: string
   readonly client: unknown
   readonly lastSeq: number
@@ -35,6 +60,8 @@ export interface Session {
   followUp(input: string | unknown[], opts?: { commandId?: string }): Promise<number>
   cancel(): Promise<void>
   events(opts?: { types?: string[]; lanes?: string[]; preview?: boolean }): AsyncIterable<SessionEventRecord>
+  /** 订阅预览流（需以 `events({ preview: true })` 附加）：thinking 文本的唯一载体。返回取消订阅函数。 */
+  onPreview(fn: (p: SessionPreviewParams) => void): () => void
   onPermissionRequest(handler: (req: unknown) => Promise<{ optionId?: string; verdict?: 'allowed-once' | 'allowed-session' | 'allowed-permanent' | 'rejected' }> | { optionId?: string; verdict?: string }): () => void
   flushCursor(): Promise<void>
 }

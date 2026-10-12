@@ -302,3 +302,79 @@ describe('GET /api/v1/library/evidence · 分页与边界', () => {
     }
   })
 })
+
+// ------------------------------------------------------------------ 全库 BibTeX 导出（v2.4）
+
+describe('GET /api/v1/library/export?kind=bibtex · 全库 BibTeX 导出', () => {
+  const getExport = async (query = ''): Promise<{ status: number; body: string; headers: Record<string, string> }> => {
+    const res = await app.inject({ method: 'GET', url: `/api/v1/library/export${query}` })
+    return { status: res.statusCode, body: res.body, headers: res.headers as Record<string, string> }
+  }
+
+  it('聚合多任务 R1 文献并按 DOI 去重，产出 attachment paper-agent-library.bib', async () => {
+    seedTask('run-a', { created_at: '2026-10-02T00:00:00Z' })
+    seedLedger('run-a', [
+      { ev_id: 'EV-0001', title: 'Solid-State Electrolytes', ref: { doi: '10.1007/s41918-019-00048-0', authors: ['Alice Zhang', 'Bob Li'], year: 2019, venue: 'Electrochemical Energy Reviews' } },
+      { ev_id: 'EV-0002', title: 'Shared Paper', ref: { doi: 'https://doi.org/10.1/SAME', authors: ['Alice Zhang'], year: 2020 } },
+    ])
+    seedTask('run-b', { created_at: '2026-10-05T00:00:00Z' })
+    seedLedger('run-b', [
+      // 与 run-a 的 EV-0002 同 DOI（大小写/前缀不同）→ 去重为一条
+      { ev_id: 'EV-0001', title: 'Shared Paper（新版）', ref: { doi: '10.1/same', authors: ['Carol Wang'], year: 2021 } },
+      { ev_id: 'EV-0002', title: 'Another', ref: { doi: '10.1/another', authors: ['Dave'], year: 2018 } },
+    ])
+
+    const res = await getExport('?kind=bibtex')
+    expect(res.status).toBe(200)
+    expect(res.headers['content-type']).toContain('text/plain')
+    expect(res.headers['content-disposition']).toBe('attachment; filename="paper-agent-library.bib"')
+    expect(res.headers['x-content-type-options']).toBe('nosniff')
+    // 去重后 3 条：唯一 DOI 两条 + 同 DOI 合并 1 条 = 3
+    expect((res.body.match(/@article\{/g) ?? []).length).toBe(3)
+    expect(res.body).toContain('author = {Alice Zhang, Bob Li}')
+    expect(res.body).toContain('journal = {Electrochemical Energy Reviews}')
+    expect(res.body).toContain('year = {2019}')
+    expect(res.body).toContain('doi = {10.1007/s41918-019-00048-0}')
+  })
+
+  it('引用键防碰撞：同姓同年不同条不撞（姓+年+序号），与任务级导出同口径', async () => {
+    seedTask('run-a')
+    seedLedger('run-a', [
+      // 姓=末段词（与任务级导出同口径）：两条末段同为 Zhang 且同年 → 靠序号区分
+      { ev_id: 'EV-0001', title: 'A', ref: { doi: '10.1/a', authors: ['Wei Zhang'], year: 2019 } },
+      { ev_id: 'EV-0002', title: 'B', ref: { doi: '10.1/b', authors: ['Li Zhang'], year: 2019 } },
+    ])
+    const res = await getExport('?kind=bibtex')
+    const keys = [...res.body.matchAll(/@article\{([^,]+),/g)].map((m) => m[1])
+    expect(keys).toEqual(['Zhang20191', 'Zhang20192'])
+  })
+
+  it('特殊字符按 BibTeX 惯例转义（& % _ #）', async () => {
+    seedTask('run-a')
+    seedLedger('run-a', [
+      { ev_id: 'EV-0001', title: 'A & B: 50% _test_ #1', ref: { doi: '10.1/x', authors: ['Zhang'], year: 2020 } },
+    ])
+    const res = await getExport('?kind=bibtex')
+    expect(res.body).toContain('title = {A \\& B: 50\\% \\_test\\_ \\#1}')
+  })
+
+  it('空库（无任何 R1 文献）→ 409 NOT_READY，附可读说明，不产出空文件', async () => {
+    seedTask('run-a')
+    seedLedger('run-a', []) // 只有 conclusion，无 evidence
+    const res = await getExport('?kind=bibtex')
+    expect(res.status).toBe(409)
+    const body = JSON.parse(res.body) as { code: string; error: string }
+    expect(body.code).toBe('NOT_READY')
+    expect(body.error).toContain('文献')
+  })
+
+  it('缺 kind / 非法 kind → 400 BAD_PARAM 并列出允许值', async () => {
+    seedTask('run-a')
+    seedLedger('run-a', [{ ev_id: 'EV-0001', title: 'X', ref: { doi: '10.1/x' } }])
+    for (const q of ['', '?kind=', '?kind=json', '?kind=csv']) {
+      const res = await getExport(q)
+      expect(res.status, `查询 ${q} 应 400`).toBe(400)
+      expect(JSON.parse(res.body).code).toBe('BAD_PARAM')
+    }
+  })
+})

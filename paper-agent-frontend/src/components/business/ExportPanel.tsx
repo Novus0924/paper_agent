@@ -51,7 +51,7 @@ export function ExportPanel({ taskId, taskDone }: ExportPanelProps) {
   const [pending, setPending] = useState<string | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
 
-  /** 保存结果：live 走 blobUrl（ZIP 等二进制），mock 直接给文本内容 */
+  /** 保存结果：二进制走 blobUrl（ZIP），文本内容直接下载 */
   function save(res: ExportResult) {
     if (res.blobUrl) {
       downloadUrl(res.filename ?? `${taskId}-export`, res.blobUrl);

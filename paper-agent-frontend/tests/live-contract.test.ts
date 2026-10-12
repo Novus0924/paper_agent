@@ -1,69 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LiveApiClient } from '@/api/httpClient';
-import { applyEnvelope, emptyRuntime } from '@/api/normalize';
-import type { SseEnvelope } from '@/api/types';
 import { snapshot } from './helpers';
+import {
+  LIVE_BASE as BASE,
+  collect,
+  headerOf,
+  stubFetch,
+  FakeEventSource,
+} from './liveEnv';
 
 /* ==========================================================================
    Live 契约回归：锁定真机联调（BFF + AGH，2026-10-11）实测到的形状翻译。
    每条断言对应一个"后端真实返回 vs 前端类型声明"的差异；mock 用例覆盖不到这些，
    因为 mock 一开始就是按前端类型写的。 fixtures 全部取自实测响应，不做美化。
+   基础设施（toResponse/stubFetch/headerOf/FakeEventSource/collect）自 v2.5 起由
+   tests/liveEnv.ts 提供：契约级 fake backend 与这里的手写实测快照共用同一套桩。
    ========================================================================== */
 
-const BASE = 'http://127.0.0.1:8787';
 const TASK = 'run-20261011-124613-to8fge';
-
-interface ResSpec {
-  status?: number;
-  json?: unknown;
-  body?: string;
-  mime?: string;
-  headers?: Record<string, string>;
-}
-
-interface Call {
-  url: string;
-  init?: RequestInit;
-}
-
-function toResponse(spec: ResSpec): Response {
-  const status = spec.status ?? 200;
-  const headers = new Map(
-    Object.entries(spec.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
-  );
-  const body = spec.body ?? JSON.stringify(spec.json ?? {});
-  const mime = spec.mime ?? 'application/octet-stream';
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: (name: string) => headers.get(name.toLowerCase()) ?? null },
-    json: async () => spec.json,
-    text: async () => body,
-    // 界面只用到 blob.type / blob.text()，jsdom 的 Blob 没有 text()
-    blob: async () => ({ type: mime, text: async () => body }) as unknown as Blob,
-  } as unknown as Response;
-}
-
-/** 按 URL 路由的 fetch 桩；同时记录调用顺序、方法与请求头 */
-function stubFetch(route: (url: string, init?: RequestInit) => ResSpec): Call[] {
-  const calls: Call[] = [];
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : String(input);
-      calls.push({ url, init });
-      return toResponse(route(url, init));
-    }),
-  );
-  return calls;
-}
-
-function headerOf(init: RequestInit | undefined, name: string): string | undefined {
-  const raw = init?.headers as Record<string, string> | undefined;
-  if (!raw) return undefined;
-  const key = Object.keys(raw).find((k) => k.toLowerCase() === name.toLowerCase());
-  return key ? raw[key] : undefined;
-}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -364,73 +318,6 @@ describe('Live：回查 citation', () => {
 
 /* ------------------------------------------------------------------- SSE */
 
-/** jsdom 不实现 EventSource：用最小桩替代，只覆盖 subscribe() 用到的接口 */
-class FakeEventSource {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSED = 2;
-
-  readonly url: string;
-  readonly withCredentials: boolean;
-  readyState = FakeEventSource.OPEN;
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-
-  private readonly listeners = new Map<string, ((raw: unknown) => void)[]>();
-
-  constructor(url: string, options?: { withCredentials?: boolean }) {
-    this.url = url;
-    this.withCredentials = options?.withCredentials ?? false;
-    FakeEventSource.instances.push(this);
-  }
-
-  addEventListener(name: string, cb: (raw: unknown) => void): void {
-    this.listeners.set(name, [...(this.listeners.get(name) ?? []), cb]);
-  }
-
-  hasListener(name: string): boolean {
-    return (this.listeners.get(name)?.length ?? 0) > 0;
-  }
-
-  close(): void {
-    this.closed = true;
-  }
-
-  /** 模拟后端 frame：`id: <seq>` 供 lastEventId，`data:` 为 RelayEvent JSON */
-  emit(name: string, data: Record<string, unknown>, seq: number): void {
-    this.rawEmit(name, JSON.stringify({ ...data, seq, ts: '2026-10-11T05:00:47.187Z' }), seq);
-  }
-
-  /** 坏帧（data 不是合法 JSON）：适配器必须忽略而不是抛错 */
-  rawEmitBroken(name: string, data: string, seq: number): void {
-    this.rawEmit(name, data, seq);
-  }
-
-  private rawEmit(name: string, data: string, seq: number): void {
-    for (const cb of this.listeners.get(name) ?? []) {
-      cb({ data, lastEventId: String(seq) });
-    }
-  }
-
-  static instances: FakeEventSource[] = [];
-}
-
-/** 把 subscribe() 收到的信封喂进与实时/重建共用的 reducer；latest() 读当前状态 */
-function collect(client: LiveApiClient, taskId = TASK) {
-  let state = emptyRuntime(snapshot({ task_id: taskId }));
-  const envelopes: SseEnvelope[] = [];
-  const unsubscribe = client.subscribe(taskId, {
-    onEvent: (evt) => {
-      envelopes.push(evt);
-      state = applyEnvelope(state, evt);
-    },
-  });
-  const source = FakeEventSource.instances.at(-1);
-  if (!(source instanceof FakeEventSource)) throw new Error('EventSource 未构造');
-  return { source, envelopes, unsubscribe, latest: () => state };
-}
-
 describe('Live：SSE 事件形状翻译', () => {
   it('订阅 /tasks/{id}/events 并监听 §5.1 全部事件名', () => {
     FakeEventSource.instances = [];
@@ -574,6 +461,29 @@ describe('Live：SSE 事件形状翻译', () => {
     expect(envelopes[0]?.seq).toBe(43);
     // 补发/重连时后端仍会带旧 seq 的帧，状态不得回退
     expect(latest().reportStatus).toBe('ready');
+  });
+
+  it('thinking 帧全量进信封流并按 step 聚合（必要的思考流不被过滤）', () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const { source, envelopes, latest } = collect(new LiveApiClient(BASE));
+
+    source.emit('thinking', { type: 'thinking', step: 'R2', text: '先按界面类型分组。' }, 20);
+    source.emit('thinking', { type: 'thinking', step: 'R2', text: '再比较表征手段的敏感度。' }, 21);
+    source.emit('thinking', { type: 'thinking', step: 'R4', text: '核验 DOI 与数值一致性。' }, 22);
+    // 同一步的补帧（乱序到达）：整段追加进对应聚合条目，不丢弃、不另开新条目
+    source.emit('thinking', { type: 'thinking', step: 'R2', text: '补一句口径说明。' }, 23);
+
+    // 适配器层不吞 thinking：四帧全部进信封流（用户核心要求：思考流不过滤）
+    expect(envelopes.filter((e) => e.event === 'thinking')).toHaveLength(4);
+    const thinkings = latest().thinkings;
+    expect(thinkings).toHaveLength(2);
+    // 聚合条目按最后更新帧的 seq 排序（R2 补帧 seq=23 > R4 seq=22）
+    expect(thinkings.map((t) => t.step)).toEqual(['R4', 'R2']);
+    const r2 = thinkings.find((t) => t.step === 'R2');
+    expect(r2?.text).toBe(
+      '先按界面类型分组。\n再比较表征手段的敏感度。\n补一句口径说明。',
+    );
   });
 
   it('data 非 JSON 时忽略该帧，不影响后续事件', () => {

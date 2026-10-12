@@ -18,16 +18,30 @@ const cssFiles = () =>
       text: readFileSync(join(STYLES_DIR, name), 'utf8').replace(/\/\*[\s\S]*?\*\//g, ''),
     }));
 
-/** 声明段：tokens.css 的 :root 与深色块 */
+const tokenSource = () =>
+  readFileSync(join(STYLES_DIR, 'tokens.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+/** :root 默认块：第一个 [data-theme= 之前的一切（默认即深色控制台） */
+const baseBlock = (): string => {
+  const raw = tokenSource();
+  const i = raw.indexOf('[data-theme=');
+  return i === -1 ? raw : raw.slice(0, i);
+};
+
+/** 具名主题块的声明体：[data-theme='light'] { … } 里的内容 */
+const themeBlock = (theme: 'light' | 'dark'): string =>
+  new RegExp(`\\[data-theme='${theme}'\\]\\s*\\{([\\s\\S]*?)\\}`).exec(tokenSource())?.[1] ??
+  '';
+
+/** 声明段：:root 默认块与各主题覆盖块 */
 const splitTokenBlocks = () => {
-  const raw = readFileSync(join(STYLES_DIR, 'tokens.css'), 'utf8').replace(
-    /\/\*[\s\S]*?\*\//g,
-    '',
-  );
-  const [light = '', dark = ''] = raw.split(/\[data-theme='dark'\]/);
   const names = (text: string) =>
     [...text.matchAll(/(--[A-Za-z0-9-]+)\s*:/g)].map((m) => m[1] as string);
-  return { light: names(light), dark: names(dark) };
+  return {
+    base: names(baseBlock()),
+    light: names(themeBlock('light')),
+    dark: names(themeBlock('dark')),
+  };
 };
 
 describe('设计令牌唯一真源（§5.1）', () => {
@@ -47,7 +61,7 @@ describe('设计令牌唯一真源（§5.1）', () => {
   });
 
   it('每一个 var(--x) 引用都能在 tokens.css 里找到声明', () => {
-    const declared = new Set(splitTokenBlocks().light);
+    const declared = new Set(splitTokenBlocks().base);
     const missing: string[] = [];
     for (const file of cssFiles()) {
       for (const m of file.text.matchAll(/var\(\s*(--[A-Za-z0-9-]+)/g)) {
@@ -60,11 +74,12 @@ describe('设计令牌唯一真源（§5.1）', () => {
     expect(missing, `引用了未声明的令牌：\n${missing.join('\n')}`).toEqual([]);
   });
 
-  it('深色主题只覆盖浅色已声明的令牌，不新增', () => {
-    const { light, dark } = splitTokenBlocks();
-    const known = new Set(light);
-    // 深色块里出现新名字 = 浅色下该令牌根本没值，组件在浅色主题会静默拿到空值
-    expect(dark.filter((n) => !known.has(n))).toEqual([]);
+  it('主题覆盖块只覆盖默认已声明的令牌，不新增', () => {
+    const { base, light, dark } = splitTokenBlocks();
+    const known = new Set(base);
+    // 主题块里出现新名字 = 默认下该令牌根本没值，组件在某主题会静默拿到空值
+    const offenders = [...light, ...dark].filter((n) => !known.has(n));
+    expect(offenders, `主题块新增了未声明令牌：${offenders.join(', ')}`).toEqual([]);
   });
 });
 
@@ -79,19 +94,12 @@ const valuesIn = (text: string): Map<string, string> => {
   return out;
 };
 
-const tokenSource = () =>
-  readFileSync(join(STYLES_DIR, 'tokens.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+/** 默认（深色控制台）解析后的表：这一条锁的是取值，不是"页面上看着还行" */
+const baseValues = (): Map<string, string> => valuesIn(baseBlock());
 
-/** tokens.css 浅色块的字面量表：这一条锁的是取值，不是"页面上看着还行" */
-const lightValues = (): Map<string, string> =>
-  valuesIn(tokenSource().split(/\[data-theme='dark'\]/)[0] ?? '');
-
-/** 深色主题解析后的表：暗色块覆盖同名令牌，没覆盖的（--idle、--*-soft）沿用浅色值 */
-const darkValues = (): Map<string, string> => {
-  const raw = tokenSource();
-  const [light, dark = ''] = raw.split(/\[data-theme='dark'\]/);
-  return new Map([...valuesIn(light ?? ''), ...valuesIn(dark.slice(dark.indexOf('{')))]);
-};
+/** 指定主题解析后的表：主题块覆盖同名令牌，没覆盖的沿用默认值 */
+const themeValues = (theme: 'light' | 'dark'): Map<string, string> =>
+  new Map([...baseValues(), ...valuesIn(themeBlock(theme))]);
 
 type Rgb = { r: number; g: number; b: number; a: number };
 
@@ -142,6 +150,24 @@ describe('状态语义色作为视觉标记时达到非文本 3:1（§10 / WCAG 
   const TONES = ['--ok', '--run', '--warn', '--fail', '--idle'] as const;
   const SURFACES = ['--bg', '--side', '--surface', '--surface-2', '--raised'] as const;
 
+  const assertToneMatrix = (table: Map<string, string>, label: string) => {
+    const bad: string[] = [];
+    for (const tone of TONES) {
+      const raw = table.get(tone);
+      if (!raw) throw new Error(`tokens.css 里没有 ${tone}`);
+      const fg = toRgb(tone, raw);
+      for (const surfaceName of SURFACES) {
+        const rawBg = table.get(surfaceName);
+        if (!rawBg) throw new Error(`tokens.css 里没有 ${surfaceName}`);
+        const plain = contrast(fg, toRgb(surfaceName, rawBg));
+        if (plain < 3) {
+          bad.push(`${tone} (${raw}) on ${surfaceName} (${rawBg}) → ${plain.toFixed(2)}:1`);
+        }
+      }
+    }
+    expect(bad, `${label} 下状态标记不达非文本 3:1：\n${bad.join('\n')}`).toEqual([]);
+  };
+
   it('对比度算术先过自检，再拿去量令牌', () => {
     // 证伪自己：黑白 21:1、同色 1:1、#767676 on 白 = 4.54（AA 公认边界）、
     // 50% 黑压白 = #7f7f7f 那级中灰 3.98:1。算术错了，后面的"过了"全是假的。
@@ -158,53 +184,73 @@ describe('状态语义色作为视觉标记时达到非文本 3:1（§10 / WCAG 
     }
   });
 
-  it('每一个状态色在每一种浅色实心底上都 ≥3:1', () => {
-    // 只量"令牌 × 实心面"：描边、3px 左条、裸点都可能直接落在任意一档浅色上，
+  it('每一个状态色在每一种实心底上都 ≥3:1（默认深色）', () => {
+    // 只量"令牌 × 实心面"：描边、3px 左条、裸点都可能直接落在任意一档面上，
     // 这个笛卡尔积结构上一定够得着，所以必须全过。
-    // 半透明 tint（--*-soft）不进矩阵——徽章只落在卡片/侧栏那种浅底上，
+    // 半透明 tint（--*-soft）不进矩阵——徽章只落在卡片/侧栏那种底上，
     // "tint 压在 --raised 上"那一格在产品里不存在，拿它当门只会把配色逼得没必要地深。
-    // 真实合成底由 e2e/a11y.spec.ts 的状态点扫描在浏览器里量（旧 --warn #d97706 那颗 2.83:1 就是它查出来的）。
-    const table = lightValues();
-    const bad: string[] = [];
-    for (const tone of TONES) {
-      const raw = table.get(tone);
-      if (!raw) throw new Error(`tokens.css 浅色块里没有 ${tone}`);
-      const fg = toRgb(tone, raw);
-      for (const surfaceName of SURFACES) {
-        const rawBg = table.get(surfaceName);
-        if (!rawBg) throw new Error(`tokens.css 浅色块里没有 ${surfaceName}`);
-        const plain = contrast(fg, toRgb(surfaceName, rawBg));
-        if (plain < 3) {
-          bad.push(
-            `${tone} (${raw}) on ${surfaceName} (${rawBg}) → ${plain.toFixed(2)}:1`,
-          );
-        }
-      }
-    }
-    expect(bad, `状态标记不达非文本 3:1：\n${bad.join('\n')}`).toEqual([]);
+    // 真实合成底由 e2e/a11y.spec.ts 的状态点扫描在浏览器里量。
+    assertToneMatrix(baseValues(), '默认深色');
   });
 
-  it('切到深色主题后同一批状态色在每一种实心底上仍 ≥3:1', () => {
-    // 主题开关是现成功能，不是预留：暗色块只覆盖了颜色令牌，--idle 与 --*-soft 沿用浅色值，
-    // 所以这张表量的是"暗色覆盖之后浏览器实际会拿到的值"，暗色块漏改一个就会在这里红。
-    const table = darkValues();
+  it('切到浅色主题后同一批状态色在每一种实心底上仍 ≥3:1', () => {
+    // 浅色主题是现成功能：主题块只覆盖颜色令牌，漏覆盖一个就会在这里红。
+    assertToneMatrix(themeValues('light'), '浅色主题');
+  });
+});
+
+describe('弱化文字 --ink-3 达 WCAG AA 4.5:1（§10）', () => {
+  const SURFACES = ['--bg', '--side', '--surface', '--surface-2', '--raised'] as const;
+
+  const assertInk3 = (table: Map<string, string>, label: string) => {
+    const raw = table.get('--ink-3');
+    if (!raw) throw new Error('tokens.css 里没有 --ink-3');
+    const fg = toRgb('--ink-3', raw);
     const bad: string[] = [];
-    for (const tone of TONES) {
-      const raw = table.get(tone);
-      if (!raw) throw new Error(`tokens.css 里没有 ${tone}`);
-      const fg = toRgb(tone, raw);
-      for (const surfaceName of SURFACES) {
-        const rawBg = table.get(surfaceName);
-        if (!rawBg) throw new Error(`tokens.css 里没有 ${surfaceName}`);
-        const plain = contrast(fg, toRgb(surfaceName, rawBg));
-        if (plain < 3) {
-          bad.push(
-            `${tone} (${raw}) on ${surfaceName} (${rawBg}) → ${plain.toFixed(2)}:1`,
-          );
-        }
+    for (const surfaceName of SURFACES) {
+      const rawBg = table.get(surfaceName);
+      if (!rawBg) throw new Error(`tokens.css 里没有 ${surfaceName}`);
+      const ratio = contrast(fg, toRgb(surfaceName, rawBg));
+      if (ratio < 4.5) bad.push(`--ink-3 (${raw}) on ${surfaceName} → ${ratio.toFixed(2)}:1`);
+    }
+    expect(bad, `${label} 下弱化文字不达 AA 4.5:1：\n${bad.join('\n')}`).toEqual([]);
+  };
+
+  it('默认（控制台深色）每一档实心底上都 ≥4.5:1', () => {
+    assertInk3(baseValues(), '默认深色');
+  });
+
+  it('切到浅色主题后仍 ≥4.5:1', () => {
+    assertInk3(themeValues('light'), '浅色主题');
+  });
+});
+
+describe('浅色主题关键前景/背景对比达 AA 4.5:1（FE-16 双主题）', () => {
+  const PAIRS: Array<[string, string]> = [
+    ['--ink', '--bg'],
+    ['--ink', '--side'],
+    ['--ink', '--surface'],
+    ['--ink-2', '--surface'],
+    ['--ink-2', '--surface-2'],
+    // 主按钮文字压在主色上：浅色主题的强调色换成更深的蓝，白字必须仍然读得清
+    ['--accent-fg', '--accent'],
+    ['--link', '--surface'],
+  ];
+
+  it('浅色主题下正文 / 次要文字 / 按钮与链接都 ≥4.5:1', () => {
+    const table = themeValues('light');
+    const bad: string[] = [];
+    for (const [fgName, bgName] of PAIRS) {
+      const rawFg = table.get(fgName);
+      const rawBg = table.get(bgName);
+      if (!rawFg) throw new Error(`tokens.css 里没有 ${fgName}`);
+      if (!rawBg) throw new Error(`tokens.css 里没有 ${bgName}`);
+      const ratio = contrast(toRgb(fgName, rawFg), toRgb(bgName, rawBg));
+      if (ratio < 4.5) {
+        bad.push(`${fgName} (${rawFg}) on ${bgName} (${rawBg}) → ${ratio.toFixed(2)}:1`);
       }
     }
-    expect(bad, `深色主题下状态标记不达非文本 3:1：\n${bad.join('\n')}`).toEqual([]);
+    expect(bad, `浅色主题下对比不足：\n${bad.join('\n')}`).toEqual([]);
   });
 });
 
@@ -225,7 +271,7 @@ describe('圆角只用令牌档位（§5.1「组件中禁止硬编码圆角」�
   });
 
   it('圆角档位本身是成体系的：每一档都被用到', () => {
-    const table = lightValues();
+    const table = baseValues();
     // 按名字通配，不写死档位清单：写死了就等于"我声明了哪几档就只检查那几档"，
     // 新增一档却没人用会逃过这条锁。
     const steps = [...table.keys()].filter((k) => /^--r(?:-[a-z0-9]+)?$/.test(k));

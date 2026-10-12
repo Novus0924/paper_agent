@@ -116,6 +116,16 @@ export class LibraryService {
     return { total, tasks_scanned: tasksScanned, items: page, offset, limit }
   }
 
+  /**
+   * 全库 R1 文献证据（v2.4）：聚合**全部任务**的 R1 检索证据，按规范化 DOI 去重。
+   * 与 `query()` 同源同去重口径，仅额外限定 `producer_step === 'R1'`——供全库 BibTeX 导出复用，
+   * 避免导出侧另造一套聚合/去重逻辑而与文献库漂移。
+   */
+  literature(): LibraryItem[] {
+    const rows = this.collect(this.index.list(), { q: '', kind: '', tier: '', source: '', taskId: '' })
+    return dedupeByDoi(rows.filter((r) => r.item.producer_step === 'R1'))
+  }
+
   /** 扫描全部任务账本，返回通过过滤的原始证据（保持稳定顺序） */
   private collect(
     tasks: TaskRecord[],

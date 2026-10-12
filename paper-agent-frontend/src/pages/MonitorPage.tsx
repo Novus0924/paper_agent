@@ -3,20 +3,21 @@ import { useNavigate, useParams } from 'react-router-dom';
 import layout from '@/styles/layout.module.css';
 import monitor from '@/styles/monitor.module.css';
 import ui from '@/styles/ui.module.css';
-import { api } from '@/api/client';
 import { visibleMessages } from '@/api/normalize';
 import { useI18n } from '@/i18n';
 import { isRunning } from '@/lib/status';
+import { buildTrace, stepElapsedMs, totalElapsedMs } from '@/lib/trace';
+import { formatDuration } from '@/lib/utils';
 import { useTaskStore } from '@/store/taskStore';
 import { useUiStore } from '@/store/uiStore';
 import { useTaskGoneRedirect } from '@/app/useTaskGoneRedirect';
-import { flags } from '@/config/flags';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { ErrorState, SkeletonList } from '@/components/ui/Feedback';
 import { StepBar } from '@/components/business/StepBar';
 import { ActivityFeed } from '@/components/business/ActivityFeed';
+import { AgentTrace } from '@/components/business/AgentTrace';
 import { ToolCard } from '@/components/business/ToolCard';
 import { DegradedBanner } from '@/components/business/DegradedBanner';
 import { MessageList } from '@/components/business/MessageList';
@@ -27,7 +28,8 @@ import { ArtifactList } from '@/components/business/ArtifactList';
 /**
  * FE-05 运行监控 + FE-06 降级提示（P-01/P-03）
  * 订阅/快照走同一条归一路径：断线重连或刷新页面后看到的界面与实时一致。
- * 右侧面板常驻：工具调用、机械统计、产物梳理都来自同一份归一状态。
+ * 顶栏之下分两栏：左侧步骤状态列（含每步真实耗时），右侧 Agent Trace 时间线
+ * （活动 / 思考 / 工具按时间序铺开）；工具明细与统计常驻右面板。
  */
 export function MonitorPage() {
   const { t } = useI18n();
@@ -41,8 +43,6 @@ export function MonitorPage() {
   const resumeTask = useTaskStore((s) => s.resumeTask);
   const stopTask = useTaskStore((s) => s.stopTask);
   const reloadEvidence = useTaskStore((s) => s.reloadEvidence);
-  const dropConnection = useTaskStore((s) => s.dropConnection);
-  const restoreConnection = useTaskStore((s) => s.restoreConnection);
   const setCurrentTask = useUiStore((s) => s.setCurrentTask);
 
   useEffect(() => {
@@ -100,9 +100,20 @@ export function MonitorPage() {
   const tools = entry.tools;
   const messages = visibleMessages(entry);
 
+  // 时间线是步骤耗时兜底计算的来源，也是 Trace 面板的数据源
+  const traceItems = buildTrace(entry);
+  const steps = snapshot?.steps ?? [];
+  const enrichedSteps = steps.map((s) => {
+    const ms = stepElapsedMs(s, traceItems);
+    return ms && ms !== s.elapsed_ms ? { ...s, elapsed_ms: ms } : s;
+  });
+  const totalMs = totalElapsedMs(steps, traceItems);
+  const doneCount = steps.filter((s) => s.status === 'DONE').length;
+  const progressPct = steps.length ? Math.round((doneCount / steps.length) * 100) : 0;
+  const currentStepId = steps.find((s) => s.is_current)?.id ?? null;
+
   function reconnect() {
-    // 演示模式的"断线"是人为暂停时间线，恢复后要重新取快照再续接事件
-    if (api.mode === 'mock') restoreConnection(taskId);
+    // 断线只可能是真实网络/SSE 中断：重新打开任务会重取快照并续接事件流
     void openTask(taskId);
   }
 
@@ -154,9 +165,7 @@ export function MonitorPage() {
 
       <div className={layout.agentGrid}>
         <div className={layout.agentCol}>
-          {/* 降级横幅属于正文：它解释的就是下面这段执行过程。
-              原先挂在栅格上方那一整行里（外层 .rowBetween 的 align-items:center 把它收成内容宽居中），
-              于是飘在两列正中、左沿对不上正文卡。放进正文列后宽度自然跟随列宽，各断点都不用写死数值。 */}
+          {/* 降级横幅属于正文：它解释的就是下面这段执行过程。 */}
           {entry.degraded.map((info) => (
             <DegradedBanner
               key={info.id}
@@ -167,42 +176,8 @@ export function MonitorPage() {
               onChangeSource={() => navigate('/new')}
             />
           ))}
-          <Card
-            className={layout.block}
-            title={t('monitor.stepsTitle')}
-            icon="list"
-            actions={
-              runStatus === 'FAILED' ? (
-                <Button
-                  size="sm"
-                  variant="solid"
-                  icon="play"
-                  onClick={() => void resumeTask(taskId)}
-                >
-                  {t('monitor.resume')}
-                </Button>
-              ) : undefined
-            }
-          >
-            {snapshot ? (
-              <StepBar
-                steps={snapshot.steps}
-                running={running}
-                onRetry={(stepId) => void resumeTask(taskId, stepId)}
-                onChangeSource={() => navigate('/new')}
-              />
-            ) : (
-              <p className={ui.muted}>{t('monitor.noActivity')}</p>
-            )}
-            {runStatus === 'FAILED' && (
-              <ErrorState
-                message={t('monitor.failed')}
-                onRetry={() => void resumeTask(taskId)}
-                retryLabel={t('monitor.resume')}
-              />
-            )}
-          </Card>
 
+          {/* 顶部当前活动大卡：一眼看到系统此刻在做什么 */}
           <Card
             className={layout.block}
             title={t('monitor.currentActivity')}
@@ -210,6 +185,69 @@ export function MonitorPage() {
           >
             <ActivityFeed activities={entry.activities} running={running} />
           </Card>
+
+          {/* 双栏：左步骤状态列（含每步耗时），右 Agent Trace 时间线 */}
+          <div className={monitor.traceGrid}>
+            <Card
+              className={layout.block}
+              title={t('monitor.stepsTitle')}
+              icon="list"
+              actions={
+                runStatus === 'FAILED' ? (
+                  <Button
+                    size="sm"
+                    variant="solid"
+                    icon="play"
+                    onClick={() => void resumeTask(taskId)}
+                  >
+                    {t('monitor.resume')}
+                  </Button>
+                ) : undefined
+              }
+            >
+              <div className={monitor.stepHead}>
+                <span className={monitor.stepCount}>
+                  {t('monitor.stepsDone', { done: doneCount, total: steps.length })}
+                </span>
+                <div className={`${ui.progressTrack} ${monitor.stepHeadBar}`}>
+                  <div className={ui.progressFill} style={{ width: `${progressPct}%` }} />
+                </div>
+                {totalMs > 0 && (
+                  <span className={monitor.totalElapsed}>
+                    <Icon name="clock" size={12} />
+                    {t('monitor.totalElapsed')} {formatDuration(totalMs)}
+                  </span>
+                )}
+              </div>
+              {snapshot ? (
+                <StepBar
+                  steps={enrichedSteps}
+                  running={running}
+                  onRetry={(stepId) => void resumeTask(taskId, stepId)}
+                  onChangeSource={() => navigate('/new')}
+                />
+              ) : (
+                <p className={ui.muted}>{t('monitor.noActivity')}</p>
+              )}
+              {runStatus === 'FAILED' && (
+                <ErrorState
+                  message={t('monitor.failed')}
+                  onRetry={() => void resumeTask(taskId)}
+                  retryLabel={t('monitor.resume')}
+                />
+              )}
+            </Card>
+
+            <Card className={layout.block} title={t('monitor.traceTitle')} icon="agent">
+              <AgentTrace
+                activities={entry.activities}
+                tools={tools}
+                thinkings={entry.thinkings}
+                running={running}
+                currentStepId={currentStepId}
+              />
+            </Card>
+          </div>
 
           {reportReady && (
             <div className={`${layout.block} ${monitor.readyBar}`}>
@@ -235,33 +273,6 @@ export function MonitorPage() {
                 }
               />
             </Card>
-          )}
-
-          {flags.demoTools && api.mode === 'mock' && (
-            <div className={`${layout.block} ${layout.headRow}`}>
-              <span className={ui.muted}>{t('monitor.demoTools')}</span>
-              <Button
-                size="sm"
-                icon="stop"
-                disabled={entry.connection === 'offline'}
-                onClick={() => dropConnection(taskId)}
-              >
-                {t('monitor.simulateDrop')}
-              </Button>
-              <Button size="sm" icon="refresh" onClick={reconnect}>
-                {t('monitor.reconnect')}
-              </Button>
-              <Button
-                size="sm"
-                icon="refresh"
-                onClick={() => {
-                  api.demo?.reset();
-                  void openTask(taskId);
-                }}
-              >
-                {t('monitor.redo')}
-              </Button>
-            </div>
           )}
 
           <Composer taskId={taskId} running={running} />

@@ -6,6 +6,7 @@ import { Collapse } from '@/components/ui/Collapse';
 import { api } from '@/api/client';
 import type { TaskSnapshot } from '@/api/types';
 import { renderApp, renderAt, resetStores } from './harness';
+import { useLiveBackend, type LiveBackend } from './liveEnv';
 
 /**
  * 无障碍结构基线（用户第 4 点：由我设计并落实）。
@@ -69,8 +70,11 @@ function skippedLevels(levels: number[]): string[] {
 
 let doneTask: TaskSnapshot;
 let activeTask: TaskSnapshot;
+let backend: LiveBackend;
 
 beforeEach(async () => {
+  // v2.5：唯一数据通道是 LiveApiClient，走契约级 fake backend（spyOn 用例优先）
+  backend = useLiveBackend();
   resetStores();
   const seeded = await api.listTasks();
   doneTask = seeded.find((t) => t.run_status === 'DONE') as TaskSnapshot;
@@ -78,6 +82,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  backend?.unstub();
   vi.restoreAllMocks();
 });
 
@@ -123,7 +128,8 @@ const VIEWS: View[] = [
     label: '设置',
     at: () => '/settings',
     settled: async () => {
-      await screen.findAllByText('数据来源模式');
+      // v2.5：数据来源说明改为 live 唯一通道文案（"数据来源模式"选择器已随 mock 移除）
+      await screen.findAllByText(/当前唯一数据来源为真实 AGH 研究平台/);
     },
     interactive: all('button, a, input, select'),
     minInteractive: 6,
@@ -163,7 +169,7 @@ const VIEWS: View[] = [
     // 标题类的查询会跨应用命中多份；统计标签与这一分页串只此一处。
     settled: async () => {
       await screen.findByText('去重合并');
-      await screen.findByText('第 1–10 条 / 共 19 条');
+      await screen.findByText('第 1–10 条 / 共 24 条');
     },
     interactive: all('button, a, input, select'),
     minInteractive: 10,

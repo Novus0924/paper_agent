@@ -5,11 +5,16 @@ import { api } from '@/api/client';
 import { zhCN } from '@/i18n/zh-CN';
 import { useUiStore } from '@/store/uiStore';
 import { renderApp, resetStores } from './harness';
+import { useLiveBackend, type LiveBackend } from './liveEnv';
 
 const UI_KEY = 'paper-agent-frontend.ui';
 const LOCALE_KEY = 'paper-agent-frontend.locale';
 
+let backend: LiveBackend;
+
 beforeEach(() => {
+  // v2.5 起唯一数据通道是 LiveApiClient：UI 测试统一桩契约级 fake backend
+  backend = useLiveBackend();
   resetStores();
   localStorage.removeItem(UI_KEY);
   localStorage.removeItem(LOCALE_KEY);
@@ -17,10 +22,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  backend?.unstub();
   vi.restoreAllMocks();
   useUiStore.setState({
     navCollapsed: false,
-    speed: 'normal',
     theme: 'light',
     currentTaskId: null,
   });
@@ -169,10 +174,11 @@ describe('FE-11 设置与 FE-13 语言（P-06 不重复实现 AGH 配置）', ()
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'));
   });
 
-  it('模式选择只说明切换方式，不伪装成即时开关', async () => {
+  it('数据来源说明如实：唯一 live 通道 + API 基址，不伪装成可切换开关', async () => {
     renderApp('/settings');
-    expect(await screen.findByText(/当前模式：演示数据（未接后端）/)).toBeInTheDocument();
-    expect(screen.getByText(/URL 加 \?mode=live 切换，视图代码不变/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/当前唯一数据来源为真实 AGH 研究平台/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/API 基址/)).toBeInTheDocument();
   });
 
@@ -191,8 +197,10 @@ describe('FE-11 设置与 FE-13 语言（P-06 不重复实现 AGH 配置）', ()
     expect(
       within(screen.getByRole('navigation')).getByText('Settings'),
     ).toBeInTheDocument();
-    // en 未覆盖 settings.dataMode / settings.languageHint，应回退简体中文
-    expect(screen.getByRole('combobox', { name: '数据来源模式' })).toBeInTheDocument();
+    // en 未覆盖 settings.dataModeLive，应回退简体中文（不出现缺键占位）
+    expect(
+      screen.getByText(/当前唯一数据来源为真实 AGH 研究平台/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/英文为部分翻译/)).toBeInTheDocument();
     expect(localStorage.getItem(LOCALE_KEY)).toBe('en');
     await userEvent.selectOptions(
@@ -203,27 +211,6 @@ describe('FE-11 设置与 FE-13 语言（P-06 不重复实现 AGH 配置）', ()
       await screen.findByRole('heading', { level: 1, name: '设置' }),
     ).toBeInTheDocument();
     expect(within(screen.getByRole('navigation')).getByText('设置')).toBeInTheDocument();
-  });
-
-  it('快进只压缩演示时间线：写入速度并调用 demo.setSpeed，不宣称能加速真实运行', async () => {
-    const demo = api.demo;
-    if (!demo) throw new Error('mock 模式应提供演示接口');
-    const setSpeed = vi.spyOn(demo, 'setSpeed');
-    renderApp('/settings');
-    const fast = await screen.findByRole('checkbox', { name: '快进演示时间线' });
-    expect(fast).not.toBeChecked();
-    await userEvent.click(fast);
-    await waitFor(() => expect(useUiStore.getState().speed).toBe('fast'));
-    expect(setSpeed).toHaveBeenCalledWith(20);
-    expect(JSON.parse(localStorage.getItem(UI_KEY) ?? '{}').speed).toBe('fast');
-    // 诚实说明：真实运行的耗时由 AGH 思考与工具调用决定，前端不能加速
-    expect(screen.getByText(/无法加速|不改变真实任务/)).toBeInTheDocument();
-  });
-
-  it('重置演示数据说明本地任务数量，动作可点', async () => {
-    renderApp('/settings');
-    expect(await screen.findByText(/本地现有 4 个演示任务/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '重置演示数据' })).toBeInTheDocument();
   });
 });
 

@@ -10,6 +10,7 @@ export type EventType =
   | 'ping'
   | 'step'
   | 'activity'
+  | 'thinking'
   | 'tool'
   | 'degraded'
   | 'conclusion'
@@ -28,6 +29,7 @@ export type RelayEvent = {
   | { type: 'ping' }
   | { type: 'step'; step: string; status: 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'SKIPPED'; elapsed_ms?: number; error?: string }
   | { type: 'activity'; step: string; human_message: string; detail?: unknown }
+  | { type: 'thinking'; step?: string; text: string }
   | {
       type: 'tool'
       step: string

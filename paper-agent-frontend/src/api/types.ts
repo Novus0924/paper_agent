@@ -46,8 +46,15 @@ export interface TaskSnapshot {
    */
   goal?: string;
   workflow: WorkflowName;
-  lit_source: LitSource;
-  sources: SourceName[];
+  /**
+   * 后端 taskSnapshot() 只发 title（goal 全文）、workflow、run_status、steps、degraded、
+   * session_id、created_at、updated_at、archived、archived_at——**不发 lit_source/sources**
+   * （它们只存在于 TaskRecord 与 POST /tasks 的入参/响应）。写成必填会让 live 下
+   * `snapshot.lit_source` 恒为 undefined 而类型声称是 LitSource；读取方（一键重跑预填）
+   * 已有兜底，这里如实标可选。
+   */
+  lit_source?: LitSource;
+  sources?: SourceName[];
   run_status: RunStatus;
   steps: Step[];
   /** 仅 L2 真降级会置为 true（§2.2 三级语义） */
@@ -109,8 +116,6 @@ export interface Conclusion {
   cid: string;
   text: string;
   evidence_ids: string[];
-  /** 展示用引用编号（1-based，与参考文献列表对应） */
-  cite_no?: number;
 }
 
 export interface ReportSection {
@@ -160,7 +165,6 @@ export interface EvidenceItem {
   summary?: string;
   sha256?: string;
   chain_hash?: string;
-  cite_no?: number;
 }
 
 export interface TraceEntry {
@@ -184,8 +188,10 @@ export interface LibraryRef {
   /** 有 DOI 时为准一去重键；非文献证据为空串 */
   doi: string;
   title: string;
+  /** 后端实发 string[]，httpClient 归一为顿号连接字符串（空数组归一为空串） */
   authors: string;
-  year: string;
+  /** 后端实发 number | string | null（文献为数字年份，产物为 null），原样透传不转换 */
+  year: string | number | null;
   venue: string;
   /** 检索来源：arxiv / crossref / openalex / semantic_scholar / local */
   source: string;
@@ -294,6 +300,21 @@ export interface ExportResult {
   code?: string;
 }
 
+/** 跨任务「全部文献库」导出（GET /library/export）：当前只开放 BibTeX */
+export type LibraryExportKind = 'bibtex';
+
+export interface LibraryExportResult {
+  ok: boolean;
+  kind: LibraryExportKind;
+  filename?: string;
+  mime?: string;
+  content?: string;
+  /** Live 模式下载文件流时给出的对象 URL（用后由调用方释放） */
+  blobUrl?: string;
+  error?: string;
+  code?: string;
+}
+
 export interface SendResult {
   queued: boolean;
   turn_id?: string;
@@ -306,6 +327,12 @@ export interface MessageQueueEntry {
   turn_id: string;
   task_id: string;
   action: 'ask' | 'revise';
+  /**
+   * 角色（BFF history 必带）：user=用户提问/修订请求，assistant=系统回复。
+   * pending/active 恒为 user，可选字段缺省按 user 处理。
+   * 注意后端词表是 assistant（与 SSE 帧一致），前端 ChatMessage 用 agent，归一在恢复路径完成。
+   */
+  role?: 'user' | 'assistant';
   text: string;
   /** 入队序号（从 1 起，"第 N 条待发"） */
   order: number;
@@ -350,7 +377,8 @@ export interface HealthIssue {
 
 export interface HealthInfo {
   status: 'ok' | 'degraded' | 'down';
-  mode: 'mock' | 'live';
+  /** 数据来源唯一为 live（真实 AGH 平台经 BFF 中转）；演示适配器已于 v2.5 移除 */
+  mode: 'live';
   version?: string;
   task_count: number;
   session_ready: boolean;
@@ -374,10 +402,19 @@ export interface ActivityEvent {
   detail?: string;
   ts: string;
 }
+/**
+ * 思考流事件（SSE `thinking`，契约冻结）：模型思考/推理片段。
+ * 载荷 `{ step?: string; text: string }`，text 可能是增量片段，也可能是整段。
+ * 前端按 step 聚合、逐帧累加去重后渲染（监控页 Agent Trace 时间线）。
+ */
+export interface ThinkingEvent {
+  step?: string;
+  text: string;
+}
 export interface ToolEvent {
   step: string;
   tool: string;
-  /** 稳定幂等键（live 下为 AGH toolUseId；mock 帧不带，回落到 step+tool） */
+  /** 稳定幂等键（AGH toolUseId；缺失时回落到 step+tool） */
   id?: string;
   label?: string;
   status: 'running' | 'done' | 'warn' | 'failed';
@@ -425,6 +462,7 @@ export type SseEventName =
   | 'ping'
   | 'step'
   | 'activity'
+  | 'thinking'
   | 'tool'
   | 'degraded'
   | 'conclusion'
@@ -444,6 +482,7 @@ export type SseEnvelope =
   | (EnvelopeBase & { event: 'ping'; data: PingEvent })
   | (EnvelopeBase & { event: 'step'; data: StepEvent })
   | (EnvelopeBase & { event: 'activity'; data: ActivityEvent })
+  | (EnvelopeBase & { event: 'thinking'; data: ThinkingEvent })
   | (EnvelopeBase & { event: 'tool'; data: ToolEvent })
   | (EnvelopeBase & { event: 'degraded'; data: DegradedEvent })
   | (EnvelopeBase & { event: 'conclusion'; data: ConclusionEvent })
@@ -455,6 +494,7 @@ export const SSE_EVENT_NAMES: SseEventName[] = [
   'ping',
   'step',
   'activity',
+  'thinking',
   'tool',
   'degraded',
   'conclusion',

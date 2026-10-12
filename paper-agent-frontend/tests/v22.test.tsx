@@ -11,6 +11,7 @@ import { I18nProvider } from '@/i18n';
 import { MemoryRouter } from 'react-router-dom';
 import { renderApp, renderAt, resetStores, seedTask } from './harness';
 import { snapshot } from './helpers';
+import { useLiveBackend, type LiveBackend } from './liveEnv';
 import { useToastStore } from '@/store/toastStore';
 import { useTaskStore } from '@/store/taskStore';
 
@@ -18,11 +19,17 @@ import { useTaskStore } from '@/store/taskStore';
    v2.2 迭代：Composer 终态可用 / 总览搜索 / 一键重跑 / 引用复制 / 加载骨架
    ========================================================================== */
 
+let backend: LiveBackend;
+
 beforeEach(() => {
+  // v2.5：唯一数据通道是 LiveApiClient。用例内部用 spyOn 覆盖具体方法（spy 优先），
+  // fake backend 提供 openTask 的 subscribe 底座与 renderApp 的列表数据
+  backend = useLiveBackend();
   resetStores();
 });
 
 afterEach(() => {
+  backend?.unstub();
   vi.restoreAllMocks();
 });
 
@@ -233,7 +240,10 @@ describe('v2.2 引用一键复制（P1）', () => {
     Object.assign(navigator, { clipboard: { writeText: write } });
     renderReportView();
 
-    await userEvent.click(screen.getByRole('button', { name: 'APA' }));
+    // v2.5：参考文献行派生自真实数据后也带复制按钮，结论行与文献行各一枚——取首枚（结论行）
+    const apaButtons = screen.getAllByRole('button', { name: 'APA' });
+    expect(apaButtons.length).toBeGreaterThanOrEqual(2);
+    await userEvent.click(apaButtons[0] as HTMLElement);
     await waitFor(() => expect(write).toHaveBeenCalledOnce());
     expect(write.mock.calls[0]?.[0]).toContain('Zhang, L.; Wang, H. (2022)');
     await waitFor(() =>
@@ -246,7 +256,9 @@ describe('v2.2 引用一键复制（P1）', () => {
     Object.assign(navigator, { clipboard: { writeText: write } });
     renderReportView();
 
-    await userEvent.click(screen.getByRole('button', { name: 'BibTeX' }));
+    const bibButtons = screen.getAllByRole('button', { name: 'BibTeX' });
+    expect(bibButtons.length).toBeGreaterThanOrEqual(2);
+    await userEvent.click(bibButtons[0] as HTMLElement);
     await waitFor(() => expect(write).toHaveBeenCalledOnce());
     expect(write.mock.calls[0]?.[0]).toMatch(/^@article\{Zhang2022,/);
     await waitFor(() =>

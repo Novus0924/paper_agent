@@ -26,18 +26,6 @@ export function Sidebar() {
       className={cx(layout.sidebar, collapsed && layout.sidebarCollapsed)}
       aria-label={t('nav.workspace')}
     >
-      <div className={layout.brand}>
-        <span className={layout.mark}>
-          <Icon name="brand" size={15} />
-        </span>
-        {!collapsed && (
-          <span className={layout.brandText}>
-            <span className={layout.brandName}>{t('app.name')}</span>
-            <span className={layout.brandSub}>{t('app.subtitle')}</span>
-          </span>
-        )}
-      </div>
-
       <NavLink
         to="/new"
         className={layout.newTaskBtn}

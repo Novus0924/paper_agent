@@ -1,4 +1,4 @@
-import { env, type ApiMode } from '@/config/env';
+import { env } from '@/config/env';
 import type {
   ArchiveResult,
   CreateTaskInput,
@@ -8,6 +8,8 @@ import type {
   ExportResult,
   HealthInfo,
   LibraryEvidenceResponse,
+  LibraryExportKind,
+  LibraryExportResult,
   ListLibraryParams,
   MessageQueueResponse,
   ReportResponse,
@@ -33,9 +35,8 @@ export interface SubscribeHandlers {
   onConnection?: (state: ConnectionState) => void;
 }
 
-/** 视图与 store 只依赖该接口；切换 Mock/Live 不改视图代码（§6.3） */
+/** 视图与 store 只依赖该接口；唯一实现是 LiveApiClient（真实 AGH 研究平台） */
 export interface ApiClient {
-  readonly mode: ApiMode;
   health(): Promise<HealthInfo>;
   listTasks(params?: ListTasksParams): Promise<TaskSnapshot[]>;
   /** 归档 / 恢复（archived=false）；运行中任务后端拒绝（409 BAD_STATE） */
@@ -68,28 +69,18 @@ export interface ApiClient {
   ): Promise<SendResult>;
   /** 查询队列与历史消息（刷新/重连后恢复"待发 N 条"与已发送记录） */
   listMessages(taskId: string): Promise<MessageQueueResponse>;
-  /**
-   * 「立即发送」：仅 mock 提供。后端契约无强制投递口（运行中消息按序排队、
-   * 回合结束自动放行），live 不提供伪实现，界面据此不显示该按钮。
-   */
-  sendNow?(taskId: string, turnId: string): Promise<void>;
   removeQueued(taskId: string, turnId: string): Promise<void>;
   /** 直接下载报告 Markdown 原始文件（GET /tasks/{id}/report.md，文件名 {task_id}.md） */
   downloadReportMd(taskId: string): Promise<ExportResult>;
   exportArtifact(taskId: string, kind: ExportKind): Promise<ExportResult>;
-  /** 演示辅助（仅 mock 模式提供实现）：模拟断线 / 快进 / 重置 */
-  demo?: {
-    supports: true;
-    dropConnection(taskId: string): void;
-    restoreConnection(taskId: string): void;
-    setSpeed(speed: number): void;
-    reset(): void;
-  };
+  /**
+   * 跨任务「全部文献库」导出（GET /library/export?kind=bibtex → paper-agent-library.bib）。
+   * 文献库为空时后端返回 409，前端映射成可读文案而不是抛异常。
+   */
+  exportLibrary(kind: LibraryExportKind): Promise<LibraryExportResult>;
 }
 
 import { LiveApiClient } from './httpClient';
-import { MockApiClient } from './mock/mockClient';
 
-/** 唯一决定数据来源模式的地方：视图与 store 只依赖 ApiClient 接口 */
-export const api: ApiClient =
-  env.apiMode === 'live' ? new LiveApiClient(env.apiBaseUrl) : MockApiClient.shared();
+/** 唯一数据来源：真实 AGH 研究平台（BFF）。演示适配器已于 v2.5 整体移除 */
+export const api: ApiClient = new LiveApiClient(env.apiBaseUrl);

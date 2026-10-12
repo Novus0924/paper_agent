@@ -14,6 +14,13 @@ describe('@agnes/sdk 契约（Session Gateway 依赖面）', () => {
     expect(typeof sdk.unixTransport).toBe('function')
   })
 
+  it('思考流接线依赖面真实存在：PreviewMerger + Session.onPreview', () => {
+    // v2.4 思考流：thinking 文本唯一载体是预览流。这里兜住 AGH 升级后这两个接口的漂移。
+    expect(typeof sdk.PreviewMerger).toBe('function')
+    const s = sdk.Session.prototype as unknown as Record<string, unknown>
+    expect(typeof s['onPreview'], 'Session.onPreview').toBe('function')
+  })
+
   it('Client 具备 initialize/close/call/session/workspace/journal', () => {
     // Windows 管道约束（实测）：transport 工厂必须提供可信身份解析，否则构造即抛。
     // 我们的网关（src/agh/gateway.ts）始终通过 resolveServerIdentity 提供，这里同样提供以免误报。

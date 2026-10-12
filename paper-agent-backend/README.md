@@ -9,7 +9,7 @@
 >
 > | 验证 | 命令 | 当前结果 |
 > |---|---|---|
-> | 代码级门禁 | `pnpm quality-gate` | vitest **173/173** · 内核 **105/105** · `tsc` 0 error · `eslint` 0 error（本轮新增文件） |
+> | 代码级门禁 | `pnpm quality-gate` | vitest **202/202** · 内核 **105/105** · `tsc` 0 error · `eslint` 0 error（本轮新增文件） |
 > | DoD 总验收 | `pnpm dod` | 11 项门禁 + 13 条逐条判定全绿 |
 > | 端到端 | `bash scripts/verify-*.sh` | 六段合计 **179 项**断言全绿 |
 >
@@ -68,7 +68,7 @@ paper-agent-2/
 │   │   ├── export/               # ★ zip.ts（零依赖 ZIP 写入器）+ service.ts（Exporter SPI）
 │   │   └── routes/               # health + /api/v1/{tasks,events,report,export,messages,library}
 │   ├── types/                   # AGH 最小类型声明（见 §6 说明）
-│   ├── test/                    # 单测 + 契约测试（173 个）
+│   ├── test/                    # 单测 + 契约测试（202 个）
 │   └── scripts/                 # 诊断脚本（spike-* / zip-probe / daemon-ready / *-probe）
 ├── plugin/sciret/               # AGH 插件（sciret_* 工具薄壳）
 ├── kernel/sciret_kernel/        # Python 确定性内核（标准库）
@@ -156,12 +156,13 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8787/api/v1/tasks \
 | 3 | POST | `/api/v1/tasks` | ✅ goal/workflow/lit_source/sources + preflight + 建立 AGH 会话（1:1）；**未实现的工作流在入口即400**（见 §5.8） |
 | 4 | GET | `/api/v1/tasks/{id}` | ✅ 面向视图 DTO |
 | 5–8 | POST | `run-all` / `step` / `resume` / `stop` | ✅ 经会话下发 + per-Task 互斥 + 终态收敛（202/200；BUSY 409） |
-| 9 | GET | `/events`（SSE） | ✅ 快照先发 + 实时续接 + 幂等去重 + Last-Event-ID 续传 + 终态必达 |
+| 9 | GET | `/events`（SSE） | ✅ 快照先发 + 实时续接 + 幂等去重 + Last-Event-ID 续传 + 终态必达；归一事件含 **v2.4 新增 `thinking`（思考文本片段，来源见 §6）** 与 turn/step 生命周期 `activity`；终态重访**从 `trace.jsonl` 回放 activity/tool 并回填步骤耗时**（见 §5.12） |
 | 10–11 | GET | `/report` / `/report.md` | ✅ 就绪 `200 {status:"ready",view:"view",report:{…}}` / 未就绪 `200 {status:"generating"}`；**`?view=audit` 才回传哈希与链信息**；MD 带 nosniff + inline |
 | 12–13 | GET | `/evidence` / `/cite` | ✅ 证据/结论/轨迹只读装配（同支持 `?view=audit`）；cite 支持 EV 编号与 ≥6 位哈希前缀 |
 | 14 | POST | `/messages`（+ GET/DELETE 队列） | ✅ 同会话追问/修订；运行中**入队**（`queued:true`+`order`）而非拒绝；回合结束按序放行 |
 | 15 | GET | `/export?kind=report｜audit｜session｜bibtex` | ✅ 报告 MD 文件流 / 审计包 ZIP（含校验脚本）/ AGH 原生会话轨迹 / **BibTeX 文献全量导出**；未就绪 409 NOT_READY |
 | 16 | GET | `/library/evidence` | ✅ **跨 run 文献/证据库**：聚合全任务账本证据，`q/kind/tier/source/task_id` 过滤 + `dedupe` DOI 去重 + 分页；空目录返回空集，非法参数 400 |
+| 17 | GET | `/library/export?kind=bibtex` | ✅ **全库 BibTeX 导出（v2.4）**：聚合**全部任务** R1 文献证据（复用文献库 DOI 去重），产出 `paper-agent-library.bib` 附件（text/plain）；无文献 409 NOT_READY，非法/缺 kind 400 |
 
 > 另有辅助接口 `GET /api/v1/tasks/{id}/execution`（busy/步骤快照，供轮询与调试；SSE 到位后前端以 SSE 为主）。
 
@@ -357,6 +358,24 @@ else: raise PermanentError(f"unsupported source: {src}")
 > BFF 与内核分属两个文件、两套语言，改一边时没人会去看另一边 —— **跨边界漂移必须由测试守**。
 > 我做了反向验证：往 BFF 注入 `fake_nonexistent` 源，测试立刻失败并指出修复动作（测试有牙齿）。
 
+### 5.12 过程帧落盘与终态快照回放（v2.4 P2 修复）
+
+**病灶**：终态任务重访时 Agent Trace/研究过程为空、每步无耗时。根因是 `EventRelay.snapshot()`
+只重建 ping/step/degraded/conclusion/report/done，**不含 activity/tool**；而 AGH 工具/回合事件是"一次性转发"，
+SSE 建连时才 `ensure` 附加会话——历史帧不在内存 buffer 里，BFF 重启后 buffer 更全空，故重访拿不到任何过程帧。
+
+**修复（三件事）**：
+- **事件持久化**：`EventRelay` 在 `bus.onEvent` 钩子上把**实时下发**的 activity/tool（及 step 的 RUNNING/DONE/FAILED 关键帧）
+  append 落盘 `runs/<task_id>/trace.jsonl`（append-only，字段沿用归一事件结构）。**滚动上限 500 条**，超限重写裁剪（保留最近 N 条）。
+- **耗时计算**：BFF 侧对每步 RUNNING 打点、DONE/FAILED 结算差值，写入该步 DONE 帧 `elapsed_ms` 并随帧落 trace。
+- **快照回放**：`snapshot()` 对**终态任务**（或内存缓冲为空时）从 `trace.jsonl` 回放最近 200 条 activity/tool 帧（保持 seq 序，
+  经 `reserve` 递增 seq 直写本连接）；进行中任务**内存优先**、不回放，避免与实时帧重复。
+  步骤耗时则从 trace 回填到快照的 step 帧（`elapsed_ms`）。
+
+> 契约：过程记录文件为 `runs/<task_id>/trace.jsonl`（每行一个归一事件 JSON，append-only，最多 500 行）；
+> 回放**只含 activity/tool**——step/degraded/conclusion/report/done 由快照按**当前状态**重建，
+> 若混入历史 step 帧可能把已 DONE 的步骤回退成 RUNNING，故不并入。
+
 ### 5.9 Lint（§15/§16 明列，此前完全缺失）
 
 需求 §15 写「CI 质量门：类型检查 + **Lint** + 构建 + 测试」、§16 写「通过类型/**Lint**/构建」，
@@ -519,7 +538,8 @@ node scripts/start.mjs --bff-only   # 只起 BFF
 | **管道必须带可信身份** | 创建 unix transport 时若不提供 `resolveServerIdentity`，Windows 下**构造即抛错**（`Windows pipe requires a verified server identity`）。每次连接尝试都重新读取发现文件，不缓存过期 pid。 |
 | **工作区必须先注册** | `session.new` / `session.load` 传入的 `cwd` **必须先 `workspace.add(cwd)`**，否则返回 `SEMANTIC_REJECTED (-32011)`。 |
 | **会话 cwd 决定会话键** | 会话 id 形如 `agnes:local:<profile>:cli:workspace:<hash>`，hash 由 cwd 派生。**reattach 必须传同一个 cwd**（本项目为 `runs/<task_id>`），否则同样 `SEMANTIC_REJECTED`。 |
-| **事件词汇** | AGH 账本事件类型为 `session/start`、`turn/start`、`step/start`、`assistant/message`、`step/end`、`turn/end` 等；M4 的 Event Relay 负责映射到本项目 9 类事件。 |
+| **事件词汇** | AGH 账本事件类型为 `session/start`、`turn/start`、`step/start`、`assistant/message`、`step/end`、`turn/end` 等；M4 的 Event Relay 负责映射到本项目归一事件。v2.4 新增两类：① `thinking`——思考文本（见下条）；② `turn/start\|end`、`step/start\|end` 归一出人类可读 `activity`（「模型回合 N 开始/结束」「模型回合 N 第 M 步开始/结束」）。⚠️ AGH 的 turn/step 是**模型回合/模型步**语义，与领域步骤 R1..R6 **不是一回事**，故 activity 的 `step` 字段恒为 `-`（避免语义漂移）。 |
+| **思考文本（thinking）来源** | 账本行 `assistant/output` 只有 `chars:{text,thinking}` **计数**、`cost/ledger` 只有 `tokens.reasoning` **计数**，均不含思考文本（取证见 `scripts` 临时脚本实测）。思考文本的唯一载体是 AGH 原生**预览流** `_agnes/v1/session.preview`（`stream='thinking'`，载荷 `{lane,effectId,stream,offset,delta}`）——需以 `session.events({preview:true})` 附加并订阅 `session.onPreview()`。Event Relay 用官方 `PreviewMerger` 按 offset 裁掉重复/重叠、缓存乱序，只把**新增片段**归一出 `thinking` 事件；片段为空不发帧（不硬造、不发空帧）。当前部署模型（`agnes-3.0-flash`，`standard-windows`）实测 thinking=0，故实际不产生 thinking 帧——如实反映，非接线缺陷。 |
 | **导出复用 AGH 原生** | daemon **无导出 RPC**，故经 CLI：`agnes export <session_id> --format agnes -o x.jsonl` 实测可用（产出事件 JSONL）。M7 已把该路径封装为 `kind=session`，且与 CLI 直出**逐字节一致**。 |
 | **⚠️ 已知问题** | `agnes sessions`（列表/`--json`）在当前 home 上返回 `INTERNAL_ERROR RESULT_INVALID`——**AGH 侧投影问题，非本项目缺陷**（会话本身已正常写入 `sessions.db`，且 `export`/`load` 均可用）。红线要求不得改 AGH 源码，故记录在案并通过 `session.load` + 本任务索引 + `export` 作为"可核对/可导出"证据路径。 |
 | **遗留包** | 用户 AGH home 中存在 v1.0 遗留包 `paper-agent-tools`（其 7 个 hot-tools 与本项目 `sciret_*` **重名**）→ 启用本插件前**必须先停用旧包**：`bash scripts/install-plugin.sh disable-old`。⚠️ `agh package enable/disable` 的参数**只接受包名**（`paper-agent-tools`、`@paper-agent/plugin-sciret`），传贡献点 id（`ext:paper-agent/tools`、`ext:paper-agent/sciret`）会被 AGH 的参数校验直接拒绝（`^(?:@[a-z0-9]…/[a-z0-9]…)$`）——旧文案与本脚本一度都按 `ext:…` 写，于是"停用旧包/启用新包"这两步**实际上从未生效过**，脚本却照样打印成功。现在 `install-plugin.sh` 在 enable/disable 后**回读 `package status` 确认终态**（`enabled=True/False`），不达标就报错退出。反向恢复用同一形式的命令（`bash agh.sh package enable paper-agent-tools`；本轮为验证"停用"而没再把它开回去）。 |
@@ -585,7 +605,7 @@ GET  /tasks/../../etc/passwd   → 400 {"code":"BAD_ID"}   // 防目录穿越
 > 找不到就 FATAL 退出而非静默跑出错结果）。详见 §8 第 9 条。
 
 - `bash scripts/quality-gate.sh` → **四道门禁全绿**（§15/§16 要求"类型 + **Lint** + 测试"）：
-  vitest **173/173** · 内核 **105/105**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**（本轮新增/改动文件）
+  vitest **202/202** · 内核 **105/105**（连跑两次查抖动）· `tsc` **零错误** · `eslint` **零 error**（本轮新增/改动文件）
   （lint 为类型感知规则，覆盖 `src` + `test` + `scripts`；既有非空断言等为 warning，不阻断。
   想收紧用 `pnpm lint:strict`（`--max-warnings 0`）。）
   > ⚠️ v2.3 实测：`eslint scripts` 会在**既有** `scripts/sync-spawn-shim.cjs` 报 5 个 `no-undef: require` error
@@ -908,7 +928,7 @@ bash scripts/verify-dod.sh --reuse   # 复用已通过的结果（失败会重�
 | P-06 BFF 无绕过 AGH 的主链路执行 | ✅ | gateway 单一入口 + 内核只读校验 |
 | P-07 一条命令启动，doctor 自检给修复指引 | ✅ | verify-startup.sh（45 项） |
 | 面向视图 DTO 生效（审计字段独立受控） | ✅ | apps/bff/src/http/dto.ts |
-| SSE 快照/顺序/去重/终态正确，刷新与实时一致 | ✅ | sse.test.ts（9 项）+ events.test.ts（9 项） |
+| SSE 快照/顺序/去重/终态正确，刷新与实时一致 | ✅ | sse.test.ts + events.test.ts + relay.test.ts（含 v2.4 thinking/activity 接线、过程帧落盘与终态快照回放/耗时） |
 | 安全合规：密钥不入库/环境白名单/输入校验/CORS | ✅ | verify-dod.sh 静态核对 + verify-export.sh §11 用例 |
 | 类型/Lint/构建通过，自动化测试在 CI 通过 | ✅ | quality-gate.sh + `.github/workflows/ci.yml` |
 

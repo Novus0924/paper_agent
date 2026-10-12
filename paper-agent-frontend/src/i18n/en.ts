@@ -36,7 +36,6 @@ export const en: DeepPartial<typeof zhCN> = {
     loading: 'Loading',
     cancel: 'Cancel',
     delete: 'Delete',
-    sendNow: 'Send now',
     whatIsThis: 'What is this',
     impact: 'Impact',
     reason: 'Reason',

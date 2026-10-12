@@ -4,7 +4,6 @@ import layout from '@/styles/layout.module.css';
 import ui from '@/styles/ui.module.css';
 import wf from '@/styles/newtask.module.css';
 import type { LitSource, SourceName, WorkflowName } from '@/api/types';
-import { isLive } from '@/config/env';
 import { EXAMPLE_QUESTIONS, SOURCES, WORKFLOW_ORDER, WORKFLOWS } from '@/config/registry';
 import { useI18n } from '@/i18n';
 import { useTaskStore } from '@/store/taskStore';
@@ -19,12 +18,14 @@ import { ErrorState } from '@/components/ui/Feedback';
 
 const GOAL_MAX = 400;
 
-/** 一键重跑预填（报告页/总览"再次研究"经 navigate state 传入） */
+/** 一键重跑预填（报告页/总览"再次研究"经 navigate state 传入）。
+ *  lit_source/sources 来自旧任务快照，而后端 taskSnapshot 不发这两个字段——
+ *  旧任务（live）带不过来时缺省，由 sources 兜底与 litSourceOf 派生补上。 */
 export interface RerunPrefill {
   goal: string;
   workflow: WorkflowName;
-  lit_source: LitSource;
-  sources: SourceName[];
+  lit_source?: LitSource;
+  sources?: SourceName[];
 }
 
 function readRerunPrefill(state: unknown): RerunPrefill | null {
@@ -56,20 +57,12 @@ export function NewTaskPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const preflight = useTaskStore((s) => s.preflight);
-  const preflightLoading = useTaskStore((s) => s.preflightLoading);
-  const checkPreflight = useTaskStore((s) => s.checkPreflight);
   const createTask = useTaskStore((s) => s.createTask);
   const setCurrentTask = useUiStore((s) => s.setCurrentTask);
   const toast = useToastStore((s) => s.push);
 
   const def = WORKFLOWS[workflow];
   const firstRun = useRef(true);
-  /**
-   * 独立连通性预检只在 mock 提供：后端把 probeSources 放在 POST /tasks 内
-   * （routes/v1/tasks.ts），没有预检接口，live 的实测结果随创建任务返回。
-   * 因此 live 不渲染"检测连通性"按钮，避免把"没有测量"显示成"后端不可达"。
-   */
-  const canPreflight = !isLive;
 
   useEffect(() => {
     // 切换工作流时回到该工作流的默认来源集合，避免带着不匹配的来源提交
@@ -95,14 +88,6 @@ export function NewTaskPage() {
       if (checked) return prev.includes(name) ? prev : [...prev, name];
       return prev.filter((s) => s !== name);
     });
-  }
-
-  async function onPreflight() {
-    const list = await checkPreflight({ sources, lit_source: litSourceOf(sources) });
-    // 不可用的来源不保留勾选（P-01：避免"总是降级"）
-    const bad = new Set(list.filter((p) => !p.ok).map((p) => p.source));
-    if (bad.size > 0) setSources((prev) => prev.filter((s) => !bad.has(s)));
-    if (list.length === 0) setSubmitError('NETWORK');
   }
 
   async function onSubmit() {
@@ -232,31 +217,12 @@ export function NewTaskPage() {
             </div>
           </Card>
 
-          <Card
-            title={<SectionTitle index={3} title={t('newTask.stepSources')} />}
-            icon="evidence"
-            actions={
-              canPreflight ? (
-                <Button
-                  size="sm"
-                  icon="refresh"
-                  loading={preflightLoading}
-                  onClick={() => void onPreflight()}
-                >
-                  {t('newTask.preflight.check')}
-                </Button>
-              ) : undefined
-            }
-          >
+          <Card title={<SectionTitle index={3} title={t('newTask.stepSources')} />} icon="evidence">
             <p className={ui.hint}>{t('newTask.sourcesLead')}</p>
+            {/* 后端无独立预检接口（probeSources 在 POST /tasks 内）：创建时才实测，
+                这里如实说明"未检测"，不渲染假的检测按钮、不编造 ok */}
             <p className={ui.muted}>
-              {preflightLoading
-                ? t('newTask.preflight.running')
-                : preflight
-                  ? t('newTask.preflight.done')
-                  : canPreflight
-                    ? t('newTask.preflight.idle')
-                    : t('newTask.preflight.deferred')}
+              {preflight ? t('newTask.preflight.done') : t('newTask.preflight.deferred')}
             </p>
             <div className={wf.sourceList}>
               {SOURCES.map((source) => {

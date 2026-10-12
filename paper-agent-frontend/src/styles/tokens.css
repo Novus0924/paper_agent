@@ -1,54 +1,59 @@
 /* ==========================================================================
    设计令牌 —— 全站唯一真源（FE-02）
-   取值来自《前端Demo/index.html》，结构遵循《前端需求文档》§5.1。
+   设计语言：「深色科研控制台」——科研 agent 工作台的专业深色控制台。
+   专业、沉静、精密；无渐变堆砌、无玻璃拟态、无糖果大圆角。
+   变量名沿用上一版（组件无需改动），取值全部替换为深色系。
    组件里真正禁止写死的是"会被主题覆盖的东西"：颜色一律走 var(--*)，
    圆角只许取下文的六档，块级间距走 --s1…--s8（tests/tokens.test.ts 有锁）。
    两类字面量是刻意留下的，不是漏网：
-   - font-size：Demo 给每个面单独调过 10.5 / 11.5 / 12.3 / 12.8px 这类小数码，
-     收进等比档位会改掉全站的字距与信息密度，那已经不是"照 Demo 走"了；
-   - 图标与状态点的直径、控件高度、1px 描边：构件尺寸，不随主题变，也不属于间距刻度。
+   - font-size：各面单独调过的信息密度码，收进等比档位会改掉字距与密度；
+   - 图标与状态点的直径、控件高度、1px 描边：构件尺寸，不随主题变。
    ========================================================================== */
 
 :root {
-  /* ---- 面与底 ---- */
-  --bg: #ffffff;
-  --side: #fbfbfa;
-  --surface: #ffffff;
-  --surface-2: #f7f7f5;
-  --raised: #f1f1ef;
+  /* ---- 面与底（深色控制台） ---- */
+  --bg: #0a0d13;
+  --side: #0c1017;
+  --surface: #11151e;
+  --surface-2: #161c28;
+  --raised: #1c2330;
 
-  /* ---- 描边 ---- */
-  --line: rgba(16, 16, 16, 0.09);
-  --line-2: rgba(16, 16, 16, 0.15);
+  /* ---- 描边：细而柔，靠层次而非重线分隔 ---- */
+  --line: rgba(255, 255, 255, 0.07);
+  --line-2: rgba(255, 255, 255, 0.14);
 
   /* ---- 文字 ---- */
-  --ink: #1a1a1a;
-  --ink-2: #555552;
-  --ink-3: #6b6b66; /* 需求文档 §10 WCAG AA：弱化文字在最深的浅底（--raised）上也需 ≥4.5:1 */
+  --ink: #e7ebf3;
+  --ink-2: #a8b2c4;
+  /* 弱化文字：用于 12px 提示 / DOI / 时间。须在最浅实心底（--raised）上达 WCAG AA 4.5:1，
+     原 #6b7688 只有 3.4~4.0，故调亮至 #8691a6（raised 上 ≈4.97:1）。tests/tokens.test.ts 有锁。 */
+  --ink-3: #8691a6;
+  --ink-4: #4a5262; /* 禁用态：仅装饰，不承担正文可读性 */
 
-  /* ---- 强调色（唯一主操作色） ---- */
-  --accent: #111111;
-  --accent-hover: #000000;
-  --accent-fg: #ffffff;
-  --link: #2563eb;
-  --link-soft: rgba(37, 99, 235, 0.08);
+  /* ---- 强调色：单一青蓝，主操作 / 选中 / 链接统一 ---- */
+  --accent: #4c9aff;
+  --accent-hover: #6fb1ff;
+  --accent-fg: #06121f;
+  --accent-dim: rgba(76, 154, 255, 0.14); /* 选中底 */
+  --link: #4c9aff;
+  --link-soft: rgba(76, 154, 255, 0.14);
 
-  /* ---- 状态色语义（§2.2 / §5.3，低饱和，仅用于点/字/描边） ---- */
-  --ok: #179a6b; /* 🟢 已完成 */
-  --run: #2563eb; /* 🔵 运行中 */
-  --warn: #c2680a; /* 🟠 已降级：绝不用红色。Demo 原值 #d97706 在 --surface-2/--raised 上只有 2.97/2.82:1，作标记不达非文本 3:1 */
-  --fail: #dc2626; /* 🔴 失败 */
-  --idle: #888884; /* ⚪ 待执行。Demo 原值 #9b9b96 在最浅的面上也只有 2.79:1；这一档在实心浅底上最差 3.15:1，与 --ok 的最差值同级 */
+  /* ---- 状态色语义（GitHub Dark 系，仅用于点 / 字 / 描边） ---- */
+  --ok: #3fb950; /* 🟢 已完成 */
+  --run: #58a6ff; /* 🔵 运行中 */
+  --warn: #d29922; /* 🟠 已降级 */
+  --fail: #f85149; /* 🔴 失败 */
+  --idle: #6b7688; /* ⚪ 待执行 */
 
-  --ok-soft: rgba(23, 154, 107, 0.1);
-  --run-soft: rgba(37, 99, 235, 0.08);
-  --warn-soft: rgba(194, 104, 10, 0.1);
-  --fail-soft: rgba(220, 38, 38, 0.08);
+  --ok-soft: rgba(63, 185, 80, 0.14);
+  --run-soft: rgba(88, 166, 255, 0.13);
+  --warn-soft: rgba(210, 153, 34, 0.14);
+  --fail-soft: rgba(248, 81, 73, 0.14);
 
-  /* 状态色的文字档：点/描边/底用上面的语义色，正文用达 AA 的同色系深色 */
-  --ok-ink: #0f7a54;
-  --warn-ink: #ac4f07;
-  --fail-ink: #b91c1c;
+  /* 状态色的文字档：深色下可直接用亮色作正文，无需再压暗 */
+  --ok-ink: #3fb950;
+  --warn-ink: #d29922;
+  --fail-ink: #f85149;
 
   /* ---- 间距：4 的倍数 ---- */
   --s1: 4px;
@@ -60,24 +65,21 @@
   --s7: 48px;
   --s8: 64px;
 
-  /* ---- 圆角：六档，组件里只许取档，不许写字面 px（tests/tokens.test.ts 有锁）
-     档位来自全站已存在的取值：5px 是细文标签/行内 code，7px 是小控件，
-     10px 是卡片与气泡，14px 是 Composer 输入框，20px 是胶囊。 ---- */
-  --r-2xs: 2px;
-  --r-xs: 5px;
+  /* ---- 圆角：六档，组件里只许取档，不许写字面 px（tests/tokens.test.ts 有锁） ---- */
+  --r-2xs: 4px;
+  --r-xs: 6px;
   --r-sm: 7px;
-  --r: 10px;
+  --r: 8px;
   --r-lg: 14px;
-  --r-pill: 20px;
+  --r-pill: 999px;
 
   /* ---- 字体 ---- */
-  /* 中文优先的阅读栈：拉丁字形交给系统 UI 字体，汉字落到 PingFang / 雅黑 / Noto，
-     顺序决定回退，Noto Sans SC 兜住无前两者的环境（Linux / 部分 Windows）。 */
+  /* 中文优先的阅读栈：拉丁字形交给系统 UI 字体，汉字落到 PingFang / 雅黑 / Noto */
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
     'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
-  --font-mono:
-    ui-monospace, 'Cascadia Code', 'Cascadia Mono', Consolas, 'SF Mono', monospace;
+  /* 数据 / ID / 数字 / 时间统一等宽栈 */
+  --font-mono: ui-monospace, 'Cascadia Mono', 'Cascadia Code', Consolas, 'SF Mono', monospace;
   --fs-body: 14px;
   --lh-body: 1.65;
 
@@ -91,47 +93,70 @@
   --topbar-h: 56px;
   --content-max: 840px;
 
-  /* ---- 阴影 ---- */
-  --shadow-sm: 0 1px 2px rgba(16, 16, 16, 0.04);
-  --shadow-md: 0 6px 24px rgba(16, 16, 16, 0.08);
-  --focus-ring: 0 0 0 3px rgba(16, 16, 16, 0.1);
+  /* ---- 阴影：深色下极轻，靠描边与层次立卡 ---- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.55);
+  --focus-ring: 0 0 0 3px rgba(76, 154, 255, 0.35);
 
-  /* ---- 遮罩与滚动条（墨色半透明档：只能在这里定义，组件里写死会在深色主题失效） ---- */
-  --scrim: rgba(16, 16, 16, 0.28);
-  --scroll-thumb: rgba(16, 16, 16, 0.16);
-  --scroll-thumb-hover: rgba(16, 16, 16, 0.28);
+  /* ---- 遮罩与滚动条 ---- */
+  --scrim: rgba(0, 0, 0, 0.6);
+  --scroll-thumb: rgba(255, 255, 255, 0.14);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.26);
 }
 
-/* 多主题预留：仅覆盖变量，不改组件（浅色为 MVP 默认，深色为迭代项） */
-:root[data-theme='dark'] {
-  --bg: #0b0b0c;
-  --side: #0e0e10;
-  --surface: #141416;
-  --surface-2: #1a1a1d;
-  --raised: #202024;
-  --line: rgba(232, 232, 230, 0.1);
-  --line-2: rgba(232, 232, 230, 0.18);
-  --ink: #e8e8e6;
-  --ink-2: #b6b6b1;
-  --ink-3: #8a8a85;
-  /* 强调色与浅色主题同一语言：主操作 = 中性墨色（浅色近黑 / 深色近白），
-     不再在深色里单独用琥珀，避免同一按钮两套色相。 */
-  --accent: #e8e8e6;
-  --accent-hover: #f5f5f3;
-  --accent-fg: #141416;
-  --link: #7fa8d9;
-  --link-soft: rgba(127, 168, 217, 0.12);
-  --ok: #6bbf8a;
-  --run: #7fa8d9;
-  --warn: #d98a5a;
-  --fail: #e5646a;
-  --ok-ink: #6bbf8a;
-  --warn-ink: #d98a5a;
-  --fail-ink: #e5646a;
-  --shadow-md: 0 6px 24px rgba(0, 0, 0, 0.4);
-  --focus-ring: 0 0 0 3px rgba(232, 232, 230, 0.18);
-  /* 深色下滚动条滑块若继续用墨色就贴在深底上看不见，改成浅色墨；遮罩加深 */
-  --scrim: rgba(0, 0, 0, 0.55);
-  --scroll-thumb: rgba(232, 232, 230, 0.16);
-  --scroll-thumb-hover: rgba(232, 232, 230, 0.28);
+/* 双主题（FE-16）：默认即「控制台深色」（:root 上面那套）；切到 data-theme='light'
+   进入「浅色科研台」——只覆盖颜色/阴影类令牌，语义色名一份不变，组件零改动。
+   与深色同一套语言：冷静、精密、可用（面用白、底用浅灰、强调色是同族蓝 #2563EB）。
+   所有覆盖项都必须先在 :root 里声明过（tests/tokens.test.ts 有"不新增令牌"的锁）。 */
+:root[data-theme='light'] {
+  /* ---- 面与底（浅色） ---- */
+  --bg: #f7f8fa;
+  --side: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f2f4f7;
+  --raised: #ffffff;
+
+  /* ---- 描边：浅底下用深色半透明，靠层次而非重线 ---- */
+  --line: rgba(16, 24, 40, 0.1);
+  --line-2: rgba(16, 24, 40, 0.16);
+
+  /* ---- 文字：正文近黑，弱化文字仍须在 --surface-2 上达 AA 4.5:1 ---- */
+  --ink: #1a1f29;
+  --ink-2: #4a5262;
+  --ink-3: #5b636f;
+  --ink-4: #8a93a3;
+
+  /* ---- 强调色：同族蓝 #2563EB ---- */
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-fg: #ffffff;
+  --accent-dim: rgba(37, 99, 235, 0.1);
+  --link: #2563eb;
+  --link-soft: rgba(37, 99, 235, 0.1);
+
+  /* ---- 状态色：改用各自"文字档"的深色，保证在浅底上非文本 ≥3:1 ---- */
+  --ok: #1a7f37;
+  --run: #0969da;
+  --warn: #9a6700;
+  --fail: #cf222e;
+  --idle: #57606a;
+
+  --ok-soft: rgba(26, 127, 55, 0.12);
+  --run-soft: rgba(9, 105, 218, 0.1);
+  --warn-soft: rgba(154, 103, 0, 0.12);
+  --fail-soft: rgba(207, 34, 46, 0.1);
+
+  --ok-ink: #1a7f37;
+  --warn-ink: #9a6700;
+  --fail-ink: #cf222e;
+
+  /* ---- 阴影：浅色下更淡、更柔 ---- */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.08);
+  --shadow-md: 0 10px 30px rgba(16, 24, 40, 0.14);
+  --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.35);
+
+  /* ---- 遮罩与滚动条 ---- */
+  --scrim: rgba(16, 24, 40, 0.45);
+  --scroll-thumb: rgba(16, 24, 40, 0.18);
+  --scroll-thumb-hover: rgba(16, 24, 40, 0.32);
 }

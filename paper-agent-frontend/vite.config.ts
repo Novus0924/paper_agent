@@ -37,5 +37,9 @@ export default defineConfig({
     setupFiles: ['./tests/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'tests/**/*.test.{ts,tsx}'],
     css: false,
+    // jsdom 下默认启用 web 依赖预打包，会往系统临时目录写缓存；
+    // 部分受限环境（无写权限的 TEMP）会让个别测试文件在收集阶段直接失败。
+    // 测试不需要预打包，关掉即可，运行更快也更稳。
+    deps: { optimizer: { web: { enabled: false } } },
   },
 });

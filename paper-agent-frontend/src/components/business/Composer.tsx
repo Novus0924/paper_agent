@@ -4,7 +4,6 @@ import { useI18n } from '@/i18n';
 import { cx } from '@/lib/utils';
 import { useAutoGrow } from '@/lib/hooks';
 import { queuedMessages } from '@/api/normalize';
-import { api } from '@/api/client';
 import { useTaskStore } from '@/store/taskStore';
 import { Icon } from '@/components/ui/Icon';
 
@@ -15,7 +14,7 @@ export interface ComposerProps {
 
 /**
  * FE-10 底部追问 / 修订输入区（P-05：必须真正可用）
- * 运行中发送进入排队（显示顺序，可"立即发送/删除"）；Enter 或 Cmd/Ctrl+Enter 发送。
+ * 运行中发送进入排队（显示顺序，可删除）；Enter 或 Cmd/Ctrl+Enter 发送。
  */
 export function Composer({ taskId, running }: ComposerProps) {
   const { t } = useI18n();
@@ -25,11 +24,9 @@ export function Composer({ taskId, running }: ComposerProps) {
 
   const entry = useTaskStore((s) => s.byId[taskId]);
   const sendMessage = useTaskStore((s) => s.sendMessage);
-  const sendNow = useTaskStore((s) => s.sendNow);
   const removeQueued = useTaskStore((s) => s.removeQueued);
   const queue = entry ? queuedMessages(entry) : [];
   const ready = text.trim().length > 0;
-  const canSendNow = Boolean(api.sendNow);
 
   function submit() {
     const value = text.trim();
@@ -61,16 +58,7 @@ export function Composer({ taskId, running }: ComposerProps) {
               <span className={composer.queueText} title={m.text}>
                 {m.text}
               </span>
-              {/* live 后端无强制投递口（消息按序自动放行），不渲染假的「立即发送」按钮 */}
-              {canSendNow && (
-                <button
-                  type="button"
-                  className={composer.queueBtn}
-                  onClick={() => void sendNow(taskId, m.turn_id)}
-                >
-                  {t('composer.queueSendNow')}
-                </button>
-              )}
+              {/* live 后端无强制投递口：消息按序自动放行，只提供删除 */}
               <button
                 type="button"
                 className={composer.queueBtn}

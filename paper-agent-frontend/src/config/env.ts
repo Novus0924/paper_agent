@@ -1,31 +1,12 @@
 import { metaEnv } from './meta';
 
-export type ApiMode = 'mock' | 'live';
-
-/** URL 参数 ?mode=live|mock 优先，便于现场演示无需重启即可切换（§6.3） */
-function modeFromUrl(): ApiMode | null {
-  if (typeof window === 'undefined') return null;
-  const raw = new URLSearchParams(window.location.search).get('mode');
-  return raw === 'live' || raw === 'mock' ? raw : null;
-}
-
 /**
- * 测试模式恒为 mock（URL 参数 ?mode= 仍可覆盖，个别用例需要时自己带）。
- * 原因：Vite 在**所有** mode 下都会读 `.env.local`，且它的优先级高于 `.env.test`
- * 与 vitest 的 `test.env`——本机为联调写的 `VITE_API_MODE=live` 会把整条测试套件
- * 切到真实 BFF 上（实测：无后端时 73 例失败）。测试不该依赖开发者本地有没有偷偷放一个 .env.local。
+ * v2.5 起前端只保留一条数据通道：真实 AGH 研究平台（BFF）。
+ * 历史上的 Mock/Live 双模式与 `?mode=mock` 演示适配器已整体移除——
+ * "秒回结果是演示脚本"的疑点靠真实联调取证回应，不靠保留一个假数据源。
+ * 测试不启真实后端：tests/liveEnv.ts 在 fetch + EventSource 层按后端契约造假后端。
  */
-const forcedForTests = metaEnv.MODE === 'test' ? 'mock' : null;
-
 export const env = {
-  apiMode:
-    modeFromUrl() ??
-    forcedForTests ??
-    (metaEnv.VITE_API_MODE === 'live' ? 'live' : 'mock'),
   apiBaseUrl: (metaEnv.VITE_API_BASE_URL ?? 'http://127.0.0.1:8787').replace(/\/$/, ''),
   aghSettingsUrl: metaEnv.VITE_AGH_SETTINGS_URL ?? '',
-  /** Mock 运行时的本地持久化前缀：刷新/重开后同一份报告与轨迹仍可达（P-03/P-04） */
-  storagePrefix: 'paper-agent-frontend',
 };
-
-export const isLive = env.apiMode === 'live';

@@ -22,11 +22,7 @@ export function HealthCard({ sessionId }: { sessionId?: string | null }) {
   }, [refresh]);
 
   const reachable = !error && health && health.status !== 'down';
-  const title = error
-    ? t('health.degradedEnv')
-    : health?.mode === 'mock'
-      ? t('health.mockConnected')
-      : t('health.connected');
+  const title = error ? t('health.degradedEnv') : t('health.connected');
   const model = health?.model ?? '';
 
   return (
