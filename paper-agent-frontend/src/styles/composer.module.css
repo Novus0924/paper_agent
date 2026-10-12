@@ -43,6 +43,9 @@
   padding: var(--s3) var(--s4) var(--s1);
   max-height: 200px;
 }
+.ta::placeholder {
+  color: var(--ink-3);
+}
 .bar {
   display: flex;
   align-items: center;
@@ -50,48 +53,73 @@
   padding: var(--s2) var(--s3) var(--s3);
   flex-wrap: wrap;
 }
+/* 分段控件：透明边框占位，选中/未选中同尺寸（避免选中态多 1px 边框导致的高度跳动） */
 .modes {
   display: inline-flex;
-  gap: var(--s1);
-  padding: 2px;
+  gap: 2px;
+  padding: 3px;
   border-radius: var(--r-pill);
   border: 1px solid var(--line);
   background: var(--surface-2);
 }
 .mode {
   font-size: 12px;
-  padding: 3px var(--s3);
+  line-height: 1;
+  padding: 5px var(--s3);
   border-radius: var(--r-pill);
+  border: 1px solid transparent;
   color: var(--ink-3);
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+.mode:hover {
+  color: var(--ink-2);
 }
 .modeActive {
-  background: var(--surface);
-  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  color: var(--accent);
   font-weight: 600;
-  border: 1px solid var(--line);
 }
 .spacer {
   flex: 1;
 }
+/* 发送钮：30px 圆钮，与分段控件等高（bar 两端视觉对齐） */
 .send {
-  width: 34px;
-  height: 34px;
-  border-radius: var(--r);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
   display: grid;
   place-items: center;
-  background: var(--raised);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
   color: var(--ink-3);
   transition:
     background var(--dur) var(--ease),
-    color var(--dur) var(--ease);
+    color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+.send:hover:not(:disabled) {
+  color: var(--ink-2);
+  border-color: var(--line-2);
 }
 .sendReady {
   background: var(--accent);
+  border-color: var(--accent);
   color: var(--accent-fg);
+  box-shadow: 0 3px 10px -3px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .sendReady:hover {
   background: var(--accent-hover);
+  border-color: var(--accent-hover);
   color: var(--accent-fg);
+  transform: translateY(-1px);
+}
+.sendReady:active {
+  transform: translateY(0);
+  box-shadow: none;
 }
 .hint {
   text-align: center;
