@@ -21,6 +21,8 @@ _STOPWORDS = {
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
 _ASCII_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]{2,}")
+#: 目标原文短语切分：中英文标点 + 空白（供 goal_phrases 还原可读短语）
+_CJK_PHRASE_SPLIT_RE = re.compile(r"[，。？！；、：,.;?!:()\[\]【】（）\s]+")
 
 _DOI_PREFIX_RE = re.compile(r"^https?://(dx\.)?doi\.org/", re.IGNORECASE)
 _TITLE_PUNCT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
@@ -141,6 +143,36 @@ def rank_records(
     """
     records, _ = rank_records_with_stats(snapshot, goal, limit, queries=queries)
     return records
+
+
+def goal_phrases(goal: str, min_len: int = 2, max_phrases: int = 12) -> list[str]:
+    """目标原文要素短语（可读、确定性）：按标点/空白切分 CJK 连续段。
+
+    背景：2-gram 是**匹配**用的最小单元，不适合直接当"研究要素"展示——
+    "给出方法对比与结论"会碎成"出方""法对""与结"这类无意义片段（实测问题）。
+    本函数把 goal 还原到用户可读的短语层面，供报告「研究问题」章节展示；
+    检索与缺口判定仍走 :func:`retrieval_tokens`，两者口径分离、各司其职。
+    """
+    out: list[str] = []
+    for run in _CJK_RE.findall(goal or ""):
+        for part in _CJK_PHRASE_SPLIT_RE.split(run):
+            part = part.strip()
+            if len(part) >= min_len and part not in out:
+                out.append(part)
+            if len(out) >= max_phrases:
+                return out
+    return out
+
+
+def retrieval_tokens(goal: str, queries: list[str] | None = None) -> set[str]:
+    """检索与相关性判定的统一口径：goal + 规划查询（与 rank_records 打分口径一致）。
+
+    R1 的相关性度量用这个口径；R3 缺口拆解 / R4 印证相关性**必须**同口径——
+    否则会出现"规划查询检索到了高相关文献，R4 却因 goal(中文) ∩ corroborated(英文)=∅
+    而误报覆盖缺口"（2026-10-12 实测病灶：31 个中文 2-gram 被误判为缺口要素，
+    已检索到 6 篇相关文献却产出"语料缺失"结论）。
+    """
+    return _tokens(goal) | _tokens(" ".join(queries or []))
 
 
 def phrase_for(text: str, token: str, max_len: int = 30) -> str:

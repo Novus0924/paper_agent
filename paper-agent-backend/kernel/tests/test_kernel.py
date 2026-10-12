@@ -1237,6 +1237,69 @@ class TestR4ConclusionSubject(unittest.TestCase):
             self.assertTrue(any("无交集" in j["rationale"] for j in judgments))
 
 
+class TestQueryBridgedCoverage(unittest.TestCase):
+    """查询桥接口径（2026-10-12 实测病灶①③修复）。
+
+    R1 检索按 goal+规划查询 打分；R3 缺口/R4 印证此前只用 goal 原文 2-gram——
+    中文问题对英文语料结构性零交集，"与结""出方"这类指令碎片被误报为缺口要素，
+    检索到的相关文献也无法进入结论。修复后：R3/R4 与 R1 同口径（含规划查询），
+    外文语料场景下中文要素经查询桥接，结论落到具体文献（报告差异化）。
+    """
+
+    def test_queries_bridged_produce_grounded_conclusions(self) -> None:
+        """中文 goal + 英文规划查询 + 英文语料：R4 产出引用文献的结论（非缺口结论）。"""
+        with tempfile.TemporaryDirectory() as t:
+            run_dir = make_run(Path(t), "run-bridge")
+            state = plan(run_dir, task_id="run-bridge")  # 默认 GOAL 中文 + PLAN_QUERIES 英文
+            ledger = Ledger(run_dir)
+            out = execute_step(state, run_dir, ledger, "R1")
+            self.assertGreater(len(out["evidence_ids"]), 0, "前提失效：规划查询应检索到文献")
+            for sid in ("R2", "R3"):
+                execute_step(state, run_dir, ledger, sid)
+            out4 = execute_step(state, run_dir, ledger, "R4")
+            self.assertTrue(out4["goal_relevant_terms"], "规划查询词应计入相关性口径")
+            conc = [r.data for r in ledger.conclusion_records()]
+            self.assertTrue(conc)
+            for c in conc:
+                self.assertNotIn("未能覆盖", c["text"])
+                self.assertIn("代表性文献", c["text"], "结论必须落到具体文献")
+                self.assertIn("[EV-", c["text"], "结论必须带证据角标")
+                self.assertTrue(c["evidence_ids"])
+
+    def test_r3_gap_excludes_bridged_goal_fragments(self) -> None:
+        """外文语料且查询命中：R3 缺口只统计查询内容词，不得含中文 2-gram 碎片。"""
+        with tempfile.TemporaryDirectory() as t:
+            run_dir = make_run(Path(t), "run-bridge-r3")
+            state = plan(run_dir, task_id="run-bridge-r3")
+            ledger = Ledger(run_dir)
+            execute_step(state, run_dir, ledger, "R1")
+            out = execute_step(state, run_dir, ledger, "R3")
+            joined = "".join(out["gap_terms"])
+            self.assertFalse(
+                any("\u4e00" <= ch <= "\u9fff" for ch in joined),
+                f"外文语料桥接场景下缺口不得出现中文碎片：{out['gap_terms'][:5]}",
+            )
+            r3 = [r for r in ledger.evidence() if r.data.get("producer_step") == "R3"][-1]
+            detail = r3.data["detail"]
+            self.assertTrue(detail.get("query_coverage"), "必须有查询级覆盖明细")
+            self.assertTrue(detail.get("bridged_by_queries"), "外文语料+查询命中应标记桥接")
+
+    def test_report_research_question_shows_phrases_not_bigrams(self) -> None:
+        """报告「研究问题」展示原文短语而非 2-gram 碎片；「核心发现」逐条列出结论。"""
+        with tempfile.TemporaryDirectory() as t:
+            run_dir = make_run(Path(t), "run-report-diff")
+            state = plan(run_dir, task_id="run-report-diff")
+            ledger = Ledger(run_dir)
+            run_all(state, run_dir, ledger)
+            report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+            rq = next(s for s in report["sections"] if s["id"] == "research_question")
+            self.assertIn("固态电解质界面阻抗", rq["body"], "应包含原文短语")
+            self.assertNotIn("与结", rq["body"], "不得再罗列 2-gram 碎片")
+            self.assertIn(PLAN_QUERIES[0], rq["body"], "检索查询应可见")
+            findings = next(s for s in report["sections"] if s["id"] == "findings")
+            self.assertIn("C-001", findings["body"], "核心发现应逐条列出结论")
+
+
 class TestR5MethodologyStats(unittest.TestCase):
     """R5 方法学观察（G3 病灶）：全部由账本统计生成，禁止领域词硬编码。"""
 

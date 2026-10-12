@@ -120,15 +120,22 @@ def assemble(run_dir: Path, *, allow_gate_bypass: bool = False) -> dict[str, Any
     factchecks = [r for r in ledger.evidence() if r.data.get("kind") == "factcheck"]
 
     # ---- 章节数据（全部由账本/状态计算，禁止领域词硬编码）----
-    goal_tokens = sorted(corpus._tokens(state.goal))
+    # 研究要素展示用原文短语（可读），不用 2-gram 碎片（2026-10-12 病灶③修复：
+    # "与结""出方"这类碎片裸奔进报告，读者无法理解）
+    goal_phrases = corpus.goal_phrases(state.goal)
     corroborated: list[str] = []
     gaps: list[str] = []
+    query_coverage: list[dict[str, Any]] = []
     for r in ledger.evidence():
         detail = r.data.get("detail", {}) or {}
         if r.data.get("kind") == "factcheck" and len(detail.get("corroborated_terms", [])) > len(corroborated):
             corroborated = [str(t) for t in detail.get("corroborated_terms", [])]
-        if r.data.get("producer_step") == "R3" and r.data.get("kind") == "analysis" and len(detail.get("gap_terms", [])) > len(gaps):
-            gaps = [str(t) for t in detail.get("gap_terms", [])]
+        if r.data.get("producer_step") == "R3" and r.data.get("kind") == "analysis":
+            if len(detail.get("gap_terms", [])) > len(gaps):
+                gaps = [str(t) for t in detail.get("gap_terms", [])]
+            qc = detail.get("query_coverage", [])
+            if len(qc) > len(query_coverage):
+                query_coverage = [dict(x) for x in qc if isinstance(x, dict)]
 
     # 受控模型综合回答（S1）：artifact 级 synthesis 证据；取最后一条（重复 synthesize 以最新为准）
     synth_records = [r for r in ledger.evidence() if r.data.get("kind") == "synthesis"]
@@ -136,17 +143,38 @@ def assemble(run_dir: Path, *, allow_gate_bypass: bool = False) -> dict[str, Any
     retrieval_queries = (
         "、".join(state.queries) if state.queries else "未提供模型规划查询（检索使用目标原文）"
     )
+    elements = (
+        "、".join(goal_phrases)
+        if goal_phrases
+        else ("、".join(sorted(corpus._tokens(state.goal))) or "（未能分词）")  # noqa: SLF001
+    )
     research_question_body = (
         f"研究目标：{state.goal}\n\n"
-        f"目标关键要素（确定性分词，英文取词、中文取 2-gram）："
-        f"{'、'.join(goal_tokens) if goal_tokens else '（未能分词）'}\n\n"
+        f"目标关键要素（原文短语，按标点切分）：{elements}\n\n"
         f"检索使用查询：{retrieval_queries}"
     )
+    # 核心发现逐条列出结论全文与证据角标（不再只给计数；2026-10-12 病灶③：报告同质化）
+    conc_lines = [
+        f"- **{r.data['cid']}** {r.data['text']}"
+        f"（证据：{'、'.join(str(x) for x in r.data.get('evidence_ids', []))}）"
+        for r in conclusions
+    ]
     findings_body = (
-        f"共形成 {len(conclusions)} 条结论，每条均绑定 fact 级证据（详见结论列表与证据角标）；"
-        f"多源印证主题词 {len(corroborated)} 个（每个获 ≥2 个独立来源支撑）。"
-        + (f"另有 {len(gaps)} 个目标关键要素未被现有语料覆盖（覆盖缺口详见局限章节与 R3 证据）。" if gaps else "")
+        (f"共形成 {len(conclusions)} 条结论，每条均绑定 fact 级证据：\n" + "\n".join(conc_lines))
+        if conc_lines
+        else "共形成 0 条结论。"
     )
+    findings_body += (
+        f"\n\n多源印证主题词 {len(corroborated)} 个（每个获 ≥2 个独立来源支撑）："
+        + ("、".join(corroborated[:10]) if corroborated else "（无）")
+        + "。"
+    )
+    if query_coverage:
+        findings_body += "\n检索查询命中：" + "；".join(
+            f"“{qc.get('query', '')}”→ {qc.get('records', 0)} 篇" for qc in query_coverage
+        ) + "。"
+    if gaps:
+        findings_body += f"\n另有 {len(gaps)} 个检索内容词未被现有语料覆盖（覆盖缺口详见局限章节与 R3 证据）。"
 
     sections: list[dict[str, str]] = []
     sections.append(

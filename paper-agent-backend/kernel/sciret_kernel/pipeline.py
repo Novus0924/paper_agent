@@ -362,14 +362,55 @@ def step_R2(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
 
 
 def step_R3(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
+    """覆盖缺口拆解（查询感知版，2026-10-12 病灶①修复）。
+
+    旧口径的病灶：缺口 = goal(中文 2-gram) − 语料标题词，而检索实际按
+    goal+规划查询 打分（R1）——中文问题对英文语料**结构性零交集**，
+    "与结""出方""征方"这类指令碎片被误报为"关键要素缺口"（实测 31 个），
+    误导报告产出"语料缺失"结论。
+
+    新口径（仍全确定性，同输入同输出）：
+    - 相关性口径统一为 ``corpus.retrieval_tokens(goal, queries)``（与 R1 一致）；
+    - 新增**查询级覆盖**：每条规划查询命中几篇文献（查询 token 与标题有交集）；
+    - 语料为外文（标题无 CJK）且规划查询有命中时：目标中文要素视为"经查询桥接"，
+      缺口只统计**查询内容词**中未获语料覆盖的部分（可执行：调整/补充查询）；
+      纯中文目标且无查询命中时，维持原口径（缺口 = 全部未覆盖要素）。
+    """
     # 0 篇文献时覆盖=∅、缺口=全部目标要素——恰恰是缺口拆解最有价值的情形，
     # 不抛错（与 R2 的"诚实降级"口径一致，R4 的覆盖缺口结论要绑定本步证据）
     lit = [r for r in ledger.evidence() if r.data.get("producer_step") == "R1"]
-    goal_tokens = corpus._tokens(state.goal)  # noqa: SLF001
-    covered: set[str] = set()
+    title_tokens_all: set[str] = set()
+    rec_token_list: list[set[str]] = []
     for rec in lit:
-        covered |= corpus._tokens(str(rec.data.get("ref", {}).get("title", "")))  # noqa: SLF001
-    gaps = sorted(goal_tokens - covered)
+        toks = corpus._tokens(str(rec.data.get("ref", {}).get("title", "")))  # noqa: SLF001
+        rec_token_list.append(toks)
+        title_tokens_all |= toks
+    queries = [str(q) for q in (state.queries or [])]
+    query_coverage: list[dict[str, Any]] = []
+    for q in queries:
+        qt = corpus._tokens(q)  # noqa: SLF001
+        query_coverage.append(
+            {
+                "query": q,
+                "records": sum(1 for rt in rec_token_list if qt & rt),
+                "matched_terms": sorted(qt & title_tokens_all)[:8],
+            }
+        )
+    goal_tokens = corpus._tokens(state.goal)  # noqa: SLF001
+    retrieval = corpus.retrieval_tokens(state.goal, queries)
+    gaps = sorted(retrieval - title_tokens_all)
+    # 语料文字体系：标题含 CJK → 与目标同文种、直接可比；
+    # 纯外文 → 中文要素经规划查询桥接（查询是 goal 与外文语料之间唯一确定性桥梁）
+    corpus_has_cjk = any(
+        corpus._CJK_RE.search(str(rec.data.get("ref", {}).get("title", ""))) for rec in lit  # noqa: SLF001
+    )
+    bridged = bool(queries) and bool(lit) and not corpus_has_cjk
+    if bridged:
+        query_tok_all: set[str] = set()
+        for q in queries:
+            query_tok_all |= corpus._tokens(q)  # noqa: SLF001
+        gaps = sorted(set(gaps) & query_tok_all)
+    queries_hit = sum(1 for qc in query_coverage if qc["records"] > 0)
     idx = _next_evidence_index(ledger)
     ev_id = _ev_id(idx)
     ledger.append(
@@ -379,14 +420,32 @@ def step_R3(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
             "tier": "fact",
             "kind": "analysis",
             "title": "创新点拆解：目标关键词覆盖缺口",
-            "detail": {"goal_terms": sorted(goal_tokens), "covered_terms": sorted(covered & goal_tokens), "gap_terms": gaps},
+            "detail": {
+                "goal_phrases": corpus.goal_phrases(state.goal),
+                "goal_terms": sorted(goal_tokens),
+                "covered_terms": sorted(title_tokens_all & retrieval),
+                "gap_terms": gaps,
+                "query_coverage": query_coverage,
+                "queries_total": len(queries),
+                "queries_hit": queries_hit,
+                "corpus_script": "cjk" if corpus_has_cjk else "latin",
+                "bridged_by_queries": bridged,
+            },
             "ref": {"derived_from": [r.data["ev_id"] for r in lit]},
             "producer_step": "R3",
         },
     )
+    summary = (
+        (
+            f"规划查询 {queries_hit}/{len(queries)} 条命中相关文献；"
+            f"{len(gaps)} 个检索内容词未获语料覆盖"
+        )
+        if queries
+        else f"识别出 {len(gaps)} 个未覆盖的目标关键词（候选创新方向）"
+    )
     return {
         "step": "R3",
-        "human_summary": f"识别出 {len(gaps)} 个未覆盖的目标关键词（候选创新方向）",
+        "human_summary": summary,
         "evidence_ids": [ev_id],
         "gap_terms": gaps,
     }
@@ -420,7 +479,9 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
     corroborated = sorted(t for t, srcs in topic_sources.items() if len(srcs) >= MIN_CORROBORATING_SOURCES)
     single = sorted(t for t, srcs in topic_sources.items() if len(srcs) < MIN_CORROBORATING_SOURCES)
 
-    goal_tokens = corpus._tokens(state.goal)  # noqa: SLF001
+    # 相关性口径与 R1 检索一致（goal + 规划查询）——2026-10-12 病灶①修复：
+    # 此前只用 goal 原文，中文问题 ∩ 英文印证词 = ∅，检索到的相关文献进不了结论
+    goal_tokens = corpus.retrieval_tokens(state.goal, [str(q) for q in (state.queries or [])])
     relevant_terms = [t for t in corroborated if t in goal_tokens]
 
     idx = _next_evidence_index(ledger)
@@ -468,17 +529,39 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
 
     conclusions: list[str] = []
     if relevant_terms:
+        # 证据定位（2026-10-12 病灶③修复：结论落到具体文献，报告随问题差异化）
+        title_tokens_by_ev: list[tuple[str, set[str], dict[str, Any]]] = [
+            (
+                str(rec.data["ev_id"]),
+                corpus._tokens(str(rec.data.get("ref", {}).get("title", ""))),  # noqa: SLF001
+                rec.data.get("ref", {}),
+            )
+            for rec in lit
+        ]
+        subject_text = " ".join([state.goal, *[str(q) for q in (state.queries or [])]])
         for i, term in enumerate(relevant_terms[:3], start=1):
             cid = f"C-{i:03d}"
-            # 用原文中包含该 token 的完整片段作主语（避免 2-gram 碎片裸奔）
-            phrase = corpus.phrase_for(state.goal, term)
+            # 主语：原文中包含该 token 的可读片段（goal+查询联合文本，避免 2-gram 碎片裸奔）
+            phrase = corpus.phrase_for(subject_text, term)
+            supporting = [(ev, ref) for ev, toks, ref in title_tokens_by_ev if term in toks]
+            srcs = {str(ref.get("source", "unknown")) for _, ref in supporting}
+            reps = "；".join(
+                f"{str(ref.get('title', ''))[:44]}[{ev}]" for ev, ref in supporting[:2]
+            )
             text = (
-                f"研究目标中的“{phrase}”获多源文献交叉印证"
-                f"（印证要素“{term}”获 ≥{MIN_CORROBORATING_SOURCES} 个独立来源支撑）"
+                f"研究目标要素“{phrase}”获 {len(supporting)} 篇文献（{len(srcs)} 个独立来源）交叉印证"
+                + (f"；代表性文献：{reps}" if reps else "")
             )
             ledger.append(
                 "conclusion",
-                {"cid": cid, "text": text, "evidence_ids": [fact_ev], "producer_step": "R4", "confidence": "medium"},
+                {
+                    "cid": cid,
+                    "text": text,
+                    "evidence_ids": [fact_ev],
+                    "producer_step": "R4",
+                    # ≥3 个独立来源 → high；否则 medium（确定性判定）
+                    "confidence": "high" if len(srcs) >= 3 else "medium",
+                },
             )
             conclusions.append(cid)
     else:
@@ -504,6 +587,13 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
                 f"现有语料未能覆盖研究问题的关键要素（缺口要素：{'、'.join(gap_terms[:10])}），"
                 f"不足以对研究目标形成直接结论；建议扩充检索范围（提供英文检索查询）或人工补充语料后重试。"
             )
+            if state.queries:
+                hit_q = sum(
+                    1
+                    for q in state.queries
+                    if corpus._tokens(str(q)) & corpus._tokens(" ".join(str(rec.data.get("ref", {}).get("title", "")) for rec in lit))  # noqa: SLF001
+                )
+                text += f"（规划查询 {hit_q}/{len(state.queries)} 条命中相关文献）"
         else:
             text = (
                 f"现有语料覆盖了目标关键词，但未形成与研究目标直接相关的多源印证"
