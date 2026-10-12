@@ -23,3 +23,6 @@ agnes-harness/
 .qa-pcli/
 j*.yaml
 overview.yaml
+
+# 验收报告与过程证据不入仓（2026-10-12 用户指示：从 Git 彻底移除并重写历史）
+验收/
