@@ -106,10 +106,10 @@ def tool_plan(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     # ⚠️ Fail-fast：**规格存在**与**算子已实现**是两件事，这里按后者拦。
     #
     #   之前的做法有两个问题，都会让用户吃亏：
-    #   ① 对「规格已知但未实现」（materials）照收 → 建好任务、连AGH 会话都开了，
-    #      才在执行某一步时被告知"尚未实现"；
+    #   ① 对「规格已知但未实现」的工作流照收 → 建好任务、连AGH 会话都开了，
+    #      才在执行某一步时被告知"尚未实现"（materials 伪选项即此病灶，已全层删除）；
     #   ② 对**完全未知**的工作流静默回退research，只在返回值里写一行
-    #      workflow_fallback → 用户以为自己跑的是 materials，其实跑的是 research，
+    #      workflow_fallback → 用户以为自己跑的是声明的工作流，其实跑的是 research，
     #      结果与预期不符却没有任何拦截。静默回退在这里是有害的：
     #      工作流决定了步骤集与产物结构，跑错就是错的。
     #
@@ -120,7 +120,9 @@ def tool_plan(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
             f"不再静默回退到 {workflow.DEFAULT_WORKFLOW} —— 工作流决定步骤集与产物结构，跑错就是错的。"
         )
     if not workflow.is_implemented(wf_raw):
-        raise ValueError(workflow.NOT_IMPLEMENTED_REASON.get(wf_raw, f"工作流 {wf_raw} 尚未实现。"))
+        raise ValueError(
+            f"工作流 {wf_raw} 的算子尚未实现。当前可用：{', '.join(sorted(workflow.IMPLEMENTED))}。"
+        )
     wf = wf_raw
     lit_source = str(args.get("lit_source") or "auto")
     sources = [str(s) for s in (args.get("sources") or [])]
@@ -216,6 +218,22 @@ def tool_run_all(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
 def tool_status(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     state, ledger = _load(run_dir)
     done = sum(1 for s in state.steps if s.status.value in ("DONE", "SKIPPED"))
+    # 进度口径统一（2026-10-12 病灶①）：S1 是受控模型步骤，run_all 结束时尚未执行
+    # （由综合回答回合补做）。此前 human_summary 一律报"已完成 6/7 步"，agent 照抄后
+    # 与前端步骤条的 7/7 打架。现在把确定性步骤与模型步骤分开表述。
+    model_pending = [
+        s.id for s in state.steps if s.id in workflow.MODEL_STEPS and s.status.value not in ("DONE", "SKIPPED")
+    ]
+    if model_pending:
+        det = [s for s in state.steps if s.id not in workflow.MODEL_STEPS]
+        det_done = sum(1 for s in det if s.status.value in ("DONE", "SKIPPED"))
+        human_summary = (
+            f"{state.run_status.value}：确定性流水线 {det_done}/{len(det)} 步"
+            + ("全部完成" if det_done == len(det) else "")
+            + f"；综合回答（{'、'.join(model_pending)}）由模型综合回合随后执行"
+        )
+    else:
+        human_summary = f"{state.run_status.value}：已完成 {done}/{len(state.steps)} 步"
     return {
         "ok": True,
         "state": state.to_dict(),
@@ -224,7 +242,7 @@ def tool_status(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
         "conclusion_count": len(ledger.conclusion_records()),
         "chain_head": ledger.last_hash(),
         "remaining_steps": state.remaining_steps(),
-        "human_summary": f"{state.run_status.value}：已完成 {done}/{len(state.steps)} 步",
+        "human_summary": human_summary,
     }
 
 
@@ -274,6 +292,10 @@ def tool_synthesize(args: dict[str, Any], run_dir: Path) -> dict[str, Any]:
             f"synthesize 仅在任务终态 DONE 后可用（当前 {state.run_status.value}）——"
             f"综合回答必须基于已通过门禁的完整证据链"
         )
+    # S1 撰写期的进行中可见性由 BFF 层负责（execution.ts 综合回合开始时置索引
+    # S1=RUNNING 并经 relay.publishStepRunning 推 step 帧）——内核不在此标记：
+    # run 已终态 DONE，start_step 的「终态不可逆」守卫（§4.3）会拒绝，
+    # 而为可观测性给状态机开口子不值得（内核 state.json 的 S1 中间态无消费方）。
     raw_path = str(args.get("text_file") or "").strip()
     if not raw_path:
         raise ValueError("synthesize 需要 text_file（模型综合回答文本文件路径，须位于 run_dir 内）")

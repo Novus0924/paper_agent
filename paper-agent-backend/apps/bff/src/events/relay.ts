@@ -434,6 +434,22 @@ export class EventRelay {
     }
   }
 
+  /**
+   * 直接发布某步骤的 RUNNING 帧（综合回合 S1 可观测性专用）。
+   * 为什么不靠 syncDomain：模型撰写 S1 期间内核 state.json 尚未落盘 RUNNING
+   * （tool_synthesize 只在最终落盘时 complete_optional_step），事件泵的 syncDomain
+   * 看不到这段窗口；由执行编排器在综合回合开始时显式推送补齐。
+   * 同步维护 lastStepStatus / stepStartedAt：后续 syncDomain 不重复发帧、
+   * DONE 时能正常结算 elapsed_ms。
+   */
+  publishStepRunning(taskId: string, step: string): void {
+    const key = `${taskId}:${step}`
+    if (this.lastStepStatus.get(key) === 'RUNNING') return
+    this.lastStepStatus.set(key, 'RUNNING')
+    this.stepStartedAt.set(key, Date.now())
+    this.bus.publish(taskId, { type: 'step', step, status: 'RUNNING' })
+  }
+
   /** 终态：执行编排器 settle 时必发（§5.2） */
   emitDone(taskId: string, runStatus: 'DONE' | 'FAILED', error?: string): void {
     const reportReady = existsSync(resolve(this.runsDir, taskId, 'report.json'))

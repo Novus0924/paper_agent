@@ -49,6 +49,8 @@ async function main(): Promise<void> {
   })
   // 执行前确保事件泵在跑（否则 SSE 建连前的工具事件会漏）
   exec.onBeforeExecute = (taskId: string) => relay.ensure(taskId)
+  // 综合回合开始 → 推 S1 RUNNING 帧（模型撰写期间前端进度可见，不再长时间停在 6/7）
+  exec.onSynthesisStart = (taskId: string) => relay.publishStepRunning(taskId, 'S1')
 
   // 多轮消息服务（BE-11：同会话追问/修订，运行中排队按序执行）
   const messages = new MessageService(gateway, index, cfg.runsDir, log, (taskId) => exec.isExecuting(taskId))

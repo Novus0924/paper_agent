@@ -53,6 +53,12 @@ export class ExecutionService {
    * 反向「执行中→ 发消息」则由消息队列（入队）处理。故两侧都要看对方。
    */
   externalBusy: ((taskId: string) => boolean) | undefined
+  /**
+   * 综合回合开始钩子（进度可观测性：模型撰写 S1 期间把 RUNNING 帧推给前端）。
+   * 若不推帧，主链 DONE 后前端进度会长时间停在 6/7，直到 sciret_synthesize
+   * 落盘才一次性跳到 7/7——呈现为「进度长时间不动」的假死观感。
+   */
+  onSynthesisStart: ((taskId: string) => void) | undefined
 
   constructor(
     private readonly gateway: AgnesGateway,
@@ -273,6 +279,7 @@ export class ExecutionService {
       `请先读取 run 目录 ${dir} 中的 report.json 与 ledger.jsonl（只读，不得修改任何既有产物）。`,
       `然后基于其中真实存在的证据，撰写 300-600 字对研究目标「${task.goal}」的直接回答：`,
       '每个事实性表述必须用 [EV-xxxx] 角标标注所依据的证据编号；只能使用 ledger.jsonl 中真实存在的证据编号，严禁编造证据号；没有证据支撑的表述请明确标注为推断。',
+      '论证结构要求：每条结论按「证据依据 → 一句话推理 → 结论」展开——先点明所依据的证据（角标），再用一句话说明该证据为何支持该结论（如多来源共同指向、方法或结果一致），最后给出结论；严禁无推理链的直接断言。',
       `完成后调用 sciret_synthesize 工具，参数 run_dir="${dir}"、text=<你撰写的回答全文>。`,
       '必须真实调用工具落盘；不要凭空声称已完成。',
     ].join('\n')
@@ -336,6 +343,15 @@ export class ExecutionService {
           if (this.synthesisEligible(taskId)) {
             const after = this.index.get(taskId)
             if (after) {
+              // 模型综合回合开始即把索引中的 S1 置 RUNNING 并推 step 帧（与内核侧
+              // tool_synthesize 的 start_step 同向）；失败路径由 finally 的
+              // syncFromKernel 以内核 state.json 为权威收敛，无需在此回退。
+              const s1 = after.steps.find((s) => s.id === 'S1')
+              if (s1 && s1.status !== 'DONE' && s1.status !== 'SKIPPED') {
+                s1.status = 'RUNNING'
+                this.index.put(after)
+                this.onSynthesisStart?.(taskId)
+              }
               try {
                 await this.gateway.prompt(taskId, task.session_id, this.runDir(taskId), this.buildSynthesisInstruction(after))
                 this.log.info('综合回答回合结束', { taskId, action: 'synthesize' })

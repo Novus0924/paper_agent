@@ -548,8 +548,12 @@ def step_R4(state: RunState, run_dir: Path, ledger: Ledger) -> dict[str, Any]:
             reps = "；".join(
                 f"{str(ref.get('title', ''))[:44]}[{ev}]" for ev, ref in supporting[:2]
             )
+            # 判定依据（改造 G3 病灶：结论必须附带推理链，而非裸断言）
+            src_names = "、".join(sorted(srcs)[:4]) + ("等" if len(srcs) > 4 else "")
             text = (
-                f"研究目标要素“{phrase}”获 {len(supporting)} 篇文献（{len(srcs)} 个独立来源）交叉印证"
+                f"研究目标要素“{phrase}”获 {len(supporting)} 篇文献（{len(srcs)} 个独立来源）交叉印证，"
+                f"判定依据：印证词“{term}”同时出现在 {len(srcs)} 个独立来源（{src_names}）的文献题录中，"
+                f"非单源孤证"
                 + (f"；代表性文献：{reps}" if reps else "")
             )
             ledger.append(
@@ -816,8 +820,8 @@ def execute_step(
         #   那里才能省下"建目录 + 建 AGH 会话"的资源浪费。两处都留：
         #   plan 拦不住时（历史任务/状态被外部改过）这里兜底。
         raise PipelineError(
-            f"步骤 {step_id} 尚未实现（当前仅 research 工作流 R1–R6 已实现；"
-            f"materials 工作流的算子将在后续里程碑补齐）"
+            f"步骤 {step_id} 尚未实现（当前仅 research 工作流已实现；"
+            f"新增工作流须同步 workflow.WORKFLOWS 与 pipeline.STEP_FUNCS）"
         )
 
     state.start_step(run_dir, step_id)
