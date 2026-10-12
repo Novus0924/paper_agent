@@ -50,6 +50,8 @@ const AGH_CLI = AGH_ROOT ? resolve(AGH_ROOT, AGH_MARKER) : null
 const AGH_HOME = process.env['AGH_HOME'] ?? join(homedir(), '.agh')
 const AGNES_PROFILE = process.env['AGNES_PROFILE'] ?? 'local-dev'
 const BFF_PORT = Number(process.env['PAPER_AGENT_PORT'] ?? 8787)
+// AGH Web（agh serve）：观察 AGH 真实调用/会话的本地 Web UI；默认 4177（@agnes/web-server DEFAULT_WEB_PORT）
+const AGH_WEB_PORT = Number(process.env['AGH_WEB_PORT'] ?? 4177)
 
 const steps = []
 let failed = false
@@ -424,6 +426,41 @@ async function main() {
         fail('agh-daemon', e.message, '查看上方 [daemon] 日志；常见原因：AGH home ACL 不合规（跑 node scripts/acl-audit.mts 复核），或 Node 版本不足 24.10。')
         return finish()
       }
+    }
+  }
+
+  // ---- 步骤 2.5：AGH Web（观察 AGH 真实调用/会话；占用或失败不阻断主链路）----
+  if (bffOnly) {
+    info('agh-web', '按 --bff-only 跳过 AGH Web')
+  } else if (!(await portFree(AGH_WEB_PORT))) {
+    info('agh-web', `端口 ${AGH_WEB_PORT} 已被占用——AGH Web 可能已在运行：http://127.0.0.1:${AGH_WEB_PORT}`)
+  } else {
+    // agh serve 是共享 daemon 引导：同 profile/data-dir 时自动**附加**到上面已就绪的
+    // daemon，不会重复起 daemon；关闭本进程也不影响 daemon 与其他客户端。
+    spawnChild('agh-web', node, [
+      AGH_CLI, 'serve',
+      '--profile', AGNES_PROFILE,
+      '--cwd', ROOT,
+      '--data-dir', join(AGH_HOME, 'data'),
+      '--port', String(AGH_WEB_PORT),
+    ])
+    try {
+      await waitFor(
+        async () => {
+          try {
+            return (await fetch(`http://127.0.0.1:${AGH_WEB_PORT}/`, { signal: AbortSignal.timeout(1500) })).ok
+          } catch {
+            return false
+          }
+        },
+        { timeoutMs: 30_000, what: `AGH Web 就绪（http://127.0.0.1:${AGH_WEB_PORT}）` },
+      )
+      ok('agh-web', `AGH Web 已就绪: http://127.0.0.1:${AGH_WEB_PORT}（可观察 AGH 真实调用与会话）`)
+    } catch (e) {
+      info(
+        'agh-web',
+        `${e.message}\n      查看上方 [agh-web] 日志；换端口重试：set AGH_WEB_PORT=4178（不阻断主链路）`,
+      )
     }
   }
 
