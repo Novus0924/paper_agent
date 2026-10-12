@@ -444,11 +444,14 @@ async function waitFor(fn, { timeoutMs, intervalMs = 500, what }) {
 /** 启动一个长期子进程并保持引用（由进程退出事件统一清理）。 */
 const children = []
 function spawnChild(label, cmd, argv, opts = {}) {
+  // env 必须最后合并：opts.env 是「增量」（如 BROWSER=none），不能被 ...opts
+  // 展开覆盖成不含 process.env 的裸环境（否则 PATH 全丢，子进程必挂）。
+  const { env: extraEnv, ...rest } = opts
   const child = spawn(cmd, argv, {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...(opts.env ?? {}) },
-    ...opts,
+    ...rest,
+    env: { ...process.env, ...(extraEnv ?? {}) },
   })
   const prefix = `[${label}] `
   child.stdout?.on('data', (d) => {
@@ -476,6 +479,8 @@ function cleanup() {
 async function main() {
   sanitizeHostEnv()
   const node = pickNode()
+  // AGH Web 的最终可用链接（步骤 2.5 就绪或已在运行时置值；--bff-only/失败不置）
+  let aghWebUrl = null
   log('paper-agent 一键启动器')
   log(`  项目根: ${ROOT}`)
   log(`  Node   : ${process.versions.node} (${node})`)
@@ -582,7 +587,8 @@ async function main() {
   if (bffOnly) {
     info('agh-web', '按 --bff-only 跳过 AGH Web')
   } else if (!(await portFree(AGH_WEB_PORT))) {
-    info('agh-web', `端口 ${AGH_WEB_PORT} 已被占用——AGH Web 可能已在运行：http://127.0.0.1:${AGH_WEB_PORT}`)
+    aghWebUrl = `http://127.0.0.1:${AGH_WEB_PORT}`
+    info('agh-web', `端口 ${AGH_WEB_PORT} 已被占用——AGH Web 可能已在运行：${aghWebUrl}`)
   } else {
     // agh serve 是共享 daemon 引导：同 profile/data-dir 时自动**附加**到上面已就绪的
     // daemon，不会重复起 daemon；关闭本进程也不影响 daemon 与其他客户端。
@@ -605,6 +611,7 @@ async function main() {
         { timeoutMs: 30_000, what: `AGH Web 就绪（http://127.0.0.1:${AGH_WEB_PORT}）` },
       )
       ok('agh-web', `AGH Web 已就绪: http://127.0.0.1:${AGH_WEB_PORT}（可观察 AGH 真实调用与会话）`)
+      aghWebUrl = `http://127.0.0.1:${AGH_WEB_PORT}`
     } catch (e) {
       info(
         'agh-web',
@@ -717,6 +724,10 @@ async function main() {
       const feUrl = `http://127.0.0.1:${frontend.port}`
       spawnChild('frontend', node, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(frontend.port)], {
         cwd: frontend.dir,
+        // BROWSER=none：抑制 Vite server.open 的自动开浏览器（官方语义）。
+        // 不关它的话 Vite 开一次、启动器步骤 5 再开一次 → paper-agent 页面连开两个
+        // 相同标签页（用户实测）。浏览器统一由步骤 5 负责，只开一次。
+        env: { BROWSER: 'none' },
       })
       // 原实现是"睡 1500ms 然后宣布已启动"：端口被别的进程占用时 vite 会因 strictPort
       // 直接退出，界面却收到一句假的成功。改为真探测首页。
@@ -742,18 +753,36 @@ async function main() {
     }
   }
 
-  // ---- 步骤 5：打开浏览器到**唯一 URL** ----
-  // 有前端时开前端；只有后端时开 BFF（BFF 不托管页面，根路径是 404，
-  // 原先无条件开 8787 会让第一次使用的人以为"启动器坏了"）。
+  // ---- 步骤 5：输出全部服务链接 + 打开 paper-agent 主页 ----
+  // 两个服务的访问链接都要打印（AGH Web 供观察 AGH 真实调用/会话）；
+  // 浏览器只开 paper-agent 一个——Vite 的 server.open 已被 BROWSER=none 抑制，
+  // 由本步骤统一负责，避免同一页面连开两次（用户实测的重复打开病灶）。
+  log('')
+  log('服务访问链接：')
+  if (aghWebUrl) log(`  AGH Web      : ${aghWebUrl}`)
+  else log('  AGH Web      : （未启动或未就绪，本次不提供链接）')
+  log(`  paper-agent  : ${uiUrl}`)
   if (!noBrowser) {
-    const target = uiUrl
-    const opened = await openBrowser(target)
-    log(opened ? `    已打开浏览器: ${target}` : `    请手动打开: ${target}`)
+    const opened = await openBrowser(uiUrl)
+    log(opened ? `    已打开浏览器: ${uiUrl}` : `    请手动打开: ${uiUrl}`)
   }
   log('')
   log('启动完成。按 Ctrl+C 退出（会一并停止所有子进程）。')
 
-  if (asJson) process.stdout.write(JSON.stringify({ ok: true, steps, bff: url }, null, 2) + '\n')
+  if (asJson)
+    process.stdout.write(
+      JSON.stringify(
+        {
+          ok: true,
+          steps,
+          bff: url,
+          // 机器可读的服务链接（与上方"服务访问链接"日志同源）
+          links: { agh_web: aghWebUrl, paper_agent: uiUrl },
+        },
+        null,
+        2,
+      ) + '\n',
+    )
 }
 
 /**
