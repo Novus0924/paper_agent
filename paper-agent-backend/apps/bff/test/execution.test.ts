@@ -29,8 +29,11 @@ class FakeGateway {
   cancelled: string[] = []
   /** 让 prompt 悬停在指定时长，便于构造并发窗口 */
   holdMs = 0
+  /** 非空时 prompt 直接抛错（构造会话执行失败场景） */
+  failPrompt = ''
   async prompt(taskId: string, _sessionId: string, _cwd: string, text: string): Promise<{ reason: string; lastSeq: number }> {
     this.prompts.push({ taskId, text })
+    if (this.failPrompt) throw new Error(this.failPrompt)
     if (this.holdMs > 0) await new Promise((r) => setTimeout(r, this.holdMs))
     return { reason: 'end_turn', lastSeq: 1 }
   }
@@ -203,6 +206,54 @@ describe('ExecutionService · 状态同步（只读内核产物，不 spawn）',
     expect(task.degraded).toBe(true)
     expect(task.degraded_reasons[0]!.source).toBe('crossref')
     expect(task.sources).toEqual(['crossref', 'openalex'])
+  })
+
+  it('终态 DONE 同步以内核为唯一权威：清除本服务早前失败回合残留的 L2 记录（病灶②口径统一）', () => {
+    const id = 'run-10b'
+    makeTask(id, {
+      degraded: true,
+      degraded_reasons: [
+        {
+          level: 'degraded',
+          source: 'session',
+          reason: '会话执行失败：PLUGIN_ENV_MISSING（早前失败回合残留）',
+          impact: '任务未完成，可 resume 断点续跑',
+          resumable: true,
+          step: '-',
+          at: 'earlier',
+        },
+      ],
+    })
+    const dir = join(runsDir, id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'state.json'),
+      JSON.stringify({
+        run_status: 'DONE',
+        degraded: false,
+        degraded_reasons: [],
+        steps: STEPS.map((s) => ({ id: s.id, status: 'DONE', attempts: 1 })),
+      }),
+      'utf8',
+    )
+    const task = index.get(id)!
+    exec.syncFromKernel(task)
+    expect(task.degraded).toBe(false)
+    expect(task.degraded_reasons).toEqual([])
+  })
+
+  it('会话执行失败：置 FAILED + degraded=true + L2 明细（状态与明细同向）', async () => {
+    const id = 'run-10c'
+    makeTask(id)
+    gateway.failPrompt = '会话执行失败：PLUGIN_ENV_MISSING'
+    await exec.runAll(id)
+    await exec.whenIdle(id, 5000)
+    const task = index.get(id)!
+    expect(task.run_status).toBe('FAILED')
+    expect(task.degraded).toBe(true)
+    const l2 = task.degraded_reasons.find((d) => d.level === 'degraded')
+    expect(l2).toBeTruthy()
+    expect(l2!.source).toBe('session')
   })
 
   it('state.json 缺失时保持原状态（不臆造）', () => {

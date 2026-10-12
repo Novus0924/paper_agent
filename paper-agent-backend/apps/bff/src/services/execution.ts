@@ -322,6 +322,9 @@ export class ExecutionService {
               at: new Date().toISOString(),
             }
             t.degraded_reasons.push(record)
+            // 状态与明细必须同向：L2 记录入账时 degraded 才置位。
+            // 缺了这行会出现"明细里有 L2 记录、总览却计 0 个已降级"的口径分裂。
+            t.degraded = true
             this.index.put(t)
           }
         }
@@ -378,8 +381,16 @@ export class ExecutionService {
       mine.attempts = step.attempts ?? mine.attempts
     }
     task.run_status = (state.run_status ?? task.run_status)
-    task.degraded = Boolean(state.degraded ?? task.degraded)
-    if (state.degraded_reasons?.length) task.degraded_reasons = state.degraded_reasons
+    if (state.run_status === 'DONE') {
+      // 终态成功：内核状态是降级判定的**唯一权威**，明细整体替换（而非合并）。
+      // 否则本服务在早前失败回合写入的 L2 记录（如会话执行失败）会跨回合残留，
+      // 造成"报告称未发生实质降级、监控横幅称已降级"的口径分裂（2026-10-12 病灶②）。
+      task.degraded = Boolean(state.degraded)
+      task.degraded_reasons = Array.isArray(state.degraded_reasons) ? [...state.degraded_reasons] : []
+    } else {
+      task.degraded = Boolean(state.degraded ?? task.degraded)
+      if (state.degraded_reasons?.length) task.degraded_reasons = state.degraded_reasons
+    }
     if (state.source_status && Object.keys(state.source_status).length) {
       task.sources = Object.keys(state.source_status).filter((k) => k !== 'corpus_snapshot')
     }
