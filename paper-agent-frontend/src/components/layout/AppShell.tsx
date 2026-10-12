@@ -3,6 +3,7 @@ import layout from '@/styles/layout.module.css';
 import { useI18n } from '@/i18n';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
+import { CommandPalette } from './CommandPalette';
 import { ToastStack } from '@/components/ui/ToastStack';
 import { HealthBanner } from '@/components/common/HealthBanner';
 
@@ -26,6 +27,7 @@ export function AppShell() {
         </main>
       </div>
       <ToastStack />
+      <CommandPalette />
     </div>
   );
 }

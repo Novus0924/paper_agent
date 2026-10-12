@@ -74,7 +74,7 @@
   color: var(--ink);
 }
 
-/* 全局搜索占位框：本波仅占位，禁用态并注明 Cmd+K 即将支持 */
+/* 全局搜索入口（FE-17 已接线）：按钮语义，点击或 Cmd/Ctrl+K 唤起命令面板 */
 .tbSearch {
   display: flex;
   align-items: center;
@@ -91,6 +91,17 @@
   color: var(--ink-3);
   font-size: 12.5px;
   user-select: none;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.tbSearch:hover {
+  border-color: var(--ink-4);
+  color: var(--ink-2);
+}
+.tbSearch:focus-visible {
+  outline: 2px solid var(--accent, var(--ink));
+  outline-offset: 1px;
 }
 .tbSearchText {
   flex: 1;
@@ -107,6 +118,88 @@
   border-radius: var(--r-2xs);
   padding: 1px 5px;
   white-space: nowrap;
+}
+
+/* ---- 全局命令面板（FE-17）---- */
+.paletteSearch {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  padding: 0 var(--s3);
+  height: 38px;
+  margin: var(--s2) 0;
+  color: var(--ink-3);
+}
+.paletteSearch input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13.5px;
+}
+.paletteList {
+  max-height: 46vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.paletteSection {
+  position: sticky;
+  top: 0;
+  margin: 0;
+  padding: var(--s2) var(--s3) var(--s1);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  background: var(--surface);
+}
+.paletteItem {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.paletteItemActive {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.paletteItemLabel {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.paletteItemHint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+.paletteEmpty {
+  padding: var(--s4) var(--s3);
+  text-align: center;
+  color: var(--ink-3);
+}
+.paletteHint {
+  margin: var(--s2) 0 0;
+  font-size: 11px;
+  color: var(--ink-4);
+  text-align: center;
 }
 
 .tbRight {

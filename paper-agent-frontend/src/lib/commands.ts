@@ -1,4 +1,5 @@
 import type { MsgKey } from '@/i18n';
+import type { IconName } from '@/components/ui/Icon';
 
 /** 命令面板条目分类：任务 / 页面 / 动作 / 文献（FE-17） */
 export type CommandKind = 'task' | 'page' | 'action' | 'evidence';
@@ -11,6 +12,8 @@ export interface CommandItem {
   /** 跳转目标；动作类可不带 to，改用 run */
   to?: string;
   run?: () => void;
+  /** 条目图标；缺省按 kind 推断 */
+  icon?: IconName;
 }
 
 export interface CommandSection {

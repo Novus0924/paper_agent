@@ -7,6 +7,7 @@ import { copyText } from '@/lib/utils';
 import { useTaskStore } from '@/store/taskStore';
 import { useToastStore } from '@/store/toastStore';
 import { useUiStore } from '@/store/uiStore';
+import { usePaletteStore } from '@/store/paletteStore';
 import { Icon } from '@/components/ui/Icon';
 import { RunStatusBadge } from '@/components/ui/Badge';
 import { NarrowNav } from './NarrowNav';
@@ -51,12 +52,17 @@ export function Topbar() {
       <span className={layout.tbDivider} aria-hidden />
       <h1 className={layout.tbTitle}>{t(meta.titleKey)}</h1>
 
-      {/* 全局搜索占位：本波未接线，禁用态显式标注 Cmd+K 即将支持 */}
-      <div className={layout.tbSearch} aria-hidden>
+      {/* 全局搜索（FE-17 已接线）：点击或 Cmd/Ctrl+K 唤起命令面板 */}
+      <button
+        type="button"
+        className={layout.tbSearch}
+        onClick={() => usePaletteStore.getState().setOpen(true)}
+        aria-label={t('topbar.searchPlaceholder')}
+      >
         <Icon name="search" size={13} />
         <span className={layout.tbSearchText}>{t('topbar.searchPlaceholder')}</span>
-        <span className={layout.tbKbd}>{t('topbar.searchSoon')}</span>
-      </div>
+        <span className={layout.tbKbd}>{t('topbar.searchKbd')}</span>
+      </button>
 
       <div className={layout.tbRight}>
         {taskId && (

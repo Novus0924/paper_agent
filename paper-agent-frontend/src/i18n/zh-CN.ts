@@ -31,7 +31,6 @@ export const zhCN = {
     copyFailed: '复制失败，请手动选择文本复制',
     actions: '全局动作',
     searchPlaceholder: '搜索任务、文献或证据…',
-    searchSoon: 'Cmd+K 即将支持',
     searchOpen: '打开全局搜索（⌘K）',
     searchKbd: '⌘K',
     toLight: '切换到浅色主题',
