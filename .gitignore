@@ -12,8 +12,8 @@ test-results/
 playwright-report/
 coverage/
 
-# 独立仓库（AGH 底座，README 声明不纳入本仓库）
-agnes-harness/
+# agnes-harness 已整合入仓（上游 AgnesAI-Labs/agnes-harness 快照 + 预构建产物，2026-10-14）。
+# 其内部 node_modules 仍不入库（用 pnpm-lock.yaml 恢复）；dist 随仓例外规则见 agnes-harness/.gitignore。
 
 # 工作区数据（本地记忆/任务索引）
 .workbuddy/

@@ -1,0 +1,46 @@
+.superpowers/
+node_modules/
+dist/
+*.tsbuildinfo
+packages/package-manager/bundled-plugins/document-reader/src/runtime/
+.agnes-tmp/
+
+# A literal tilde directory: host defaults dataDir to the string "~/.agnes" and nothing
+# expands it, so a run without an explicit dataDir writes here. Ignored so it cannot be
+# committed again; the defect itself is being fixed in host.
+~/
+.agnes-scratch/
+
+# Compiled at build time by packages/host/scripts/build-native.mjs (macOS only). Host helpers
+# live in its ignored dist/ tree; C sources remain in packages/host/native/.
+packages/host/native/macos-process-identity
+packages/host/native/macos-live-app-identity
+
+# Subagent worktrees live inside the repository; the fail-closed manager verifies this rule before
+# creating one so the parent checkout cannot accidentally stage a nested worktree.
+.worktrees/
+.codegraph/
+
+# Machine-local IDE settings and temporary Windows test output.
+.idea/
+/.windows-core-host-check.log
+.agnes
+.agh
+learn/
+.DS_Store
+
+# Local assistant configuration and unpublished scratch material.
+.claude/
+.cursor/
+outputs/
+spikes/
+docs/task-records/
+
+# ===== 本仓库整合版例外：随仓携带运行时构建产物（2026-10-14，paper_agent 交付要求）=====
+# dist 为 AGH 预构建运行时（启动器判据 packages/cli/dist/local/agnes.mjs；
+# 原生模块位于 packages/system-node/dist/native 与 cli/dist/local 内迷你包）。
+# 随仓携带可免去评审环境的原生构建环节；源码重建方式见仓库根 README 附录。
+!packages/cli/dist/
+!packages/system-node/dist/
+!packages/cli/dist/local/node_modules/
+!packages/cli/dist/local/node_modules/@agnes/system-node/dist/
