@@ -519,6 +519,21 @@ async function main() {
     await releasePort(t)
   }
 
+  // ---- 步骤 0.9：AGH 源码依赖预检 ----
+  // BFF 以 `link:` 引用 agnes-harness/packages/* 的 TypeScript 源码包（@agnes/sdk 等），
+  // 其依赖靠 AGH 侧 `pnpm install` 生成的 workspace 链接解析（与 daemon 的预构建产物无关，
+  // --bff-only 同样需要）。漏装时 tsx 会在加载 sdk 源码时抛难懂的 ERR_MODULE_NOT_FOUND，
+  // 这里提前拦截并给出修复命令（2026-10-14 队友实测踩坑）。
+  if (AGH_ROOT && !existsSync(join(AGH_ROOT, 'node_modules', '.pnpm'))) {
+    fail(
+      'agh-deps',
+      'agnes-harness 依赖未安装——后端 BFF 将无法解析 @agnes/* 源码包（ERR_MODULE_NOT_FOUND）',
+      `先执行：cd "${AGH_ROOT}" && pnpm install --frozen-lockfile ，然后重新运行本启动器。`,
+    )
+    return finish()
+  }
+  ok('agh-deps', 'agnes-harness 依赖就绪（workspace 链接可用）')
+
   // ---- 步骤 1/2：AGH 构建产物与 daemon ----
   if (bffOnly) {
     info('agh', '按 --bff-only 跳过 AGH 编排')

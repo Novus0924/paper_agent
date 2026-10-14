@@ -28,9 +28,12 @@ cd paper-agent-backend
 pnpm install
 cd ../paper-agent-frontend
 npm install
+cd ../agnes-harness
+pnpm install --frozen-lockfile
 ```
 
-> AGH 运行时已随仓库提供预构建产物，无需安装或构建。后端通过 `link:` 引用同级 `agnes-harness/packages/*`，请保持上述目录布局不变。
+> - AGH 已含预构建运行产物（`dist`），**无需构建**；但其依赖需一次性安装（需网络）：后端 BFF 以 `link:` 引用 AGH 的 TypeScript 源码包（`@agnes/sdk` 等），依赖 AGH 侧的 workspace 依赖链接——漏装时 BFF 会以 `ERR_MODULE_NOT_FOUND` 崩溃（启动器已在启动前预检并给出提示）。
+> - 后端 `link:` 引用同级 `agnes-harness/packages/*`，请保持上述目录布局不变。
 
 ## 启动
 
