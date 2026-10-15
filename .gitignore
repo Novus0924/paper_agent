@@ -7,6 +7,10 @@ out/
 Thumbs.db
 .env
 .env.local
+.env.*
+!.env.example
+.agh/
+.agnes/
 .vite/
 test-results/
 playwright-report/
@@ -26,3 +30,8 @@ overview.yaml
 
 # 验收报告与过程证据不入仓（2026-10-12 用户指示：从 Git 彻底移除并重写历史）
 验收/
+
+# 打包/发布交付产物不入仓
+release/
+packaging/
+packaging/windows/.cache/
